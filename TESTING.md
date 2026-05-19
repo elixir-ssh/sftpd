@@ -52,7 +52,7 @@ iex> Sftpd.start_server(
 ...>   port: 2222,
 ...>   backend: Sftpd.Backends.S3,
 ...>   backend_opts: [bucket: "sftpd-test-bucket"],
-...>   users: [{"user", "password"}],
+...>   auth: {:passwords, [{"user", "password"}]},
 ...>   system_dir: system_dir
 ...> )
 ```
@@ -78,7 +78,25 @@ sftp> quit
 
 ## Configuration
 
-The integration tests use MinIO from `docker-compose.yml`:
+The integration tests use MinIO on `localhost:9000`. The Nix dev shell includes
+the MinIO server and client, so Docker is optional.
+
+Without Docker:
+
+```bash
+export MINIO_ROOT_USER=minioadmin
+export MINIO_ROOT_PASSWORD=minioadmin
+mkdir -p .minio-data
+minio server .minio-data
+```
+
+Run the server in a separate terminal, then run:
+
+```bash
+mix test --only integration
+```
+
+With Docker:
 
 ```bash
 docker compose up -d minio
