@@ -71,7 +71,7 @@ defmodule Sftpd.MixProject do
         "GitHub" => @source_url
       },
       files:
-        ~w(lib .formatter.exs mix.exs README.md GETTING_STARTED.md BACKENDS.md CUSTOM_BACKENDS.md TELEMETRY.md LICENSE)
+        ~w(lib .formatter.exs mix.exs README.md GETTING_STARTED.md BACKENDS.md CUSTOM_BACKENDS.md PHOENIX.md TELEMETRY.md LICENSE)
     ]
   end
 
@@ -83,11 +83,12 @@ defmodule Sftpd.MixProject do
         "GETTING_STARTED.md",
         "BACKENDS.md",
         "CUSTOM_BACKENDS.md",
+        "PHOENIX.md",
         "TELEMETRY.md"
       ],
       source_ref: "v#{@version}",
       groups_for_modules: [
-        Core: [Sftpd, Sftpd.Backend, Sftpd.Telemetry],
+        Core: [Sftpd, Sftpd.Auth, Sftpd.Backend, Sftpd.Telemetry],
         Backends: [Sftpd.Backends.S3, Sftpd.Backends.Memory],
         Internal: [Sftpd.FileHandler, Sftpd.IODevice]
       ]

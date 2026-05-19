@@ -52,7 +52,7 @@ external services:
     port: 2222,
     backend: Sftpd.Backends.Memory,
     backend_opts: [],
-    users: [{"dev", "dev"}],
+    auth: {:passwords, [{"dev", "dev"}]},
     system_dir: "ssh_keys"
   )
 ```
@@ -62,7 +62,8 @@ Important options:
 - `:port` controls the SSH listener port
 - `:backend` selects the storage implementation
 - `:backend_opts` passes backend-specific configuration
-- `:users` defines password-authenticated users
+- `:auth` configures authentication. Use `{:passwords, [{"dev", "dev"}]}` for
+  local development, or `{MyApp.SftpAuth, opts}` for application callbacks
 - `:system_dir` points at the SSH host key directory
 - `:max_sessions` limits concurrent client sessions
 - `:open_timeout` bounds file open setup time
@@ -131,7 +132,7 @@ Without those dependencies, `Sftpd.Backends.S3.init/1` returns
     port: 2222,
     backend: Sftpd.Backends.S3,
     backend_opts: [bucket: "my-bucket", prefix: "tenant-a/"],
-    users: [{"dev", "dev"}],
+    auth: {:passwords, [{"dev", "dev"}]},
     system_dir: "ssh_keys"
   )
 ```
@@ -139,7 +140,8 @@ Without those dependencies, `Sftpd.Backends.S3.init/1` returns
 S3 backend options:
 
 - `:bucket` is required
-- `:prefix` scopes keys within a bucket
+- `:prefix` scopes keys within a bucket. It can be a string or
+  `{:session, key}` to read a per-user prefix from the auth session map
 - `:aws_client` lets you swap in a compatible client for tests or custom
   adapters
 

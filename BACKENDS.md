@@ -49,7 +49,7 @@ Example:
     port: 2222,
     backend: Sftpd.Backends.Memory,
     backend_opts: [],
-    users: [{"dev", "dev"}],
+    auth: {:passwords, [{"dev", "dev"}]},
     system_dir: "ssh_keys"
   )
 ```
@@ -91,9 +91,17 @@ Example:
     port: 2222,
     backend: Sftpd.Backends.S3,
     backend_opts: [bucket: "my-bucket", prefix: "tenant-a/"],
-    users: [{"user", "pass"}],
+    auth: {:passwords, [{"user", "pass"}]},
     system_dir: "ssh_keys"
   )
+```
+
+The S3 `:prefix` option can be a static string or `{:session, key}`. Session
+prefixes read from the authenticated session map returned by `Sftpd.Auth`
+callbacks, which is useful for tenant-scoped object keys:
+
+```elixir
+backend_opts: [bucket: "uploads", prefix: {:session, :sftp_prefix}]
 ```
 
 See `Sftpd.Backends.S3` for configuration details and caveats. The Getting
@@ -148,7 +156,7 @@ Use it with:
 Sftpd.start_server(
   backend: MyApp.CustomBackend,
   backend_opts: [root: "/data"],
-  users: [{"user", "pass"}],
+  auth: {:passwords, [{"user", "pass"}]},
   system_dir: "ssh_keys"
 )
 ```
@@ -161,14 +169,14 @@ You can also pass a running GenServer as `{:genserver, server}`. In that mode,
 
 Calls follow this shape:
 
-- `{:list_dir, path}`
-- `{:file_info, path}`
-- `{:make_dir, path}`
-- `{:del_dir, path}`
-- `{:delete, path}`
-- `{:rename, src, dst}`
-- `{:read_file, path}`
-- `{:write_file, path, content}`
+- `{:list_dir, path, session}`
+- `{:file_info, path, session}`
+- `{:make_dir, path, session}`
+- `{:del_dir, path, session}`
+- `{:delete, path, session}`
+- `{:rename, src, dst, session}`
+- `{:read_file, path, session}`
+- `{:write_file, path, content, session}`
 
 If a process backend needs authenticated session context, opt in with
 `{:genserver, server, session: true}`. Session-aware calls follow this shape:
@@ -193,6 +201,11 @@ For large files, module backends can optionally implement:
 - `write_chunk/4`
 - `finish_write/2`
 - `abort_write/2`
+
+Session-aware variants are also supported by adding the authenticated session
+map immediately before backend state, for example `list_dir(path, session,
+state)` or `write_file(path, content, session, state)`. When both variants are
+available, `Sftpd` calls the session-aware function.
 
 When present:
 

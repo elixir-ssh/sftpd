@@ -8,6 +8,7 @@ it through a small backend behaviour. It ships with:
 
 - an in-memory backend for development and tests
 - an optional S3 backend with range reads and multipart streaming writes
+- password and public-key auth callbacks that return per-session context
 - telemetry hooks around server lifecycle and SFTP operations
 
 ## Installation
@@ -34,11 +35,11 @@ end
 
 ```elixir
 # Start with in-memory backend (great for development)
-{:ok, pid} = Sftpd.start_server(
+{:ok, ref} = Sftpd.start_server(
   port: 2222,
   backend: Sftpd.Backends.Memory,
   backend_opts: [],
-  users: [{"dev", "dev"}],
+  auth: {:passwords, [{"dev", "dev"}]},
   system_dir: "/path/to/ssh_host_keys"
 )
 
@@ -48,6 +49,7 @@ end
 ## Guides
 
 - `GETTING_STARTED.md` for a step-by-step setup guide
+- `PHOENIX.md` for supervised Phoenix setup with app auth and S3
 - `BACKENDS.md` for backend architecture and built-in backend tradeoffs
 - `CUSTOM_BACKENDS.md` for implementing your own backend
 - `TELEMETRY.md` for emitted events, metadata, and examples
@@ -56,6 +58,8 @@ end
 
 - `Sftpd.start_server/1` starts an SSH daemon configured with an SFTP
   file-handler
+- `Sftpd.child_spec/1` lets Phoenix and other OTP apps supervise the server
+- `Sftpd.Auth` defines password and public-key auth callbacks
 - `Sftpd.Backend` defines the storage contract
 - `Sftpd.Backends.Memory` is the fastest local setup path
 - `Sftpd.Backends.S3` is the built-in persistent backend
@@ -92,7 +96,7 @@ Sftpd.start_server(
   port: 2222,
   backend: Sftpd.Backends.Memory,
   backend_opts: [],
-  users: [{"user", "pass"}],
+  auth: {:passwords, [{"user", "pass"}]},
   system_dir: "/path/to/ssh_host_keys"
 )
 ```
@@ -133,7 +137,7 @@ Sftpd.start_server(
   port: 2222,
   backend: Sftpd.Backends.S3,
   backend_opts: [bucket: "my-bucket", prefix: "tenant-a/"],
-  users: [{"user", "pass"}],
+  auth: {:passwords, [{"user", "pass"}]},
   system_dir: "/path/to/ssh_host_keys"
 )
 ```
@@ -141,8 +145,27 @@ Sftpd.start_server(
 `backend_opts` supports:
 
 - `:bucket` - required S3 bucket name
-- `:prefix` - optional key prefix for namespacing objects within a bucket
+- `:prefix` - optional static key prefix, or `{:session, key}` to read a prefix
+  from the authenticated session map
 - `:aws_client` - optional ExAws-compatible client module, mainly useful for tests or custom request adapters
+
+For Phoenix apps, use `Sftpd.child_spec/1` and an auth module:
+
+```elixir
+children = [
+  {Sftpd,
+   port: 2222,
+   system_dir: "/run/secrets/sftp_host_keys",
+   auth: {MyApp.SftpAuth, []},
+   backend: Sftpd.Backends.S3,
+   backend_opts: [bucket: "uploads", prefix: {:session, :sftp_prefix}]}
+]
+```
+
+Your auth callbacks return a session map such as `%{user_id: user.id,
+tenant_id: user.tenant_id, sftp_prefix: "tenants/#{user.tenant_id}/"}`. Backend
+callbacks receive that map, and the built-in S3 backend can use it to scope
+object keys per tenant.
 
 Configure ExAws for your S3 endpoint:
 
