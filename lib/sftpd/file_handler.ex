@@ -28,11 +28,15 @@ defmodule Sftpd.FileHandler do
 
   @typedoc "File handler state containing backend module and its state"
   @type state :: %{
-          required(:backend) => module() | {:genserver, GenServer.server()},
+          required(:backend) =>
+            module()
+            | {:genserver, GenServer.server()}
+            | {:genserver, GenServer.server(), keyword()},
           required(:backend_state) => term(),
           optional(:close_timeout) => timeout(),
           optional(:close_shutdown_grace) => non_neg_integer(),
-          optional(:open_timeout) => non_neg_integer(),
+          optional(:open_timeout) => timeout(),
+          optional(:session) => map(),
           optional(:cwd) => charlist()
         }
 
@@ -134,16 +138,20 @@ defmodule Sftpd.FileHandler do
   @impl true
   @spec delete(charlist(), state()) :: {:ok | {:error, atom()}, state()}
   def delete(path, %{backend: backend, backend_state: backend_state} = state) do
+    state = ensure_session(state)
+
     instrument_path_call(:delete, path, state, fn ->
-      {Backend.call(backend, :delete, [path, backend_state]), state}
+      {Backend.call(backend, :delete, [path, backend_state], session(state)), state}
     end)
   end
 
   @impl true
   @spec del_dir(charlist(), state()) :: {:ok | {:error, atom()}, state()}
   def del_dir(path, %{backend: backend, backend_state: backend_state} = state) do
+    state = ensure_session(state)
+
     instrument_path_call(:del_dir, path, state, fn ->
-      {Backend.call(backend, :del_dir, [path, backend_state]), state}
+      {Backend.call(backend, :del_dir, [path, backend_state], session(state)), state}
     end)
   end
 
@@ -160,12 +168,14 @@ defmodule Sftpd.FileHandler do
   @impl true
   @spec is_dir(charlist(), state()) :: {boolean(), state()}
   def is_dir(path, %{backend: backend, backend_state: backend_state} = state) do
+    state = ensure_session(state)
+
     instrument(
       :is_dir,
       state,
       %{path: to_string(path)},
       fn ->
-        case Backend.call(backend, :file_info, [path, backend_state]) do
+        case Backend.call(backend, :file_info, [path, backend_state], session(state)) do
           {:ok, {:file_info, _, :directory, _, _, _, _, _, _, _, _, _, _, _}} ->
             {true, state}
 
@@ -185,16 +195,20 @@ defmodule Sftpd.FileHandler do
   @impl true
   @spec list_dir(charlist(), state()) :: {{:ok, [charlist()]} | {:error, atom()}, state()}
   def list_dir(path, %{backend: backend, backend_state: backend_state} = state) do
+    state = ensure_session(state)
+
     instrument_path_call(:list_dir, path, state, fn ->
-      {Backend.call(backend, :list_dir, [path, backend_state]), state}
+      {Backend.call(backend, :list_dir, [path, backend_state], session(state)), state}
     end)
   end
 
   @impl true
   @spec make_dir(charlist(), state()) :: {:ok | {:error, atom()}, state()}
   def make_dir(path, %{backend: backend, backend_state: backend_state} = state) do
+    state = ensure_session(state)
+
     instrument_path_call(:make_dir, path, state, fn ->
-      {Backend.call(backend, :make_dir, [path, backend_state]), state}
+      {Backend.call(backend, :make_dir, [path, backend_state], session(state)), state}
     end)
   end
 
@@ -226,14 +240,19 @@ defmodule Sftpd.FileHandler do
   end
 
   def read_link_info(path, %{backend: backend, backend_state: backend_state} = state) do
+    state = ensure_session(state)
+
     instrument_path_call(:read_link_info, path, state, fn ->
-      {read_file_info_result(path, %{backend: backend, backend_state: backend_state}), state}
+      {read_file_info_result(path, %{state | backend: backend, backend_state: backend_state}),
+       state}
     end)
   end
 
   @impl true
   @spec open(charlist(), [atom()], state()) :: {{:ok, io_device()} | {:error, term()}, state()}
   def open(path, modes, %{backend: backend, backend_state: backend_state} = state) do
+    state = ensure_session(state)
+
     instrument(
       :open,
       state,
@@ -252,6 +271,7 @@ defmodule Sftpd.FileHandler do
             mode: mode,
             backend: backend,
             backend_state: backend_state,
+            session: session(state),
             open_timeout: Map.get(state, :open_timeout, @default_open_timeout)
           })
 
@@ -299,6 +319,8 @@ defmodule Sftpd.FileHandler do
   @spec read_file_info(charlist(), state()) ::
           {{:ok, Backend.file_info()} | {:error, atom()}, state()}
   def read_file_info(path, state) do
+    state = ensure_session(state)
+
     instrument_path_call(:read_file_info, path, state, fn ->
       {read_file_info_result(path, state), state}
     end)
@@ -313,8 +335,10 @@ defmodule Sftpd.FileHandler do
   @impl true
   @spec rename(charlist(), charlist(), state()) :: {:ok | {:error, atom()}, state()}
   def rename(src, dst, %{backend: backend, backend_state: backend_state} = state) do
+    state = ensure_session(state)
+
     instrument(:rename, state, %{src_path: to_string(src), dst_path: to_string(dst)}, fn ->
-      {Backend.call(backend, :rename, [src, dst, backend_state]), state}
+      {Backend.call(backend, :rename, [src, dst, backend_state], session(state)), state}
     end)
   end
 
@@ -346,15 +370,27 @@ defmodule Sftpd.FileHandler do
     {:ok, Backend.directory_info()}
   end
 
-  defp read_file_info_result(path, %{backend: backend, backend_state: backend_state}) do
+  defp read_file_info_result(path, %{backend: backend, backend_state: backend_state} = state) do
     path_str = to_string(path)
 
     if String.ends_with?(path_str, "/.") or String.ends_with?(path_str, "/..") do
       {:ok, Backend.directory_info()}
     else
-      Backend.call(backend, :file_info, [path, backend_state])
+      Backend.call(backend, :file_info, [path, backend_state], Map.get(state, :session, %{}))
     end
   end
+
+  defp ensure_session(%{session: session} = state) when is_map(session), do: state
+
+  defp ensure_session(state) do
+    case Sftpd.Subsystem.connection_manager()
+         |> Sftpd.Auth.Registry.fetch() do
+      {:ok, session} -> Map.put(state, :session, session)
+      :error -> state
+    end
+  end
+
+  defp session(state), do: Map.get(state, :session, %{})
 
   defp instrument(operation, state, metadata, fun, finalize_fun \\ &default_finalize/2) do
     Sftpd.Telemetry.span(
@@ -412,8 +448,10 @@ defmodule Sftpd.FileHandler do
   end
 
   defp backend_kind({:genserver, _server}), do: :genserver
+  defp backend_kind({:genserver, _server, _opts}), do: :genserver
   defp backend_kind(module) when is_atom(module), do: :module
 
   defp backend_name({:genserver, server}), do: inspect(server)
+  defp backend_name({:genserver, server, _opts}), do: inspect(server)
   defp backend_name(module) when is_atom(module), do: module
 end

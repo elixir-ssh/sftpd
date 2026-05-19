@@ -156,8 +156,8 @@ Sftpd.start_server(
 ## Process-Based Backends
 
 You can also pass a running GenServer as `{:genserver, server}`. In that mode,
-`Sftpd` skips `init/1` and forwards backend operations as `handle_call/3`
-messages.
+`Sftpd` skips `init/1` and forwards backend operations as legacy
+`handle_call/3` messages so existing process backends keep working.
 
 Calls follow this shape:
 
@@ -169,6 +169,18 @@ Calls follow this shape:
 - `{:rename, src, dst}`
 - `{:read_file, path}`
 - `{:write_file, path, content}`
+
+If a process backend needs authenticated session context, opt in with
+`{:genserver, server, session: true}`. Session-aware calls follow this shape:
+
+- `{:list_dir, path, session}`
+- `{:file_info, path, session}`
+- `{:make_dir, path, session}`
+- `{:del_dir, path, session}`
+- `{:delete, path, session}`
+- `{:rename, src, dst, session}`
+- `{:read_file, path, session}`
+- `{:write_file, path, content, session}`
 
 The reply format must match the `Sftpd.Backend` callback contracts.
 

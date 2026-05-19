@@ -63,6 +63,29 @@ defmodule Sftpd.IODeviceTest do
     end
   end
 
+  defmodule SlowProcessReadBackend do
+    use GenServer
+
+    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
+
+    def reply(pid, reply), do: GenServer.cast(pid, {:reply_read, reply})
+
+    @impl GenServer
+    def init(test_pid), do: {:ok, %{test_pid: test_pid, read_from: nil}}
+
+    @impl GenServer
+    def handle_call({:read_file, path}, from, state) do
+      send(state.test_pid, {:process_read_opened, self(), path})
+      {:noreply, %{state | read_from: from}}
+    end
+
+    @impl GenServer
+    def handle_cast({:reply_read, reply}, %{read_from: from} = state) do
+      GenServer.reply(from, reply)
+      {:noreply, %{state | read_from: nil}}
+    end
+  end
+
   defmodule CrashingOpenBackend do
     def read_file(_path, _state), do: raise("open failed")
   end
@@ -416,6 +439,30 @@ defmodule Sftpd.IODeviceTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1000
 
       assert Task.await(task, 1000) =~ "Timed out waiting 10ms"
+    end
+
+    test "process backend read open honors open_timeout beyond GenServer call default" do
+      {:ok, backend} = SlowProcessReadBackend.start_link(self())
+
+      task =
+        Task.async(fn ->
+          IODevice.start(%{
+            path: ~c"/slow.txt",
+            mode: :read,
+            backend: {:genserver, backend},
+            backend_state: :ignored,
+            open_timeout: 7_000
+          })
+        end)
+
+      assert_receive {:process_read_opened, ^backend, ~c"/slow.txt"}, 1_000
+      Process.sleep(5_200)
+      refute Task.yield(task, 0)
+
+      SlowProcessReadBackend.reply(backend, {:ok, "slow"})
+
+      assert {:ok, pid} = Task.await(task, 2_000)
+      assert {:ok, "slow"} = GenServer.call(pid, {:read, 10})
     end
 
     test "returns eio immediately when read setup crashes" do

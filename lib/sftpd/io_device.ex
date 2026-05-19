@@ -103,13 +103,14 @@ defmodule Sftpd.IODevice do
   end
 
   @impl GenServer
-  def init(%{path: path, mode: mode, backend: backend, backend_state: backend_state}) do
+  def init(%{path: path, mode: mode, backend: backend, backend_state: backend_state} = opts) do
     {:ok,
      %{
        path: path,
        mode: mode,
        backend: backend,
        backend_state: backend_state,
+       session: Map.get(opts, :session, %{}),
        position: 0,
        size: 0,
        finalized?: false,
@@ -121,11 +122,17 @@ defmodule Sftpd.IODevice do
   @impl GenServer
   def handle_continue(
         :open,
-        %{path: path, mode: :read, backend: backend, backend_state: backend_state} = state
+        %{
+          path: path,
+          mode: :read,
+          backend: backend,
+          backend_state: backend_state,
+          session: session
+        } = state
       ) do
     worker =
       start_open_worker(fn ->
-        open_read_device(path, backend, backend_state)
+        open_read_device(path, backend, backend_state, session)
       end)
 
     {:noreply, Map.put(state, :open_worker, worker)}
@@ -133,7 +140,13 @@ defmodule Sftpd.IODevice do
 
   def handle_continue(
         :open,
-        %{path: path, mode: :write, backend: backend, backend_state: backend_state} = state
+        %{
+          path: path,
+          mode: :write,
+          backend: backend,
+          backend_state: backend_state,
+          session: session
+        } = state
       ) do
     case open_temp_file() do
       {:ok, temp_path, temp_fd} ->
@@ -145,7 +158,7 @@ defmodule Sftpd.IODevice do
         if streaming_write_supported?(backend) do
           worker =
             start_open_worker(fn ->
-              open_streaming_write(path, backend, backend_state)
+              open_streaming_write(path, backend, backend_state, session)
             end)
 
           {:noreply, Map.put(state, :open_worker, worker)}
@@ -213,10 +226,11 @@ defmodule Sftpd.IODevice do
           path: path,
           position: pos,
           backend: backend,
-          backend_state: backend_state
+          backend_state: backend_state,
+          session: session
         } = state
       ) do
-    case Backend.call(backend, :read_file_range, [path, pos, length, backend_state]) do
+    case Backend.call(backend, :read_file_range, [path, pos, length, backend_state], session) do
       {:ok, data} when byte_size(data) > 0 ->
         bytes_read = byte_size(data)
         {:reply, {:ok, data}, %{state | position: pos + bytes_read}}
@@ -327,9 +341,9 @@ defmodule Sftpd.IODevice do
       {:error, :eio}
   end
 
-  defp open_read_device(path, backend, backend_state) do
+  defp open_read_device(path, backend, backend_state, session) do
     if Backend.supports_callback?(backend, :read_file_range, 4) do
-      case Backend.call(backend, :file_info, [path, backend_state]) do
+      case Backend.call(backend, :file_info, [path, backend_state], session) do
         {:ok, file_info} ->
           {:ok, %{read_strategy: :range, size: extract_file_size(file_info)}}
 
@@ -338,7 +352,7 @@ defmodule Sftpd.IODevice do
           {:error, reason}
       end
     else
-      case Backend.call(backend, :read_file, [path, backend_state]) do
+      case Backend.call(backend, :read_file, [path, backend_state], session, :infinity) do
         {:ok, content} ->
           {:ok, %{read_strategy: :buffered, content: content, size: byte_size(content)}}
 
@@ -349,8 +363,8 @@ defmodule Sftpd.IODevice do
     end
   end
 
-  defp open_streaming_write(path, backend, backend_state) do
-    case Backend.call(backend, :begin_write, [path, backend_state]) do
+  defp open_streaming_write(path, backend, backend_state, session) do
+    case Backend.call(backend, :begin_write, [path, backend_state], session) do
       {:ok, writer_handle} ->
         {:ok, %{write_strategy: :streaming, writer_handle: writer_handle, stream_offset: 0}}
 
@@ -403,12 +417,17 @@ defmodule Sftpd.IODevice do
          data,
          bytes
        ) do
-    case Backend.call(state.backend, :write_chunk, [
-           state.writer_handle,
-           pos,
-           data,
-           state.backend_state
-         ]) do
+    case Backend.call(
+           state.backend,
+           :write_chunk,
+           [
+             state.writer_handle,
+             pos,
+             data,
+             state.backend_state
+           ],
+           state.session
+         ) do
       {:ok, writer_handle} ->
         {:ok, %{state | writer_handle: writer_handle, stream_offset: pos + bytes}}
 
@@ -459,9 +478,14 @@ defmodule Sftpd.IODevice do
   end
 
   defp finalize_streaming_write(
-         %{backend: backend, backend_state: backend_state, writer_handle: writer_handle} = state
+         %{
+           backend: backend,
+           backend_state: backend_state,
+           writer_handle: writer_handle,
+           session: session
+         } = state
        ) do
-    case Backend.call(backend, :finish_write, [writer_handle, backend_state]) do
+    case Backend.call(backend, :finish_write, [writer_handle, backend_state], session) do
       :ok ->
         :ok
 
@@ -478,26 +502,36 @@ defmodule Sftpd.IODevice do
   defp replay_tempfile_to_stream(%{
          backend: backend,
          backend_state: backend_state,
+         session: session,
          path: path,
          temp_fd: temp_fd,
          size: size
        }) do
-    with {:ok, writer_handle} <- Backend.call(backend, :begin_write, [path, backend_state]),
+    with {:ok, writer_handle} <-
+           Backend.call(backend, :begin_write, [path, backend_state], session),
          {:ok, writer_handle} <-
-           replay_tempfile_chunks(temp_fd, size, writer_handle, backend, backend_state, 0) do
-      case Backend.call(backend, :finish_write, [writer_handle, backend_state]) do
+           replay_tempfile_chunks(
+             temp_fd,
+             size,
+             writer_handle,
+             backend,
+             backend_state,
+             session,
+             0
+           ) do
+      case Backend.call(backend, :finish_write, [writer_handle, backend_state], session) do
         :ok ->
           :ok
 
         {:error, reason} ->
           Logger.error("Failed to replay temp file for #{inspect(path)}: #{inspect(reason)}")
-          safe_abort_write(backend, writer_handle, backend_state)
+          safe_abort_write(backend, writer_handle, backend_state, session)
           {:error, reason}
       end
     else
       {:stream_error, writer_handle, reason} ->
         Logger.error("Failed to replay temp file for #{inspect(path)}: #{inspect(reason)}")
-        safe_abort_write(backend, writer_handle, backend_state)
+        safe_abort_write(backend, writer_handle, backend_state, session)
         {:error, reason}
 
       {:error, reason} ->
@@ -506,23 +540,45 @@ defmodule Sftpd.IODevice do
     end
   end
 
-  defp replay_tempfile_chunks(_temp_fd, size, writer_handle, _backend, _backend_state, offset)
+  defp replay_tempfile_chunks(
+         _temp_fd,
+         size,
+         writer_handle,
+         _backend,
+         _backend_state,
+         _session,
+         offset
+       )
        when offset >= size do
     {:ok, writer_handle}
   end
 
-  defp replay_tempfile_chunks(temp_fd, size, writer_handle, backend, backend_state, offset) do
+  defp replay_tempfile_chunks(
+         temp_fd,
+         size,
+         writer_handle,
+         backend,
+         backend_state,
+         session,
+         offset
+       ) do
     bytes_to_read = min(@stream_chunk_size, size - offset)
 
     with {:ok, data} <- read_temp_chunk(temp_fd, offset, bytes_to_read),
          {:ok, writer_handle} <-
-           Backend.call(backend, :write_chunk, [writer_handle, offset, data, backend_state]) do
+           Backend.call(
+             backend,
+             :write_chunk,
+             [writer_handle, offset, data, backend_state],
+             session
+           ) do
       replay_tempfile_chunks(
         temp_fd,
         size,
         writer_handle,
         backend,
         backend_state,
+        session,
         offset + byte_size(data)
       )
     else
@@ -538,7 +594,7 @@ defmodule Sftpd.IODevice do
     close_fd(state.temp_fd)
 
     with {:ok, content} <- File.read(temp_path),
-         :ok <- Backend.call(backend, :write_file, [path, content, backend_state]) do
+         :ok <- Backend.call(backend, :write_file, [path, content, backend_state], state.session) do
       :ok
     else
       {:error, reason} ->
@@ -561,13 +617,14 @@ defmodule Sftpd.IODevice do
   defp cleanup_streaming_writer(%{
          backend: backend,
          writer_handle: writer_handle,
-         backend_state: backend_state
+         backend_state: backend_state,
+         session: session
        }) do
-    safe_abort_write(backend, writer_handle, backend_state)
+    safe_abort_write(backend, writer_handle, backend_state, session)
   end
 
-  defp safe_abort_write(backend, writer_handle, backend_state) do
-    case Backend.call(backend, :abort_write, [writer_handle, backend_state]) do
+  defp safe_abort_write(backend, writer_handle, backend_state, session) do
+    case Backend.call(backend, :abort_write, [writer_handle, backend_state], session) do
       :ok ->
         :ok
 

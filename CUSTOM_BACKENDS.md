@@ -311,11 +311,15 @@ If you do not implement them, `Sftpd` falls back to the required callbacks.
 If your backend already lives inside a GenServer, you can provide:
 
 ```elixir
-backend: {:genserver, MyApp.BackendServer}
+backend: {:genserver, MyApp.BackendServer, session: true}
 ```
 
 In that mode, `Sftpd` does not call `init/1`. Instead it sends `handle_call/3`
 messages corresponding to the required backend operations.
+
+The default `{:genserver, server}` form preserves the legacy process-backend
+message contract. Use `{:genserver, server, session: true}` when the backend
+needs authenticated session context in each call.
 
 This is useful when:
 
@@ -419,7 +423,7 @@ Then point `Sftpd` at the registered process:
 ```elixir
 Sftpd.start_server(
   port: 2222,
-  backend: {:genserver, MyApp.SftpBackend},
+  backend: {:genserver, MyApp.SftpBackend, session: true},
   auth: {:passwords, [{"user", "pass"}]},
   system_dir: "ssh_keys"
 )
@@ -435,7 +439,7 @@ file. Do not use it as the synchronous storage acknowledgement path unless the
 client can safely treat a queued message as durable storage.
 
 ```elixir
-def handle_call({:write_file, path, content}, _from, state) do
+def handle_call({:write_file, path, content, _session}, _from, state) do
   :ok = MyStorage.put(path, content)
 
   Broadway.producer_names(MyApp.SftpIngestBroadway)

@@ -9,11 +9,11 @@ defmodule Sftpd.Backends.Memory do
 
   ## Usage
 
-      {:ok, pid} = Sftpd.start_server(
+      {:ok, ref} = Sftpd.start_server(
         port: 2222,
         backend: Sftpd.Backends.Memory,
         backend_opts: [],
-        users: [{"user", "pass"}],
+        auth: {:passwords, [{"user", "pass"}]},
         system_dir: "path/to/ssh_keys"
       )
 

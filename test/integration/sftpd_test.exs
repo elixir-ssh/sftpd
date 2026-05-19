@@ -367,6 +367,100 @@ defmodule SftpdIntegrationTest do
     end
   end
 
+  describe "SFTP Server - Public Key Auth" do
+    test "sftp -i can upload list and download with memory backend", %{system_dir: system_dir} do
+      sftp = System.find_executable("sftp") || flunk("sftp executable not found")
+
+      ssh_keygen =
+        System.find_executable("ssh-keygen") || flunk("ssh-keygen executable not found")
+
+      tmp_dir = Path.join(System.tmp_dir!(), "sftpd_pubkey_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp_dir)
+
+      key_path = Path.join(tmp_dir, "id_ed25519")
+      batch_path = Path.join(tmp_dir, "batch")
+      upload_path = Path.join(tmp_dir, "upload.txt")
+      download_path = Path.join(tmp_dir, "download.txt")
+
+      assert {"", 0} =
+               System.cmd(ssh_keygen, [
+                 "-q",
+                 "-t",
+                 "ed25519",
+                 "-f",
+                 key_path,
+                 "-N",
+                 ""
+               ])
+
+      {:ok, public_key} =
+        key_path
+        |> then(&File.read!(&1 <> ".pub"))
+        |> Sftpd.Auth.decode_authorized_key()
+
+      fingerprint = Sftpd.Auth.fingerprint(public_key)
+      File.write!(upload_path, "public key upload")
+
+      File.write!(batch_path, """
+      put #{upload_path} uploaded.txt
+      ls
+      get uploaded.txt #{download_path}
+      rm uploaded.txt
+      """)
+
+      {:ok, ref} =
+        Sftpd.start_server(
+          port: @port,
+          backend: Sftpd.Backends.Memory,
+          backend_opts: [],
+          auth: {SftpdIntegrationTest.PublicKeyAuth, [fingerprint: fingerprint]},
+          system_dir: system_dir
+        )
+
+      on_exit(fn ->
+        Sftpd.stop_server(ref)
+        File.rm_rf(tmp_dir)
+      end)
+
+      {output, status} =
+        System.cmd(sftp, [
+          "-b",
+          batch_path,
+          "-i",
+          key_path,
+          "-P",
+          Integer.to_string(@port),
+          "-o",
+          "StrictHostKeyChecking=no",
+          "-o",
+          "UserKnownHostsFile=/dev/null",
+          "key-user@127.0.0.1"
+        ])
+
+      assert status == 0, output
+      assert output =~ "uploaded.txt"
+      assert File.read!(download_path) == "public key upload"
+    end
+  end
+
+  defmodule PublicKeyAuth do
+    @behaviour Sftpd.Auth
+
+    @impl true
+    def authenticate_password(_username, _password, _peer, _opts), do: :error
+
+    @impl true
+    def authorize_public_key("key-user", public_key, opts) do
+      if Sftpd.Auth.fingerprint(public_key) == Keyword.fetch!(opts, :fingerprint) do
+        {:ok, %{username: "key-user"}}
+      else
+        :error
+      end
+    end
+
+    def authorize_public_key(_username, _public_key, _opts), do: :error
+  end
+
   defp start_ssh_client do
     # connect client
     assert {:ok, client_connection_ref} = :ssh.connect(:localhost, @port, @client_opts)
@@ -383,7 +477,7 @@ defmodule SftpdIntegrationTest do
            port: @port,
            backend: Sftpd.Backends.S3,
            backend_opts: [bucket: Application.fetch_env!(:sftpd, :bucket)],
-           users: [{"user", "password"}],
+           auth: {:passwords, [{"user", "password"}]},
            system_dir: system_dir
          ) do
       {:ok, ref} ->

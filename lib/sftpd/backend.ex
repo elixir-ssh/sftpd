@@ -47,7 +47,7 @@ defmodule Sftpd.Backend do
         ...
       )
 
-  The process must handle these calls:
+  By default, the process receives the legacy message shapes:
 
       def handle_call({:list_dir, path}, _from, state)
       def handle_call({:file_info, path}, _from, state)
@@ -57,6 +57,18 @@ defmodule Sftpd.Backend do
       def handle_call({:rename, src, dst}, _from, state)
       def handle_call({:read_file, path}, _from, state)
       def handle_call({:write_file, path, content}, _from, state)
+
+  Opt in to authenticated session context with `{:genserver, server, session:
+  true}`. Session-aware processes must handle:
+
+      def handle_call({:list_dir, path, session}, _from, state)
+      def handle_call({:file_info, path, session}, _from, state)
+      def handle_call({:make_dir, path, session}, _from, state)
+      def handle_call({:del_dir, path, session}, _from, state)
+      def handle_call({:delete, path, session}, _from, state)
+      def handle_call({:rename, src, dst, session}, _from, state)
+      def handle_call({:read_file, path, session}, _from, state)
+      def handle_call({:write_file, path, content, session}, _from, state)
 
   Each should reply with the same format as the behaviour callbacks.
 
@@ -85,6 +97,9 @@ defmodule Sftpd.Backend do
   @typedoc "Backend state, returned from init/1 and threaded through all calls"
   @type state :: term()
 
+  @typedoc "Authenticated SSH session context returned by `Sftpd.Auth` callbacks"
+  @type session :: map()
+
   @typedoc "SFTP path as charlist"
   @type path :: charlist()
 
@@ -111,6 +126,7 @@ defmodule Sftpd.Backend do
   Returns a list of filenames as charlists. Must include `.` and `..` entries.
   """
   @callback list_dir(path(), state()) :: {:ok, [charlist()]} | {:error, atom()}
+  @callback list_dir(path(), session(), state()) :: {:ok, [charlist()]} | {:error, atom()}
 
   @doc """
   Get file or directory information.
@@ -119,26 +135,31 @@ defmodule Sftpd.Backend do
   `Sftpd.Backend.directory_info/0` helpers to construct these.
   """
   @callback file_info(path(), state()) :: {:ok, file_info()} | {:error, atom()}
+  @callback file_info(path(), session(), state()) :: {:ok, file_info()} | {:error, atom()}
 
   @doc """
   Create a directory.
   """
   @callback make_dir(path(), state()) :: :ok | {:error, atom()}
+  @callback make_dir(path(), session(), state()) :: :ok | {:error, atom()}
 
   @doc """
   Delete an empty directory.
   """
   @callback del_dir(path(), state()) :: :ok | {:error, atom()}
+  @callback del_dir(path(), session(), state()) :: :ok | {:error, atom()}
 
   @doc """
   Delete a file.
   """
   @callback delete(path(), state()) :: :ok | {:error, atom()}
+  @callback delete(path(), session(), state()) :: :ok | {:error, atom()}
 
   @doc """
   Rename/move a file or directory.
   """
   @callback rename(src :: path(), dst :: path(), state()) :: :ok | {:error, atom()}
+  @callback rename(src :: path(), dst :: path(), session(), state()) :: :ok | {:error, atom()}
 
   @doc """
   Read the entire contents of a file.
@@ -147,11 +168,13 @@ defmodule Sftpd.Backend do
   and using the `read_file_range/4` optional callback.
   """
   @callback read_file(path(), state()) :: {:ok, binary()} | {:error, atom()}
+  @callback read_file(path(), session(), state()) :: {:ok, binary()} | {:error, atom()}
 
   @doc """
   Write content to a file, creating or overwriting it.
   """
   @callback write_file(path(), content :: binary(), state()) :: :ok | {:error, atom()}
+  @callback write_file(path(), content :: binary(), session(), state()) :: :ok | {:error, atom()}
 
   @doc """
   Read a byte range from a file.
@@ -161,6 +184,14 @@ defmodule Sftpd.Backend do
   """
   @callback read_file_range(path(), offset :: non_neg_integer(), len :: pos_integer(), state()) ::
               {:ok, binary()} | :eof | {:error, atom()}
+  @callback read_file_range(
+              path(),
+              offset :: non_neg_integer(),
+              len :: pos_integer(),
+              session(),
+              state()
+            ) ::
+              {:ok, binary()} | :eof | {:error, atom()}
 
   @doc """
   Begin a streaming write operation.
@@ -168,28 +199,52 @@ defmodule Sftpd.Backend do
   The returned writer handle is passed back to subsequent streaming write callbacks.
   """
   @callback begin_write(path(), state()) :: {:ok, writer_handle()} | {:error, atom()}
+  @callback begin_write(path(), session(), state()) :: {:ok, writer_handle()} | {:error, atom()}
 
   @doc """
   Append a chunk to a streaming write operation at the given offset.
   """
   @callback write_chunk(writer_handle(), offset :: non_neg_integer(), iodata(), state()) ::
               {:ok, writer_handle()} | {:error, atom()}
+  @callback write_chunk(
+              writer_handle(),
+              offset :: non_neg_integer(),
+              iodata(),
+              session(),
+              state()
+            ) ::
+              {:ok, writer_handle()} | {:error, atom()}
 
   @doc """
   Finalize a streaming write operation.
   """
   @callback finish_write(writer_handle(), state()) :: :ok | {:error, atom()}
+  @callback finish_write(writer_handle(), session(), state()) :: :ok | {:error, atom()}
 
   @doc """
   Abort a streaming write operation.
   """
   @callback abort_write(writer_handle(), state()) :: :ok
+  @callback abort_write(writer_handle(), session(), state()) :: :ok
 
-  @optional_callbacks read_file_range: 4,
+  @optional_callbacks list_dir: 3,
+                      file_info: 3,
+                      make_dir: 3,
+                      del_dir: 3,
+                      delete: 3,
+                      rename: 4,
+                      read_file: 3,
+                      write_file: 4,
+                      read_file_range: 4,
+                      read_file_range: 5,
                       begin_write: 2,
+                      begin_write: 3,
                       write_chunk: 4,
+                      write_chunk: 5,
                       finish_write: 2,
-                      abort_write: 2
+                      finish_write: 3,
+                      abort_write: 2,
+                      abort_write: 3
 
   # Helper functions for building file_info tuples
 
@@ -288,12 +343,15 @@ defmodule Sftpd.Backend do
 
   Process-based backends use the legacy callback contract only.
   """
-  @spec supports_callback?(module() | {:genserver, GenServer.server()}, atom(), arity()) ::
-          boolean()
+  @type genserver_backend ::
+          {:genserver, GenServer.server()} | {:genserver, GenServer.server(), keyword()}
+
+  @spec supports_callback?(module() | genserver_backend(), atom(), arity()) :: boolean()
   def supports_callback?({:genserver, _server}, _function, _arity), do: false
+  def supports_callback?({:genserver, _server, _opts}, _function, _arity), do: false
 
   def supports_callback?(module, function, arity) when is_atom(module) do
-    function_exported?(module, function, arity)
+    exports?(module, function, arity) or exports?(module, function, arity + 1)
   end
 
   # Backend dispatch helpers
@@ -305,7 +363,63 @@ defmodule Sftpd.Backend do
     GenServer.call(server, List.to_tuple([operation | call_args]))
   end
 
+  def call({:genserver, server, _opts}, operation, args) do
+    call({:genserver, server}, operation, args)
+  end
+
   def call(module, operation, args) when is_atom(module) do
     apply(module, operation, args)
+  end
+
+  @doc false
+  def call({:genserver, server}, operation, args, session) do
+    call({:genserver, server}, operation, args, session, 5_000)
+  end
+
+  def call({:genserver, server, opts}, operation, args, session) do
+    call({:genserver, server, opts}, operation, args, session, 5_000)
+  end
+
+  def call(module, operation, args, session) when is_atom(module) do
+    call(module, operation, args, session, 5_000)
+  end
+
+  @doc false
+  def call({:genserver, server}, operation, args, _session, timeout) do
+    call_args = List.delete_at(args, -1)
+    GenServer.call(server, List.to_tuple([operation | call_args]), timeout)
+  end
+
+  def call({:genserver, server, opts}, operation, args, session, timeout) do
+    if Keyword.get(opts, :session, false) do
+      call_args = List.delete_at(args, -1)
+      GenServer.call(server, List.to_tuple([operation | call_args ++ [session]]), timeout)
+    else
+      call({:genserver, server}, operation, args, session, timeout)
+    end
+  end
+
+  def call(module, operation, args, session, _timeout) when is_atom(module) do
+    session_aware_args = insert_session_before_backend_state(args, session)
+
+    if exports?(module, operation, length(session_aware_args)) do
+      apply(module, operation, session_aware_args)
+    else
+      apply(module, operation, args)
+    end
+  end
+
+  defp insert_session_before_backend_state(args, session) do
+    case Enum.split(args, -1) do
+      {call_args, [backend_state]} -> call_args ++ [session, backend_state]
+      {call_args, []} -> call_args ++ [session]
+    end
+  end
+
+  defp exports?(module, function, arity) do
+    case Code.ensure_loaded(module) do
+      {:module, ^module} -> function_exported?(module, function, arity)
+      {:error, _reason} -> false
+    end
   end
 end
