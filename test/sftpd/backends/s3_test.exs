@@ -157,9 +157,9 @@ defmodule Sftpd.Backends.S3Test do
       assert listing == [~c".", ~c"..", ~c"file1.txt", ~c"nested"]
     end
 
-    test "list_dir handles S3 errors gracefully", %{state: state} do
+    test "list_dir propagates S3 errors", %{state: state} do
       expect(MockExAws, :request, fn _op -> {:error, :timeout} end)
-      assert {:ok, [~c".", ~c".."]} = S3.list_dir(~c"/", state)
+      assert {:error, :eio} = S3.list_dir(~c"/", state)
     end
   end
 

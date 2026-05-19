@@ -73,7 +73,7 @@ defmodule Sftpd.Backends.S3 do
 
       {:error, reason} ->
         Logger.warning("S3 list_dir failed for #{inspect(path)}: #{inspect(reason)}")
-        {:ok, [~c".", ~c".."]}
+        {:error, reason}
     end
   end
 
