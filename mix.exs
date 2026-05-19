@@ -1,8 +1,8 @@
 defmodule Sftpd.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
-  @source_url "https://github.com/elixir-ssh/sftp"
+  @version "0.1.0"
+  @source_url "https://github.com/elixir-ssh/sftpd"
 
   def project do
     [
@@ -65,6 +65,7 @@ defmodule Sftpd.MixProject do
   defp package do
     [
       maintainers: ["Michael Christensen"],
+      organization: "elixir_ssh",
       licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url
@@ -88,8 +89,7 @@ defmodule Sftpd.MixProject do
       groups_for_modules: [
         Core: [Sftpd, Sftpd.Backend, Sftpd.Telemetry],
         Backends: [Sftpd.Backends.S3, Sftpd.Backends.Memory],
-        Internal: [Sftpd.FileHandler, Sftpd.IODevice],
-        Legacy: [SftpdS3]
+        Internal: [Sftpd.FileHandler, Sftpd.IODevice]
       ]
     ]
   end

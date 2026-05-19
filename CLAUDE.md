@@ -12,7 +12,6 @@ Sftpd is an Elixir library that provides a pluggable SFTP server with support fo
 - `lib/sftpd/io_device.ex` - GenServer managing file handles for read/write operations
 - `lib/sftpd/backends/s3.ex` - S3 storage backend
 - `lib/sftpd/backends/memory.ex` - In-memory backend for testing
-- `lib/sftpd_s3.ex` - Legacy wrapper (deprecated)
 
 ## Development
 
@@ -30,13 +29,13 @@ Sftpd is an Elixir library that provides a pluggable SFTP server with support fo
 
 ```bash
 # Start LocalStack first
-docker-compose up -d
+docker compose up -d
 
 # Run tests
 mix test
 ```
 
-Tests use LocalStack as the S3 backend. The bucket `sftpd-s3-test-bucket` is used for integration tests.
+Tests use LocalStack as the S3 backend. The bucket `sftpd-test-bucket` is used for integration tests.
 
 ### Manual Testing
 

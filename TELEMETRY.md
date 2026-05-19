@@ -14,7 +14,7 @@ If your application wants to attach handlers and does not already depend on
 def deps do
   [
     {:telemetry, ">= 0.4.3 and < 2.0.0"},
-    {:sftpd, "~> 0.2.0"}
+    {:sftpd, "~> 0.1.0"}
   ]
 end
 ```

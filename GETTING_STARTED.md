@@ -16,7 +16,7 @@ The current verified minimum is Elixir 1.14.5 on OTP 26.
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.2.0"}
+    {:sftpd, "~> 0.1.0"}
   ]
 end
 ```
@@ -137,7 +137,7 @@ does not already depend on `:telemetry`, add it explicitly:
 def deps do
   [
     {:telemetry, ">= 0.4.3 and < 2.0.0"},
-    {:sftpd, "~> 0.2.0"}
+    {:sftpd, "~> 0.1.0"}
   ]
 end
 ```

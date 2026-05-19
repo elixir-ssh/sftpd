@@ -3,7 +3,7 @@ import Config
 # S3 backend configuration (default)
 config :sftpd,
   backend: Sftpd.Backends.S3,
-  backend_opts: [bucket: "sftpd-s3-dev-bucket"]
+  backend_opts: [bucket: "sftpd-dev-bucket"]
 
 # ExAws configuration for AWS S3
 # config :ex_aws,

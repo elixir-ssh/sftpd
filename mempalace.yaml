@@ -1,4 +1,4 @@
-wing: sftpd_s3
+wing: sftpd
 rooms:
 - name: s3_backend
   description: S3 object mapping, prefix handling, delimiter listings, range reads, multipart streaming writes, and ExAws error mapping.
@@ -29,12 +29,11 @@ rooms:
   - normalize_path
   - memory
 - name: public_api
-  description: Public Sftpd API, server startup/shutdown options, legacy compatibility surface, and Hex/docs metadata.
+  description: Public Sftpd API, server startup/shutdown options, and Hex/docs metadata.
   keywords:
   - start_server
   - stop_server
   - public-api
-  - legacy
   - hex
 - name: configuration_release
   description: Mix project metadata, optional dependencies, environment config, release docs, Docker setup, and host-key guidance.

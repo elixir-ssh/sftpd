@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== SFTP-S3 Integration Test ==="
+echo "=== SFTPD Integration Test ==="
 echo ""
 
 AWS_ENDPOINT="http://localhost:4566"
-BUCKET="sftpd-s3-test-bucket"
+BUCKET="sftpd-test-bucket"
 
 # Colors
 GREEN='\033[0;32m'

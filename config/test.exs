@@ -21,4 +21,4 @@ config :ex_aws, :s3,
 
 # S3 backend configuration for tests
 config :sftpd,
-  bucket: "sftpd-s3-test-bucket"
+  bucket: "sftpd-test-bucket"

@@ -1,4 +1,4 @@
-# SFTP-S3 Testing Guide
+# Sftpd Testing Guide
 
 ## Quick Test
 
@@ -36,7 +36,14 @@ Note: This requires the `sftp` command-line tool to be installed.
 1. Start the SFTP server:
 ```elixir
 iex -S mix
-iex> SftpdS3.start_server(2222)
+iex> system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+iex> Sftpd.start_server(
+...>   port: 2222,
+...>   backend: Sftpd.Backends.S3,
+...>   backend_opts: [bucket: "sftpd-test-bucket"],
+...>   users: [{"user", "password"}],
+...>   system_dir: system_dir
+...> )
 ```
 
 2. In another terminal, connect with an SFTP client:
@@ -63,7 +70,7 @@ sftp> quit
 The tests use a local S3-compatible service (configured in `config/test.exs`).
 
 Default settings:
-- Bucket: `sftpd-s3-test-bucket`
+- Bucket: `sftpd-test-bucket`
 - SFTP Port: `2222` (or `2223` for manual script)
 - Username: `user`
 - Password: `password`

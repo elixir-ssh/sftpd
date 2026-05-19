@@ -24,7 +24,7 @@ is pinned in `.tool-versions`.
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.2.0"}
+    {:sftpd, "~> 0.1.0"}
   ]
 end
 ```
