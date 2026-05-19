@@ -7,8 +7,8 @@ then shows how to switch to S3.
 
 This guide uses the current pinned development environment:
 
-- Erlang/OTP 28.5
-- Elixir 1.19.5 on OTP 28
+- Erlang/OTP 29.0
+- Elixir 1.20.0-rc.5 on OTP 29
 
 The package itself still declares an older minimum Elixir version in `mix.exs`.
 The current verified minimum is Elixir 1.14.5 on OTP 26.

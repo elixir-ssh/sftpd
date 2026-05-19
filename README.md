@@ -15,8 +15,8 @@ Version notes for this package:
 
 - verified minimum Elixir: `~> 1.14`
 - verified minimum OTP for CI: `26`
-- current pinned development environment: Erlang/OTP 28.5
-- current pinned development environment: Elixir 1.19.5 on OTP 28
+- current pinned development environment: Erlang/OTP 29.0
+- current pinned development environment: Elixir 1.20.0-rc.5 on OTP 29
 
 The package requirement is declared in `mix.exs`. The development environment
 is pinned in `.tool-versions`.
