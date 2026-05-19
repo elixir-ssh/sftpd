@@ -2,14 +2,15 @@
 
 ## Quick Test
 
-Run the automated test suite:
+Run the default automated test suite. Integration tests are excluded by default
+so this does not require MinIO:
 ```bash
 mix test
 ```
 
 Run the non-integration suite without starting MinIO:
 ```bash
-mix test --exclude integration --exclude consumer_project
+mix test --exclude consumer_project
 ```
 
 Run the consumer compatibility checks:
