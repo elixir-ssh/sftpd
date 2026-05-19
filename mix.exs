@@ -89,8 +89,7 @@ defmodule Sftpd.MixProject do
       groups_for_modules: [
         Core: [Sftpd, Sftpd.Backend, Sftpd.Telemetry],
         Backends: [Sftpd.Backends.S3, Sftpd.Backends.Memory],
-        Internal: [Sftpd.FileHandler, Sftpd.IODevice],
-        Legacy: [SftpdS3]
+        Internal: [Sftpd.FileHandler, Sftpd.IODevice]
       ]
     ]
   end
