@@ -1,8 +1,8 @@
 defmodule Sftpd.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
-  @source_url "https://github.com/elixir-ssh/sftpd-s3"
+  @version "0.1.0"
+  @source_url "https://github.com/elixir-ssh/sftpd"
 
   def project do
     [
@@ -15,7 +15,7 @@ defmodule Sftpd.MixProject do
       aliases: aliases(),
 
       # Hex
-      description: "Pluggable SFTP server with support for S3 and custom backends",
+      description: "Pluggable SFTP server with memory, custom, and optional S3 backends",
       package: package(),
 
       # Docs
@@ -40,10 +40,10 @@ defmodule Sftpd.MixProject do
       {:ex_aws, "~> 2.0", optional: true},
       {:ex_aws_s3, "~> 2.0", optional: true},
       {:hackney, "~> 1.9", optional: true},
-      {:sweet_xml, "~> 0.6", optional: true},
+      {:sweet_xml, "~> 0.7", optional: true},
       {:jason, "~> 1.3", optional: true},
       {:configparser_ex, "~> 4.0", optional: true},
-      {:telemetry, ">= 0.4.3 and < 2.0.0", optional: true},
+      {:telemetry, ">= 0.4.3 and < 2.0.0"},
 
       # Dev/test dependencies
       {:dialyxir, "~> 1.1", only: [:dev, :test], runtime: false},
@@ -65,6 +65,7 @@ defmodule Sftpd.MixProject do
   defp package do
     [
       maintainers: ["Michael Christensen"],
+      organization: "elixir_ssh",
       licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url
@@ -88,8 +89,7 @@ defmodule Sftpd.MixProject do
       groups_for_modules: [
         Core: [Sftpd, Sftpd.Backend, Sftpd.Telemetry],
         Backends: [Sftpd.Backends.S3, Sftpd.Backends.Memory],
-        Internal: [Sftpd.FileHandler, Sftpd.IODevice],
-        Legacy: [SftpdS3]
+        Internal: [Sftpd.FileHandler, Sftpd.IODevice]
       ]
     ]
   end

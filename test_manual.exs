@@ -1,10 +1,10 @@
-# Manual test script for SFTP-S3 functionality
-# Run with: mix run test_manual.exs
-# Or use: ./test_sftp.sh (which ensures LocalStack is running)
+# Manual test script for Sftpd functionality
+# Run with: MIX_ENV=test mix run test_manual.exs
+# Or use: ./test_sftp.sh (which ensures MinIO is running)
 
-defmodule SftpManualTest do
+defmodule SftpdManualTest do
   @port 2223
-  @bucket "sftpd-s3-test-bucket"
+  @bucket "sftpd-test-bucket"
   @test_content "Hello from SFTP! Test content: #{DateTime.utc_now()}"
 
   @client_opts [
@@ -14,7 +14,7 @@ defmodule SftpManualTest do
   ]
 
   def run do
-    IO.puts("\n=== SFTP-S3 Manual Test ===\n")
+    IO.puts("\n=== Sftpd Manual Test ===\n")
 
     # Ensure S3 bucket exists
     IO.puts("Setting up S3 bucket...")
@@ -23,7 +23,17 @@ defmodule SftpManualTest do
 
     # Start SFTP server
     IO.puts("Starting SFTP server on port #{@port}...")
-    {:ok, ref} = SftpdS3.start_server(@port)
+    system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+    {:ok, ref} =
+      Sftpd.start_server(
+        port: @port,
+        backend: Sftpd.Backends.S3,
+        backend_opts: [bucket: @bucket],
+        users: [{"user", "password"}],
+        system_dir: system_dir
+      )
+
     IO.puts("✓ Server started\n")
 
     # Give server time to initialize
@@ -33,7 +43,7 @@ defmodule SftpManualTest do
       run_tests()
     after
       IO.puts("\nCleaning up...")
-      :ssh.stop_daemon(ref)
+      Sftpd.stop_server(ref)
       IO.puts("✓ Server stopped")
     end
   end
@@ -105,4 +115,4 @@ defmodule SftpManualTest do
 end
 
 # Run the tests
-SftpManualTest.run()
+SftpdManualTest.run()

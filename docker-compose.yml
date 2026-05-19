@@ -1,11 +1,9 @@
-version: "3"
-
 services:
-  localstack:
-    image: localstack/localstack
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data
     environment:
-      AWS_DEFAULT_REGION: "us-west-2"
-      SERVICES: "s3"
-      EDGE_PORT: "4566"
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "4566:4566"
+      - "9000:9000"

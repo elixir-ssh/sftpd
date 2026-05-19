@@ -7,8 +7,8 @@ then shows how to switch to S3.
 
 This guide uses the current pinned development environment:
 
-- Erlang/OTP 28.5
-- Elixir 1.19.5 on OTP 28
+- Erlang/OTP 29.0
+- Elixir 1.20.0-rc.5 on OTP 29
 
 The package itself still declares an older minimum Elixir version in `mix.exs`.
 The current verified minimum is Elixir 1.14.5 on OTP 26.
@@ -16,7 +16,7 @@ The current verified minimum is Elixir 1.14.5 on OTP 26.
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.2.0"}
+    {:sftpd, "~> 0.1.0"}
   ]
 end
 ```
@@ -67,6 +67,13 @@ Important options:
 - `:max_sessions` limits concurrent client sessions
 - `:close_timeout` bounds close-time finalization time
 
+OTP 29 no longer enables the SFTP subsystem implicitly for SSH daemons.
+`Sftpd.start_server/1` supplies the required `:subsystems` option internally,
+so the setup above works on both OTP 29 and older supported OTP releases.
+
+OTP 29 also disables remote shell and exec services by default. `Sftpd` is an
+SFTP-only wrapper and does not enable those services.
+
 ## 4. Connect with an SFTP client
 
 From another terminal:
@@ -95,6 +102,27 @@ Because the memory backend is ephemeral, data disappears when the server stops.
 ## 6. Switch to the S3 backend
 
 To persist files in S3-compatible storage, use `Sftpd.Backends.S3`:
+
+The S3 backend is optional. The memory backend and custom backends work with
+only `{:sftpd, "~> 0.1.0"}`. Add the S3 dependencies before using
+`Sftpd.Backends.S3`:
+
+```elixir
+def deps do
+  [
+    {:sftpd, "~> 0.1.0"},
+    {:ex_aws, "~> 2.0"},
+    {:ex_aws_s3, "~> 2.0"},
+    {:hackney, "~> 1.9"},
+    {:sweet_xml, "~> 0.7"},
+    {:jason, "~> 1.3"},
+    {:configparser_ex, "~> 4.0"}
+  ]
+end
+```
+
+Without those dependencies, `Sftpd.Backends.S3.init/1` returns
+`{:error, :missing_s3_dependency}`.
 
 ```elixir
 {:ok, ref} =
@@ -125,22 +153,13 @@ config :ex_aws,
 config :ex_aws, :s3,
   scheme: "http://",
   host: "localhost",
-  port: 4566
+  port: 9000
 ```
 
-## 7. Add telemetry if you want instrumentation
+## 7. Add telemetry handlers if you want instrumentation
 
-Telemetry support is optional. If your application wants to attach handlers and
-does not already depend on `:telemetry`, add it explicitly:
-
-```elixir
-def deps do
-  [
-    {:telemetry, ">= 0.4.3 and < 2.0.0"},
-    {:sftpd, "~> 0.2.0"}
-  ]
-end
-```
+`Sftpd` depends on `:telemetry` directly. Applications only need to attach
+handlers for the events they want to consume.
 
 See `TELEMETRY.md` for the full event reference.
 
@@ -154,7 +173,10 @@ If neither built-in backend fits your storage model:
 
 ## Notes and Caveats
 
-- `Sftpd` wraps Erlang's `:ssh_sftpd` implementation
+- `Sftpd` wraps Erlang's `:ssh_sftpd` implementation and explicitly enables
+  the SFTP subsystem required by OTP 29
+- OTP 29 disables SSH shell and exec services by default; `Sftpd` does not
+  expose or enable those services
 - OTP's stock SFTP server always reports close success to the client, even if
   final close-time backend flushing fails
 - backends should return POSIX-style error atoms such as `:enoent` and `:eio`

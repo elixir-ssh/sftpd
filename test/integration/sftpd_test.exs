@@ -1,4 +1,4 @@
-defmodule SftpdS3Test do
+defmodule SftpdIntegrationTest do
   use ExUnit.Case, async: false
 
   @moduletag :integration
@@ -12,6 +12,8 @@ defmodule SftpdS3Test do
   ]
 
   setup_all do
+    {:ok, _} = Application.ensure_all_started(:hackney)
+
     system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
 
     local_path =
@@ -377,10 +379,16 @@ defmodule SftpdS3Test do
   end
 
   defp start_ssh_server(system_dir) do
-    case SftpdS3.start_server(@port, system_dir: system_dir) do
+    case Sftpd.start_server(
+           port: @port,
+           backend: Sftpd.Backends.S3,
+           backend_opts: [bucket: Application.fetch_env!(:sftpd, :bucket)],
+           users: [{"user", "password"}],
+           system_dir: system_dir
+         ) do
       {:ok, ref} ->
         on_exit(fn ->
-          :ssh.stop_daemon(ref)
+          Sftpd.stop_server(ref)
         end)
 
         {:ok, ref}

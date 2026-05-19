@@ -1,13 +1,14 @@
 # Sftpd
 
-A pluggable SFTP server for Elixir with support for S3 and custom backends.
+A pluggable SFTP server for Elixir with memory, custom, and optional S3
+backends.
 
 `Sftpd` wraps Erlang's `:ssh_sftpd` subsystem and lets you plug storage behind
 it through a small backend behaviour. It ships with:
 
 - an in-memory backend for development and tests
-- an S3 backend with range reads and multipart streaming writes
-- optional telemetry hooks around server lifecycle and SFTP operations
+- an optional S3 backend with range reads and multipart streaming writes
+- telemetry hooks around server lifecycle and SFTP operations
 
 ## Installation
 
@@ -15,8 +16,8 @@ Version notes for this package:
 
 - verified minimum Elixir: `~> 1.14`
 - verified minimum OTP for CI: `26`
-- current pinned development environment: Erlang/OTP 28.5
-- current pinned development environment: Elixir 1.19.5 on OTP 28
+- current pinned development environment: Erlang/OTP 29.0
+- current pinned development environment: Elixir 1.20.0-rc.5 on OTP 29
 
 The package requirement is declared in `mix.exs`. The development environment
 is pinned in `.tool-versions`.
@@ -24,7 +25,7 @@ is pinned in `.tool-versions`.
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.2.0"}
+    {:sftpd, "~> 0.1.0"}
   ]
 end
 ```
@@ -58,7 +59,14 @@ end
 - `Sftpd.Backend` defines the storage contract
 - `Sftpd.Backends.Memory` is the fastest local setup path
 - `Sftpd.Backends.S3` is the built-in persistent backend
-- `Sftpd.Telemetry` documents the optional instrumentation surface
+- `Sftpd.Telemetry` documents the instrumentation surface
+
+## Erlang/OTP 29 Note
+
+OTP 29 no longer enables SFTP implicitly for SSH daemons and also disables
+shell and exec services by default. `Sftpd.start_server/1` already passes the
+required SFTP subsystem configuration, so applications using this package do
+not need to configure OTP SSH subsystems themselves.
 
 ## Backends
 
@@ -78,10 +86,30 @@ Sftpd.start_server(
 
 ### S3 Backend
 
-Stores files in Amazon S3 or S3-compatible storage (LocalStack, MinIO, etc.).
+Stores files in Amazon S3 or S3-compatible storage such as MinIO.
 The built-in S3 backend now uses range reads, paginated delimiter-based
 directory listings, and multipart streaming writes for better large-file
 performance.
+
+The S3 backend is optional. Core users can depend on `:sftpd` without ExAws.
+Applications that use `Sftpd.Backends.S3` must add the S3 dependency set:
+
+```elixir
+def deps do
+  [
+    {:sftpd, "~> 0.1.0"},
+    {:ex_aws, "~> 2.0"},
+    {:ex_aws_s3, "~> 2.0"},
+    {:hackney, "~> 1.9"},
+    {:sweet_xml, "~> 0.7"},
+    {:jason, "~> 1.3"},
+    {:configparser_ex, "~> 4.0"}
+  ]
+end
+```
+
+Without those dependencies, `Sftpd.Backends.S3.init/1` returns
+`{:error, :missing_s3_dependency}`.
 
 ```elixir
 Sftpd.start_server(
@@ -108,11 +136,11 @@ config :ex_aws,
   secret_access_key: "your-secret",
   region: "us-east-1"
 
-# For LocalStack
+# For MinIO
 config :ex_aws, :s3,
   scheme: "http://",
   host: "localhost",
-  port: 4566
+  port: 9000
 ```
 
 ### Optional Streaming Backend Callbacks
@@ -144,8 +172,8 @@ If you need to bound how long close-time finalization can block a session, pass
 ## Telemetry
 
 `Sftpd` emits `:telemetry` events for server lifecycle and SFTP operations.
-Telemetry support is optional: if the `:telemetry` module is unavailable at
-runtime, event emission is skipped and the SFTP server continues normally.
+The package depends on `:telemetry` directly, so applications can attach
+handlers without adding another dependency.
 
 ```elixir
 :telemetry.attach(

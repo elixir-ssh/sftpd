@@ -3,7 +3,7 @@ import Config
 # S3 backend configuration (default)
 config :sftpd,
   backend: Sftpd.Backends.S3,
-  backend_opts: [bucket: "sftpd-s3-dev-bucket"]
+  backend_opts: [bucket: "sftpd-dev-bucket"]
 
 # ExAws configuration for AWS S3
 # config :ex_aws,
@@ -13,20 +13,21 @@ config :sftpd,
 
 # --- Alternative configurations ---
 
-# LocalStack (local S3-compatible storage):
+# MinIO (local S3-compatible storage):
 #
 # config :sftpd,
 #   backend: Sftpd.Backends.S3,
 #   backend_opts: [bucket: "my-local-bucket"]
 #
 # config :ex_aws,
-#   access_key_id: "test",
-#   secret_access_key: "test"
+#   access_key_id: "minioadmin",
+#   secret_access_key: "minioadmin",
+#   region: "us-east-1"
 #
 # config :ex_aws, :s3,
 #   scheme: "http://",
 #   host: "localhost",
-#   port: 4566
+#   port: 9000
 
 # In-memory backend (no external dependencies):
 #
@@ -35,7 +36,7 @@ config :sftpd,
 #   backend_opts: []
 #
 # The Memory backend stores files in an Agent process and is useful for:
-# - Development without LocalStack/S3
+# - Development without local S3
 # - Testing without external dependencies
 # - Experimenting with the SFTP server
 #

@@ -1,45 +1,10 @@
 defmodule Sftpd.TelemetryTest do
   use ExUnit.Case, async: false
 
-  import ExUnit.CaptureLog
-
   alias Sftpd.Telemetry
   alias Sftpd.Test.TelemetryHelper
 
   describe "span/4" do
-    test "treats an unstarted telemetry app as unavailable" do
-      :ok = Application.stop(:telemetry)
-
-      on_exit(fn ->
-        {:ok, _} = Application.ensure_all_started(:telemetry)
-      end)
-
-      log =
-        capture_log(fn ->
-          assert :ok =
-                   Telemetry.execute([:sftpd, :test, :unstarted], %{duration: 1}, %{result: :ok})
-
-          assert :ok =
-                   Telemetry.span([:sftpd, :test, :unstarted], %{base: :metadata}, fn ->
-                     :ok
-                   end)
-
-          assert :ok =
-                   Telemetry.span(
-                     [:sftpd, :test, :unstarted],
-                     %{base: :metadata},
-                     fn -> :ok end,
-                     fn result, _duration ->
-                       send(self(), {:finalize_called, result})
-                       {%{duration: 1}, %{result: :ok}}
-                     end
-                   )
-        end)
-
-      assert log == ""
-      refute_received {:finalize_called, :ok}
-    end
-
     test "emits measurements and merged metadata for successful calls" do
       handler_id = TelemetryHelper.attach(self(), [[:sftpd, :test, :success]])
       on_exit(fn -> :telemetry.detach(handler_id) end)
