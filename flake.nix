@@ -33,7 +33,9 @@
               (lib.splitString "\n" (builtins.readFile ./.tool-versions))));
 
         erlangMajor = builtins.elemAt (lib.splitString "." toolVersions.erlang) 0;
-        elixirVersion = builtins.elemAt (lib.splitString "-otp-" toolVersions.elixir) 0;
+        elixirVersionParts = lib.splitString "-otp-" toolVersions.elixir;
+        elixirVersion = builtins.elemAt elixirVersionParts 0;
+        elixirOtpMajor = builtins.elemAt elixirVersionParts 1;
         elixirParts = lib.splitString "." elixirVersion;
         elixirMajorMinor = "${builtins.elemAt elixirParts 0}_${builtins.elemAt elixirParts 1}";
 
@@ -45,6 +47,7 @@
         elixir = let
           package = beamPackages."elixir_${elixirMajorMinor}";
         in
+          assert elixirOtpMajor == erlangMajor;
           assert package.version == elixirVersion; package;
         rebar3 = beamPackages.rebar3.overrideAttrs (old: {
           doCheck = false;
