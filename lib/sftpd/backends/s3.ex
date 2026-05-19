@@ -43,6 +43,7 @@ defmodule Sftpd.Backends.S3 do
   Requires the `:bucket` option. `:prefix` scopes all object keys under a
   prefix, and `:aws_client` can override the ExAws-compatible request module.
 
+  Returns `{:error, :missing_bucket}` when `:bucket` is not provided.
   Returns `{:error, :missing_s3_dependency}` when `ExAws.S3` is unavailable,
   which lets core-only applications compile and handle accidental S3
   configuration without adding ExAws.
@@ -50,11 +51,14 @@ defmodule Sftpd.Backends.S3 do
   @impl true
   @spec init(keyword()) :: {:ok, state()} | {:error, atom()}
   def init(opts) do
-    with :ok <- ensure_s3_available() do
-      bucket = Keyword.fetch!(opts, :bucket)
+    with {:ok, bucket} <- Keyword.fetch(opts, :bucket),
+         :ok <- ensure_s3_available() do
       prefix = Keyword.get(opts, :prefix, "")
       aws_client = Keyword.get(opts, :aws_client, ex_aws_module())
       {:ok, %{bucket: bucket, prefix: prefix, aws_client: aws_client}}
+    else
+      :error -> {:error, :missing_bucket}
+      {:error, reason} -> {:error, reason}
     end
   end
 

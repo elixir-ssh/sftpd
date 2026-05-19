@@ -50,7 +50,7 @@ defmodule Sftpd.Backends.S3Test do
 
   describe "init/1" do
     test "requires bucket option" do
-      assert_raise KeyError, fn -> S3.init([]) end
+      assert {:error, :missing_bucket} = S3.init([])
     end
 
     test "extracts configuration from options" do
