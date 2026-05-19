@@ -2,7 +2,7 @@ defmodule Sftpd.MixProject do
   use Mix.Project
 
   @version "0.2.0"
-  @source_url "https://github.com/elixir-ssh/sftpd-s3"
+  @source_url "https://github.com/elixir-ssh/sftp"
 
   def project do
     [
@@ -40,7 +40,7 @@ defmodule Sftpd.MixProject do
       {:ex_aws, "~> 2.0", optional: true},
       {:ex_aws_s3, "~> 2.0", optional: true},
       {:hackney, "~> 1.9", optional: true},
-      {:sweet_xml, "~> 0.6", optional: true},
+      {:sweet_xml, "~> 0.7", optional: true},
       {:jason, "~> 1.3", optional: true},
       {:configparser_ex, "~> 4.0", optional: true},
       {:telemetry, ">= 0.4.3 and < 2.0.0", optional: true},

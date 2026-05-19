@@ -367,7 +367,7 @@ defmodule Sftpd.Backends.S3 do
             take_pending_bytes(pending_chunks, bytes_to_take - chunk_size, [chunk | acc])
 
           true ->
-            <<part::binary-size(^bytes_to_take), rest::binary>> = chunk
+            {part, rest} = :erlang.split_binary(chunk, bytes_to_take)
             pending_chunks = :queue.in_r(rest, pending_chunks)
             {IO.iodata_to_binary(Enum.reverse([part | acc])), pending_chunks}
         end

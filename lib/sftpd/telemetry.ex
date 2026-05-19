@@ -93,7 +93,13 @@ defmodule Sftpd.Telemetry do
   defp default_finalize(_result, duration), do: {%{duration: duration}, %{}}
 
   defp telemetry_available? do
-    :ets.whereis(:telemetry_handler_table) != :undefined and
-      function_exported?(:telemetry, :execute, 3)
+    function_exported?(:telemetry, :execute, 3) and telemetry_started?()
+  end
+
+  defp telemetry_started? do
+    Enum.any?(Application.started_applications(), fn
+      {:telemetry, _description, _version} -> true
+      _app -> false
+    end)
   end
 end
