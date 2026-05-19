@@ -3,7 +3,7 @@ defmodule Sftpd.Backends.Memory do
   In-memory storage backend for testing and development.
 
   This backend stores all files in memory using an Agent. It's useful for:
-  - Testing without external dependencies (no S3/LocalStack needed)
+  - Testing without external dependencies (no S3-compatible service needed)
   - Development and experimentation
   - As a reference implementation for custom backends
 
@@ -27,6 +27,19 @@ defmodule Sftpd.Backends.Memory do
       }
 
   Directories are represented by `.keep` marker files (like S3).
+
+  ## Examples
+
+      iex> {:ok, state} = Sftpd.Backends.Memory.init(
+      ...>   files: %{"hello.txt" => %{content: "hi", mtime: ~N[2024-01-01 00:00:00]}}
+      ...> )
+      iex> Sftpd.Backends.Memory.list_dir(~c"/", state)
+      {:ok, [~c".", ~c"..", ~c"hello.txt"]}
+
+      iex> {:ok, state} = Sftpd.Backends.Memory.init([])
+      iex> :ok = Sftpd.Backends.Memory.write_file(~c"/notes.txt", "hello", state)
+      iex> Sftpd.Backends.Memory.read_file(~c"/notes.txt", state)
+      {:ok, "hello"}
 
   See the `Backends` and `Custom Backends` extras in HexDocs for how this
   backend fits into the wider package model.

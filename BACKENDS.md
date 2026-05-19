@@ -53,9 +53,20 @@ See `Sftpd.Backends.Memory` for API details.
 The S3 backend maps SFTP operations onto object storage and is intended for:
 
 - Amazon S3
-- LocalStack
 - MinIO
 - S3-compatible providers
+
+S3 support is optional. Applications that use this backend must also depend on:
+
+- `:ex_aws`
+- `:ex_aws_s3`
+- `:hackney`
+- `:sweet_xml`
+- `:jason`
+- `:configparser_ex`
+
+If those dependencies are not available, `Sftpd.Backends.S3.init/1` returns
+`{:error, :missing_s3_dependency}` instead of failing during compilation.
 
 Properties:
 

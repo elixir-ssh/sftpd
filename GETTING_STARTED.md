@@ -67,6 +67,13 @@ Important options:
 - `:max_sessions` limits concurrent client sessions
 - `:close_timeout` bounds close-time finalization time
 
+OTP 29 no longer enables the SFTP subsystem implicitly for SSH daemons.
+`Sftpd.start_server/1` supplies the required `:subsystems` option internally,
+so the setup above works on both OTP 29 and older supported OTP releases.
+
+OTP 29 also disables remote shell and exec services by default. `Sftpd` is an
+SFTP-only wrapper and does not enable those services.
+
 ## 4. Connect with an SFTP client
 
 From another terminal:
@@ -96,7 +103,9 @@ Because the memory backend is ephemeral, data disappears when the server stops.
 
 To persist files in S3-compatible storage, use `Sftpd.Backends.S3`:
 
-The S3 backend is optional. Add the S3 dependencies before using it:
+The S3 backend is optional. The memory backend and custom backends work with
+only `{:sftpd, "~> 0.1.0"}`. Add the S3 dependencies before using
+`Sftpd.Backends.S3`:
 
 ```elixir
 def deps do
@@ -111,6 +120,9 @@ def deps do
   ]
 end
 ```
+
+Without those dependencies, `Sftpd.Backends.S3.init/1` returns
+`{:error, :missing_s3_dependency}`.
 
 ```elixir
 {:ok, ref} =
@@ -141,7 +153,7 @@ config :ex_aws,
 config :ex_aws, :s3,
   scheme: "http://",
   host: "localhost",
-  port: 4566
+  port: 9000
 ```
 
 ## 7. Add telemetry handlers if you want instrumentation
@@ -161,7 +173,10 @@ If neither built-in backend fits your storage model:
 
 ## Notes and Caveats
 
-- `Sftpd` wraps Erlang's `:ssh_sftpd` implementation
+- `Sftpd` wraps Erlang's `:ssh_sftpd` implementation and explicitly enables
+  the SFTP subsystem required by OTP 29
+- OTP 29 disables SSH shell and exec services by default; `Sftpd` does not
+  expose or enable those services
 - OTP's stock SFTP server always reports close success to the client, even if
   final close-time backend flushing fails
 - backends should return POSIX-style error atoms such as `:enoent` and `:eio`

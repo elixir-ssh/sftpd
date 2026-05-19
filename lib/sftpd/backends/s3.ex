@@ -5,6 +5,11 @@ defmodule Sftpd.Backends.S3 do
   This backend supports efficient directory listings and optional streaming read
   and write callbacks for large file transfers.
 
+  S3 support is optional at the package level. Applications that use this
+  backend must also depend on `:ex_aws`, `:ex_aws_s3`, `:hackney`,
+  `:sweet_xml`, `:jason`, and `:configparser_ex`. When those dependencies are
+  absent, `init/1` returns `{:error, :missing_s3_dependency}`.
+
   See the `Backends` extra in HexDocs for package-level backend guidance and
   `Telemetry` for the event reference emitted around S3-backed operations.
   """
@@ -32,10 +37,20 @@ defmodule Sftpd.Backends.S3 do
           uploaded_parts: [{pos_integer(), binary()}]
         }
 
+  @doc """
+  Initialize the S3 backend.
+
+  Requires the `:bucket` option. `:prefix` scopes all object keys under a
+  prefix, and `:aws_client` can override the ExAws-compatible request module.
+
+  Returns `{:error, :missing_s3_dependency}` when `ExAws.S3` is unavailable,
+  which lets core-only applications compile and handle accidental S3
+  configuration without adding ExAws.
+  """
   @impl true
   @spec init(keyword()) :: {:ok, state()} | {:error, atom()}
   def init(opts) do
-    with :ok <- ensure_s3_available() do
+    with :ok <- ensure_s3_available(Keyword.get(opts, :s3_module, s3_module())) do
       bucket = Keyword.fetch!(opts, :bucket)
       prefix = Keyword.get(opts, :prefix, "")
       aws_client = Keyword.get(opts, :aws_client, ex_aws_module())
@@ -519,8 +534,8 @@ defmodule Sftpd.Backends.S3 do
     client.request(op)
   end
 
-  defp ensure_s3_available do
-    if Code.ensure_loaded?(s3_module()) do
+  defp ensure_s3_available(module) do
+    if Code.ensure_loaded?(module) do
       :ok
     else
       {:error, :missing_s3_dependency}
@@ -557,6 +572,11 @@ defmodule Sftpd.Backends.S3 do
   Parse an HTTP date string (RFC 1123 format) into an Erlang datetime tuple.
 
   Returns the current time if parsing fails.
+
+  ## Examples
+
+      iex> Sftpd.Backends.S3.parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT")
+      {{1994, 11, 6}, {8, 49, 37}}
   """
   @spec parse_http_date(String.t()) :: :calendar.datetime()
   def parse_http_date(date_string) do

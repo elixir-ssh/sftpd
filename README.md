@@ -1,12 +1,13 @@
 # Sftpd
 
-A pluggable SFTP server for Elixir with support for S3 and custom backends.
+A pluggable SFTP server for Elixir with memory, custom, and optional S3
+backends.
 
 `Sftpd` wraps Erlang's `:ssh_sftpd` subsystem and lets you plug storage behind
 it through a small backend behaviour. It ships with:
 
 - an in-memory backend for development and tests
-- an S3 backend with range reads and multipart streaming writes
+- an optional S3 backend with range reads and multipart streaming writes
 - telemetry hooks around server lifecycle and SFTP operations
 
 ## Installation
@@ -60,6 +61,13 @@ end
 - `Sftpd.Backends.S3` is the built-in persistent backend
 - `Sftpd.Telemetry` documents the instrumentation surface
 
+## Erlang/OTP 29 Note
+
+OTP 29 no longer enables SFTP implicitly for SSH daemons and also disables
+shell and exec services by default. `Sftpd.start_server/1` already passes the
+required SFTP subsystem configuration, so applications using this package do
+not need to configure OTP SSH subsystems themselves.
+
 ## Backends
 
 ### Memory Backend
@@ -78,12 +86,13 @@ Sftpd.start_server(
 
 ### S3 Backend
 
-Stores files in Amazon S3 or S3-compatible storage (LocalStack, MinIO, etc.).
+Stores files in Amazon S3 or S3-compatible storage such as MinIO.
 The built-in S3 backend now uses range reads, paginated delimiter-based
 directory listings, and multipart streaming writes for better large-file
 performance.
 
-The S3 backend is optional. Add the S3 dependencies in applications that use it:
+The S3 backend is optional. Core users can depend on `:sftpd` without ExAws.
+Applications that use `Sftpd.Backends.S3` must add the S3 dependency set:
 
 ```elixir
 def deps do
@@ -98,6 +107,9 @@ def deps do
   ]
 end
 ```
+
+Without those dependencies, `Sftpd.Backends.S3.init/1` returns
+`{:error, :missing_s3_dependency}`.
 
 ```elixir
 Sftpd.start_server(
@@ -124,11 +136,11 @@ config :ex_aws,
   secret_access_key: "your-secret",
   region: "us-east-1"
 
-# For LocalStack
+# For MinIO
 config :ex_aws, :s3,
   scheme: "http://",
   host: "localhost",
-  port: 4566
+  port: 9000
 ```
 
 ### Optional Streaming Backend Callbacks

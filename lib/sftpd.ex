@@ -5,6 +5,14 @@ defmodule Sftpd do
   Sftpd wraps Erlang's `:ssh_sftpd` module and provides a clean API for
   starting SFTP servers with configurable storage backends.
 
+  OTP 29 no longer enables the SFTP subsystem implicitly when starting an SSH
+  daemon. `Sftpd.start_server/1` passes an explicit
+  `:ssh_sftpd.subsystem_spec/1` to `:ssh.daemon/2`, so callers do not need to
+  configure the OTP daemon subsystem list themselves.
+
+  OTP 29 also disables shell and exec services by default. `Sftpd` is an
+  SFTP-only wrapper and does not enable remote shell or exec channels.
+
   ## Quick Start
 
       # Start an SFTP server with S3 backend

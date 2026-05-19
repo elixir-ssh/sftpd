@@ -1,6 +1,6 @@
 # Manual test script for Sftpd functionality
 # Run with: mix run test_manual.exs
-# Or use: ./test_sftp.sh (which ensures LocalStack is running)
+# Or use: ./test_sftp.sh (which ensures MinIO is running)
 
 defmodule SftpdManualTest do
   @port 2223

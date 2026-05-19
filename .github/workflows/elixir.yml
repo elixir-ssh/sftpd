@@ -42,28 +42,23 @@ jobs:
 
       - name: Start MinIO
         run: |
-          docker run -d \
-            --name minio-min \
-            -p 9001:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          docker compose up -d minio
 
       - name: Wait for MinIO
         run: |
           for _ in $(seq 1 30); do
-            if curl -fsS http://localhost:9001/minio/health/live >/dev/null; then
+            if curl -fsS http://localhost:9000/minio/health/live >/dev/null; then
               exit 0
             fi
             sleep 1
           done
-          docker logs minio-min
+          docker compose logs minio
           exit 1
 
       - name: Run tests
-        run: mix test
+        run: mix test --exclude consumer_project
         env:
-          AWS_ENDPOINT_URL: http://localhost:9001
+          AWS_ENDPOINT_URL: http://localhost:9000
           AWS_ACCESS_KEY_ID: minioadmin
           AWS_SECRET_ACCESS_KEY: minioadmin
           AWS_REGION: us-east-1
@@ -78,8 +73,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.19"
-          otp-version: "28"
+          elixir-version: "1.20.0-rc.5"
+          otp-version: "29.0"
 
       - name: Restore dependencies cache
         uses: actions/cache@v4
@@ -107,12 +102,7 @@ jobs:
 
       - name: Start MinIO
         run: |
-          docker run -d \
-            --name minio \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          docker compose up -d minio
 
       - name: Wait for MinIO
         run: |
@@ -122,14 +112,14 @@ jobs:
             fi
             sleep 1
           done
-          docker logs minio
+          docker compose logs minio
           exit 1
 
       - name: Check formatting
         run: mix format --check-formatted
 
       - name: Run tests (non-integration)
-        run: mix test --cover --exclude integration
+        run: mix test --cover --exclude integration --exclude consumer_project
         env:
           AWS_ENDPOINT_URL: http://localhost:9000
           AWS_ACCESS_KEY_ID: minioadmin
@@ -137,7 +127,7 @@ jobs:
           AWS_REGION: us-east-1
 
       - name: Run tests (with integration)
-        run: mix test
+        run: mix test --exclude consumer_project
         env:
           AWS_ENDPOINT_URL: http://localhost:9000
           AWS_ACCESS_KEY_ID: minioadmin
@@ -151,3 +141,35 @@ jobs:
           AWS_ACCESS_KEY_ID: minioadmin
           AWS_SECRET_ACCESS_KEY: minioadmin
           AWS_REGION: us-east-1
+
+      - name: Build docs
+        run: mix docs --warnings-as-errors
+
+      - name: Build Hex package
+        run: mix hex.build
+
+  consumer-compatibility:
+    name: Consumer compatibility
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.0-rc.5"
+          otp-version: "29.0"
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: ${{ runner.os }}-mix-consumer-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-consumer-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Verify core-only and S3-enabled consumers
+        run: mix test --only consumer_project

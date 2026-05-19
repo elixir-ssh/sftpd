@@ -12,6 +12,8 @@ defmodule SftpdIntegrationTest do
   ]
 
   setup_all do
+    {:ok, _} = Application.ensure_all_started(:hackney)
+
     system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
 
     local_path =
