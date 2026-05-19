@@ -24,7 +24,8 @@ defmodule Sftpd.Telemetry do
 
   - SFTP operation events include `:backend`, `:backend_kind`, `:result`, and
     `:reason` when an error reason exists
-  - `:open` also includes `:path`, `:requested_modes`, and `:mode`
+  - `:open` also includes `:path`, `:requested_modes`, `:mode`, and
+    `:open_timeout`
   - `:close` also includes `:io_device`, `:close_timeout`, and
     `:close_shutdown_grace`
   - `:read` also includes `:io_device` and `:bytes_requested`
