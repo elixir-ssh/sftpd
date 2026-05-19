@@ -23,6 +23,7 @@ defmodule Sftpd.FileHandler do
 
   @default_close_timeout 30_000
   @default_close_shutdown_grace 1_000
+  @default_open_timeout 30_000
   @event_prefix [:sftpd, :sftp]
 
   @typedoc "File handler state containing backend module and its state"
@@ -31,6 +32,7 @@ defmodule Sftpd.FileHandler do
           required(:backend_state) => term(),
           optional(:close_timeout) => timeout(),
           optional(:close_shutdown_grace) => non_neg_integer(),
+          optional(:open_timeout) => non_neg_integer(),
           optional(:cwd) => charlist()
         }
 
@@ -249,7 +251,8 @@ defmodule Sftpd.FileHandler do
             path: path,
             mode: mode,
             backend: backend,
-            backend_state: backend_state
+            backend_state: backend_state,
+            open_timeout: Map.get(state, :open_timeout, @default_open_timeout)
           })
 
         {result, state}
@@ -259,7 +262,8 @@ defmodule Sftpd.FileHandler do
          %{
            result: result_status(result),
            reason: result_reason(result),
-           mode: mode_from_modes(modes)
+           mode: mode_from_modes(modes),
+           open_timeout: Map.get(state, :open_timeout, @default_open_timeout)
          }}
       end
     )

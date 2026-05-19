@@ -26,6 +26,17 @@ defmodule Sftpd.FileHandlerTest do
     def file_info(_path, _state), do: {:error, :enoent}
   end
 
+  defmodule ReadErrorBackend do
+    def read_file(_path, _state), do: {:error, :enoent}
+  end
+
+  defmodule HangingOpenBackend do
+    def read_file(_path, %{test_pid: test_pid}) do
+      send(test_pid, {:open_started, self()})
+      Process.sleep(:infinity)
+    end
+  end
+
   defmodule SlowCloseDevice do
     use GenServer
 
@@ -132,6 +143,30 @@ defmodule Sftpd.FileHandlerTest do
       GenServer.stop(pid)
     end
 
+    test "returns read setup errors before issuing a handle" do
+      state = %{backend: ReadErrorBackend, backend_state: %{}}
+
+      assert {{:error, :enoent}, ^state} = FileHandler.open(~c"/missing.txt", [:read], state)
+    end
+
+    test "returns timeout when read setup hangs before issuing a handle" do
+      state = %{
+        backend: HangingOpenBackend,
+        backend_state: %{test_pid: self()},
+        open_timeout: 10
+      }
+
+      log =
+        capture_log(fn ->
+          assert {{:error, :timeout}, ^state} = FileHandler.open(~c"/stuck.txt", [:read], state)
+        end)
+
+      assert_receive {:open_started, pid}, 1000
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
+      assert log =~ "Timed out waiting 10ms"
+    end
+
     test "emits telemetry for open" do
       handler_id = TelemetryHelper.attach(self(), [[:sftpd, :sftp, :open]])
       on_exit(fn -> :telemetry.detach(handler_id) end)
@@ -145,6 +180,7 @@ defmodule Sftpd.FileHandlerTest do
       assert metadata.mode == :read
       assert metadata.path == "/file.txt"
       assert metadata.backend == MockBackend
+      assert metadata.open_timeout == 30_000
 
       GenServer.stop(pid)
     end
