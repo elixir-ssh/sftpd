@@ -24,7 +24,8 @@ defmodule Sftpd.Backends.S3 do
   @multipart_part_size 5 * 1024 * 1024
 
   @typedoc "S3 backend state containing bucket name, optional prefix, and AWS client module"
-  @type state :: %{bucket: String.t(), prefix: String.t(), aws_client: module()}
+  @type prefix :: String.t() | {:session, atom()}
+  @type state :: %{bucket: String.t(), prefix: prefix(), aws_client: module()}
 
   @type writer_handle :: %{
           bucket: String.t(),
@@ -64,8 +65,13 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   @spec list_dir(Backend.path(), state()) :: {:ok, [charlist()]} | {:error, atom()}
-  def list_dir(path, %{bucket: bucket} = state) do
-    prefix = listing_prefix(path, state.prefix)
+  def list_dir(path, state), do: list_dir(path, %{}, state)
+
+  @impl true
+  @spec list_dir(Backend.path(), Backend.session(), state()) ::
+          {:ok, [charlist()]} | {:error, atom()}
+  def list_dir(path, session, %{bucket: bucket} = state) do
+    prefix = listing_prefix(path, resolved_prefix(state, session))
 
     case list_entries(bucket, prefix, state, MapSet.new()) do
       {:ok, entries} ->
@@ -79,11 +85,16 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   @spec file_info(Backend.path(), state()) :: {:ok, Backend.file_info()} | {:error, atom()}
-  def file_info(path, state) do
+  def file_info(path, state), do: file_info(path, %{}, state)
+
+  @impl true
+  @spec file_info(Backend.path(), Backend.session(), state()) ::
+          {:ok, Backend.file_info()} | {:error, atom()}
+  def file_info(path, session, state) do
     if Backend.root_path?(path) do
       {:ok, Backend.directory_info()}
     else
-      key = object_key(path, state.prefix)
+      key = object_key(path, resolved_prefix(state, session))
 
       case aws_request(state, s3_op(:head_object, [state.bucket, key])) do
         {:ok, %{headers: headers}} ->
@@ -100,8 +111,12 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   @spec make_dir(Backend.path(), state()) :: :ok | {:error, atom()}
-  def make_dir(path, %{bucket: bucket} = state) do
-    key = object_key(path, state.prefix) <> "/" <> @keep_marker
+  def make_dir(path, state), do: make_dir(path, %{}, state)
+
+  @impl true
+  @spec make_dir(Backend.path(), Backend.session(), state()) :: :ok | {:error, atom()}
+  def make_dir(path, session, %{bucket: bucket} = state) do
+    key = object_key(path, resolved_prefix(state, session)) <> "/" <> @keep_marker
 
     case aws_request(state, s3_op(:put_object, [bucket, key, ""])) do
       {:ok, _} -> :ok
@@ -111,8 +126,12 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   @spec del_dir(Backend.path(), state()) :: :ok | {:error, atom()}
-  def del_dir(path, %{bucket: bucket} = state) do
-    key = object_key(path, state.prefix) <> "/" <> @keep_marker
+  def del_dir(path, state), do: del_dir(path, %{}, state)
+
+  @impl true
+  @spec del_dir(Backend.path(), Backend.session(), state()) :: :ok | {:error, atom()}
+  def del_dir(path, session, %{bucket: bucket} = state) do
+    key = object_key(path, resolved_prefix(state, session)) <> "/" <> @keep_marker
 
     case aws_request(state, s3_op(:delete_object, [bucket, key])) do
       {:ok, _} -> :ok
@@ -122,8 +141,12 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   @spec delete(Backend.path(), state()) :: :ok | {:error, atom()}
-  def delete(path, %{bucket: bucket} = state) do
-    key = object_key(path, state.prefix)
+  def delete(path, state), do: delete(path, %{}, state)
+
+  @impl true
+  @spec delete(Backend.path(), Backend.session(), state()) :: :ok | {:error, atom()}
+  def delete(path, session, %{bucket: bucket} = state) do
+    key = object_key(path, resolved_prefix(state, session))
 
     case aws_request(state, s3_op(:delete_object, [bucket, key])) do
       {:ok, _} -> :ok
@@ -133,9 +156,15 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   @spec rename(Backend.path(), Backend.path(), state()) :: :ok | {:error, atom()}
-  def rename(src, dst, %{bucket: bucket} = state) do
-    src_key = object_key(src, state.prefix)
-    dst_key = object_key(dst, state.prefix)
+  def rename(src, dst, state), do: rename(src, dst, %{}, state)
+
+  @impl true
+  @spec rename(Backend.path(), Backend.path(), Backend.session(), state()) ::
+          :ok | {:error, atom()}
+  def rename(src, dst, session, %{bucket: bucket} = state) do
+    prefix = resolved_prefix(state, session)
+    src_key = object_key(src, prefix)
+    dst_key = object_key(dst, prefix)
 
     with {:ok, _} <-
            aws_request(state, s3_op(:put_object_copy, [bucket, dst_key, bucket, src_key])),
@@ -159,8 +188,13 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   @spec read_file(Backend.path(), state()) :: {:ok, binary()} | {:error, atom()}
-  def read_file(path, %{bucket: bucket} = state) do
-    key = object_key(path, state.prefix)
+  def read_file(path, state), do: read_file(path, %{}, state)
+
+  @impl true
+  @spec read_file(Backend.path(), Backend.session(), state()) ::
+          {:ok, binary()} | {:error, atom()}
+  def read_file(path, session, %{bucket: bucket} = state) do
+    key = object_key(path, resolved_prefix(state, session))
 
     case aws_request(state, s3_op(:get_object, [bucket, key])) do
       {:ok, %{body: body}} -> {:ok, body}
@@ -170,8 +204,12 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   @spec write_file(Backend.path(), binary(), state()) :: :ok | {:error, atom()}
-  def write_file(path, content, %{bucket: bucket} = state) do
-    key = object_key(path, state.prefix)
+  def write_file(path, content, state), do: write_file(path, content, %{}, state)
+
+  @impl true
+  @spec write_file(Backend.path(), binary(), Backend.session(), state()) :: :ok | {:error, atom()}
+  def write_file(path, content, session, %{bucket: bucket} = state) do
+    key = object_key(path, resolved_prefix(state, session))
 
     case aws_request(state, s3_op(:put_object, [bucket, key, content])) do
       {:ok, _} -> :ok
@@ -182,8 +220,20 @@ defmodule Sftpd.Backends.S3 do
   @impl true
   @spec read_file_range(Backend.path(), non_neg_integer(), pos_integer(), state()) ::
           {:ok, binary()} | :eof | {:error, atom()}
-  def read_file_range(path, offset, len, %{bucket: bucket} = state) do
-    key = object_key(path, state.prefix)
+  def read_file_range(path, offset, len, state),
+    do: read_file_range(path, offset, len, %{}, state)
+
+  @impl true
+  @spec read_file_range(
+          Backend.path(),
+          non_neg_integer(),
+          pos_integer(),
+          Backend.session(),
+          state()
+        ) ::
+          {:ok, binary()} | :eof | {:error, atom()}
+  def read_file_range(path, offset, len, session, %{bucket: bucket} = state) do
+    key = object_key(path, resolved_prefix(state, session))
     range = "bytes=#{offset}-#{offset + len - 1}"
 
     case aws_request(state, s3_op(:get_object, [bucket, key, [range: range]])) do
@@ -200,8 +250,13 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   @spec begin_write(Backend.path(), state()) :: {:ok, writer_handle()} | {:error, atom()}
-  def begin_write(path, state) do
-    key = object_key(path, state.prefix)
+  def begin_write(path, state), do: begin_write(path, %{}, state)
+
+  @impl true
+  @spec begin_write(Backend.path(), Backend.session(), state()) ::
+          {:ok, writer_handle()} | {:error, atom()}
+  def begin_write(path, session, state) do
+    key = object_key(path, resolved_prefix(state, session))
 
     {:ok,
      %{
@@ -506,6 +561,9 @@ defmodule Sftpd.Backends.S3 do
   defp directory_listing_present?(body) do
     (body[:contents] || []) != [] or (body[:common_prefixes] || []) != []
   end
+
+  defp resolved_prefix(%{prefix: {:session, key}}, session), do: Map.fetch!(session, key)
+  defp resolved_prefix(%{prefix: prefix}, _session), do: prefix
 
   defp object_key(path, global_prefix), do: global_prefix <> Backend.normalize_path(path)
 
