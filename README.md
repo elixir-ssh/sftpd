@@ -61,6 +61,19 @@ end
 - `Sftpd.Backends.S3` is the built-in persistent backend
 - `Sftpd.Telemetry` documents the instrumentation surface
 
+## Choosing a Backend
+
+| Need | Use |
+| --- | --- |
+| Tests, demos, and local development | `Sftpd.Backends.Memory` |
+| Amazon S3, MinIO, or another S3-compatible store | `Sftpd.Backends.S3` |
+| A local disk folder | A custom folder backend |
+| A shared process, cache, queue, or connection pool | `{:genserver, name_or_pid}` |
+| Async ingestion after upload | Store synchronously in the backend, then enqueue a Broadway job |
+
+See `BACKENDS.md` for backend tradeoffs and `CUSTOM_BACKENDS.md` for folder,
+GenServer, supervision, and post-write processing examples.
+
 ## Erlang/OTP 29 Note
 
 OTP 29 no longer enables SFTP implicitly for SSH daemons and also disables
@@ -110,6 +123,10 @@ end
 
 Without those dependencies, `Sftpd.Backends.S3.init/1` returns
 `{:error, :missing_s3_dependency}`.
+
+The same dependency set is documented in `GETTING_STARTED.md` and
+`BACKENDS.md`; those guides also cover when to choose S3 instead of Memory or a
+custom backend.
 
 ```elixir
 Sftpd.start_server(
@@ -165,9 +182,9 @@ close operations, even if final close-time flushing fails. Write errors are
 therefore surfaced during active writes whenever possible, while close-only
 failures are logged server-side.
 
-If you need to bound how long close-time finalization can block a session, pass
-`close_timeout: timeout_in_ms` to `Sftpd.start_server/1`. The default is
-`30_000`.
+If you need to bound how long file opens or close-time finalization can block a
+session, pass `open_timeout: timeout_in_ms` or `close_timeout: timeout_in_ms` to
+`Sftpd.start_server/1`. Both default to `30_000`.
 
 ## Telemetry
 

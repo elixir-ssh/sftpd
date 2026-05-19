@@ -15,23 +15,26 @@ defmodule Sftpd do
 
   ## Quick Start
 
-      # Start an SFTP server with S3 backend
+      # Start an SFTP server with the in-memory backend
       {:ok, pid} = Sftpd.start_server(
         port: 2222,
-        backend: Sftpd.Backends.S3,
-        backend_opts: [bucket: "my-bucket", prefix: "tenant-a/"],
-        users: [{"user", "password"}]
+        backend: Sftpd.Backends.Memory,
+        backend_opts: [],
+        users: [{"dev", "dev"}],
+        system_dir: "ssh_keys"
       )
 
   ## Backends
 
   Sftpd supports pluggable backends. Built-in backends:
 
-  - `Sftpd.Backends.S3` - Amazon S3 or S3-compatible storage
+  - `Sftpd.Backends.Memory` - in-memory storage for development and tests
+  - `Sftpd.Backends.S3` - optional Amazon S3 or S3-compatible storage
 
   To create a custom backend, implement the `Sftpd.Backend` behaviour.
   See the HexDocs extras `Backends` and `Custom Backends` for package-level
-  guidance and examples.
+  guidance and examples. If you need persistent object storage, see the S3
+  backend docs for the optional dependency set required by that backend.
 
   ## Guides
 
@@ -51,6 +54,7 @@ defmodule Sftpd do
   - `:users` - List of `{username, password}` tuples for authentication
   - `:system_dir` - Directory containing SSH host keys (required)
   - `:max_sessions` - Maximum concurrent sessions (default: 10)
+  - `:open_timeout` - Timeout in milliseconds for opening files (default: 30000)
   - `:close_timeout` - Timeout in milliseconds for finalizing file closes (default: 30000)
 
   ## Process-Based Backends
@@ -88,13 +92,13 @@ defmodule Sftpd do
 
   ## Examples
 
-      # Start with S3 backend
+      # Start with the in-memory backend
       {:ok, pid} = Sftpd.start_server(
         port: 2222,
-        backend: Sftpd.Backends.S3,
-        backend_opts: [bucket: "my-bucket", prefix: "tenant-a/"],
+        backend: Sftpd.Backends.Memory,
+        backend_opts: [],
         users: [{"admin", "secret"}],
-        system_dir: "/etc/ssh"
+        system_dir: "ssh_keys"
       )
 
   ## Options
@@ -109,6 +113,7 @@ defmodule Sftpd do
     users = Keyword.get(opts, :users, [])
     system_dir = Keyword.fetch!(opts, :system_dir)
     max_sessions = Keyword.get(opts, :max_sessions, @default_max_sessions)
+    open_timeout = Keyword.get(opts, :open_timeout, 30_000)
     close_timeout = Keyword.get(opts, :close_timeout, 30_000)
 
     user_passwords =
@@ -139,7 +144,12 @@ defmodule Sftpd do
                  root: ~c"/",
                  file_handler: {
                    Sftpd.FileHandler,
-                   %{backend: backend, backend_state: backend_state, close_timeout: close_timeout}
+                   %{
+                     backend: backend,
+                     backend_state: backend_state,
+                     open_timeout: open_timeout,
+                     close_timeout: close_timeout
+                   }
                  }
                )
              ]}

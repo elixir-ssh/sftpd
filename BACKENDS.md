@@ -16,6 +16,14 @@ Module-based backends are the simplest fit for stateless adapters and are what
 the built-in backends use. Process-based backends are useful when the storage
 layer already has a long-lived process, mutable state, or its own lifecycle.
 
+| Need | Use |
+| --- | --- |
+| Tests, demos, and local development | `Sftpd.Backends.Memory` |
+| Amazon S3, MinIO, or another S3-compatible store | `Sftpd.Backends.S3` |
+| A local disk folder | A custom folder backend |
+| A shared process, cache, queue, or connection pool | `{:genserver, name_or_pid}` |
+| Async ingestion after upload | Store synchronously in the backend, then enqueue a Broadway job |
+
 ## Built-In Backends
 
 ### `Sftpd.Backends.Memory`
@@ -88,7 +96,9 @@ Example:
   )
 ```
 
-See `Sftpd.Backends.S3` for configuration details and caveats.
+See `Sftpd.Backends.S3` for configuration details and caveats. The Getting
+Started guide has the same dependency list in the context of a full server
+setup.
 
 ## Module-Based Backends
 

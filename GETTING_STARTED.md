@@ -65,6 +65,7 @@ Important options:
 - `:users` defines password-authenticated users
 - `:system_dir` points at the SSH host key directory
 - `:max_sessions` limits concurrent client sessions
+- `:open_timeout` bounds file open setup time
 - `:close_timeout` bounds close-time finalization time
 
 OTP 29 no longer enables the SFTP subsystem implicitly for SSH daemons.
