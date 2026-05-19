@@ -107,6 +107,34 @@ defmodule Sftpd.Backends.MemoryTest do
       assert {:ok, [~c".", ~c".."]} = Memory.list_dir(~c"/", state)
     end
 
+    test "does not delete non-empty directory", %{state: state} do
+      Memory.make_dir(~c"/mydir", state)
+      Memory.write_file(~c"/mydir/file.txt", "content", state)
+
+      assert {:error, :eexist} = Memory.del_dir(~c"/mydir", state)
+      assert {:ok, listing} = Memory.list_dir(~c"/mydir", state)
+      assert ~c"file.txt" in listing
+    end
+
+    test "does not delete non-empty directory with trailing slash", %{state: state} do
+      Memory.make_dir(~c"/mydir", state)
+      Memory.write_file(~c"/mydir/file.txt", "content", state)
+
+      assert {:error, :eexist} = Memory.del_dir(~c"/mydir/", state)
+      assert {:ok, listing} = Memory.list_dir(~c"/mydir", state)
+      assert ~c"file.txt" in listing
+    end
+
+    test "directory operations tolerate trailing slashes", %{state: state} do
+      assert :ok = Memory.make_dir(~c"/mydir/", state)
+
+      assert {:ok, {:file_info, _, :directory, _, _, _, _, _, _, _, _, _, _, _}} =
+               Memory.file_info(~c"/mydir/", state)
+
+      assert :ok = Memory.del_dir(~c"/mydir/", state)
+      assert {:ok, [~c".", ~c".."]} = Memory.list_dir(~c"/", state)
+    end
+
     test "list files in subdirectory", %{state: state} do
       Memory.make_dir(~c"/subdir", state)
       Memory.write_file(~c"/subdir/file1.txt", "a", state)
