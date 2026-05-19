@@ -1,5 +1,5 @@
 # Manual test script for Sftpd functionality
-# Run with: mix run test_manual.exs
+# Run with: MIX_ENV=test mix run test_manual.exs
 # Or use: ./test_sftp.sh (which ensures MinIO is running)
 
 defmodule SftpdManualTest do

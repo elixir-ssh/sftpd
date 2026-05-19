@@ -50,7 +50,7 @@ defmodule Sftpd.Backends.S3 do
   @impl true
   @spec init(keyword()) :: {:ok, state()} | {:error, atom()}
   def init(opts) do
-    with :ok <- ensure_s3_available(Keyword.get(opts, :s3_module, s3_module())) do
+    with :ok <- ensure_s3_available() do
       bucket = Keyword.fetch!(opts, :bucket)
       prefix = Keyword.get(opts, :prefix, "")
       aws_client = Keyword.get(opts, :aws_client, ex_aws_module())
@@ -534,8 +534,8 @@ defmodule Sftpd.Backends.S3 do
     client.request(op)
   end
 
-  defp ensure_s3_available(module) do
-    if Code.ensure_loaded?(module) do
+  defp ensure_s3_available do
+    if Code.ensure_loaded?(s3_module()) do
       :ok
     else
       {:error, :missing_s3_dependency}

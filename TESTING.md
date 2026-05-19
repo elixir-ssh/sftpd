@@ -22,7 +22,7 @@ mix test --only consumer_project
 ### Option 1: Elixir Test Script
 Run the manual Elixir test script that tests upload/download operations:
 ```bash
-mix run test_manual.exs
+MIX_ENV=test mix run test_manual.exs
 ```
 
 This script will:
@@ -45,7 +45,7 @@ Note: This requires the `sftp` command-line tool to be installed.
 
 1. Start the SFTP server:
 ```elixir
-iex -S mix
+MIX_ENV=test iex -S mix
 iex> system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
 iex> Sftpd.start_server(
 ...>   port: 2222,

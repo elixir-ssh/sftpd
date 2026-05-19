@@ -2,9 +2,6 @@ defmodule Sftpd.Backends.S3Test do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  {:ok, _} = Application.ensure_all_started(:mox)
-  Mox.defmock(Sftpd.Test.MockExAws, for: Sftpd.ExAwsClient)
-
   import Mox
 
   alias Sftpd.Backends.S3
@@ -52,11 +49,6 @@ defmodule Sftpd.Backends.S3Test do
   end
 
   describe "init/1" do
-    test "reports missing dependency when ExAws.S3 is unavailable" do
-      assert {:error, :missing_s3_dependency} =
-               S3.init(bucket: "my-bucket", s3_module: Sftpd.Test.MissingExAwsS3)
-    end
-
     test "requires bucket option" do
       assert_raise KeyError, fn -> S3.init([]) end
     end
