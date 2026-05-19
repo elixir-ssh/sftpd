@@ -33,12 +33,14 @@ defmodule Sftpd.Backends.S3 do
         }
 
   @impl true
-  @spec init(keyword()) :: {:ok, state()}
+  @spec init(keyword()) :: {:ok, state()} | {:error, atom()}
   def init(opts) do
-    bucket = Keyword.fetch!(opts, :bucket)
-    prefix = Keyword.get(opts, :prefix, "")
-    aws_client = Keyword.get(opts, :aws_client, ExAws)
-    {:ok, %{bucket: bucket, prefix: prefix, aws_client: aws_client}}
+    with :ok <- ensure_s3_available() do
+      bucket = Keyword.fetch!(opts, :bucket)
+      prefix = Keyword.get(opts, :prefix, "")
+      aws_client = Keyword.get(opts, :aws_client, ex_aws_module())
+      {:ok, %{bucket: bucket, prefix: prefix, aws_client: aws_client}}
+    end
   end
 
   @impl true
@@ -64,7 +66,7 @@ defmodule Sftpd.Backends.S3 do
     else
       key = object_key(path, state.prefix)
 
-      case aws_request(state, ExAws.S3.head_object(state.bucket, key)) do
+      case aws_request(state, s3_op(:head_object, [state.bucket, key])) do
         {:ok, %{headers: headers}} ->
           {:ok, Backend.file_info(extract_size(headers), extract_mtime(headers), :read_write)}
 
@@ -82,7 +84,7 @@ defmodule Sftpd.Backends.S3 do
   def make_dir(path, %{bucket: bucket} = state) do
     key = object_key(path, state.prefix) <> "/" <> @keep_marker
 
-    case aws_request(state, ExAws.S3.put_object(bucket, key, "")) do
+    case aws_request(state, s3_op(:put_object, [bucket, key, ""])) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -93,7 +95,7 @@ defmodule Sftpd.Backends.S3 do
   def del_dir(path, %{bucket: bucket} = state) do
     key = object_key(path, state.prefix) <> "/" <> @keep_marker
 
-    case aws_request(state, ExAws.S3.delete_object(bucket, key)) do
+    case aws_request(state, s3_op(:delete_object, [bucket, key])) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -104,7 +106,7 @@ defmodule Sftpd.Backends.S3 do
   def delete(path, %{bucket: bucket} = state) do
     key = object_key(path, state.prefix)
 
-    case aws_request(state, ExAws.S3.delete_object(bucket, key)) do
+    case aws_request(state, s3_op(:delete_object, [bucket, key])) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -117,8 +119,8 @@ defmodule Sftpd.Backends.S3 do
     dst_key = object_key(dst, state.prefix)
 
     with {:ok, _} <-
-           aws_request(state, ExAws.S3.put_object_copy(bucket, dst_key, bucket, src_key)),
-         {:ok, _} <- aws_request(state, ExAws.S3.delete_object(bucket, src_key)) do
+           aws_request(state, s3_op(:put_object_copy, [bucket, dst_key, bucket, src_key])),
+         {:ok, _} <- aws_request(state, s3_op(:delete_object, [bucket, src_key])) do
       :ok
     else
       {:error, reason} ->
@@ -141,7 +143,7 @@ defmodule Sftpd.Backends.S3 do
   def read_file(path, %{bucket: bucket} = state) do
     key = object_key(path, state.prefix)
 
-    case aws_request(state, ExAws.S3.get_object(bucket, key)) do
+    case aws_request(state, s3_op(:get_object, [bucket, key])) do
       {:ok, %{body: body}} -> {:ok, body}
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -152,7 +154,7 @@ defmodule Sftpd.Backends.S3 do
   def write_file(path, content, %{bucket: bucket} = state) do
     key = object_key(path, state.prefix)
 
-    case aws_request(state, ExAws.S3.put_object(bucket, key, content)) do
+    case aws_request(state, s3_op(:put_object, [bucket, key, content])) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -165,7 +167,7 @@ defmodule Sftpd.Backends.S3 do
     key = object_key(path, state.prefix)
     range = "bytes=#{offset}-#{offset + len - 1}"
 
-    case aws_request(state, ExAws.S3.get_object(bucket, key, range: range)) do
+    case aws_request(state, s3_op(:get_object, [bucket, key, [range: range]])) do
       {:ok, %{body: body} = response} ->
         normalize_range_response(offset, len, body, Map.get(response, :status_code, 200))
 
@@ -254,7 +256,7 @@ defmodule Sftpd.Backends.S3 do
   end
 
   defp ensure_multipart_started(%{upload_id: nil} = writer, state) do
-    case aws_request(state, ExAws.S3.initiate_multipart_upload(writer.bucket, writer.key)) do
+    case aws_request(state, s3_op(:initiate_multipart_upload, [writer.bucket, writer.key])) do
       {:ok, %{body: %{upload_id: upload_id}}} ->
         {:ok, %{writer | upload_id: upload_id}}
 
@@ -302,13 +304,13 @@ defmodule Sftpd.Backends.S3 do
 
   defp upload_part(writer, chunk, state) do
     op =
-      ExAws.S3.upload_part(
+      s3_op(:upload_part, [
         writer.bucket,
         writer.key,
         writer.upload_id,
         writer.next_part_number,
         chunk
-      )
+      ])
 
     case aws_request(state, op) do
       {:ok, %{headers: headers}} ->
@@ -331,7 +333,7 @@ defmodule Sftpd.Backends.S3 do
 
     case aws_request(
            state,
-           ExAws.S3.complete_multipart_upload(writer.bucket, writer.key, writer.upload_id, parts)
+           s3_op(:complete_multipart_upload, [writer.bucket, writer.key, writer.upload_id, parts])
          ) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, normalize_error(reason)}
@@ -339,7 +341,7 @@ defmodule Sftpd.Backends.S3 do
   end
 
   defp put_small_object(writer, state) do
-    case aws_request(state, ExAws.S3.put_object(writer.bucket, writer.key, pending_body(writer))) do
+    case aws_request(state, s3_op(:put_object, [writer.bucket, writer.key, pending_body(writer)])) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, normalize_error(reason)}
     end
@@ -382,7 +384,7 @@ defmodule Sftpd.Backends.S3 do
   defp abort_multipart(writer, state) do
     case aws_request(
            state,
-           ExAws.S3.abort_multipart_upload(writer.bucket, writer.key, writer.upload_id)
+           s3_op(:abort_multipart_upload, [writer.bucket, writer.key, writer.upload_id])
          ) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, normalize_error(reason)}
@@ -390,7 +392,7 @@ defmodule Sftpd.Backends.S3 do
   end
 
   defp check_directory_exists(bucket, key, state) do
-    request = ExAws.S3.list_objects_v2(bucket, prefix: key <> "/", delimiter: "/", max_keys: 1)
+    request = s3_op(:list_objects_v2, [bucket, [prefix: key <> "/", delimiter: "/", max_keys: 1]])
 
     case aws_request(state, request) do
       {:ok, %{body: body}} ->
@@ -408,18 +410,16 @@ defmodule Sftpd.Backends.S3 do
   defp list_entries(bucket, prefix, state, entries, continuation_token \\ nil)
 
   defp list_entries(bucket, prefix, state, entries, nil) do
-    request = ExAws.S3.list_objects_v2(bucket, prefix: prefix, delimiter: "/")
+    request = s3_op(:list_objects_v2, [bucket, [prefix: prefix, delimiter: "/"]])
     collect_entries(request, bucket, prefix, state, entries)
   end
 
   defp list_entries(bucket, prefix, state, entries, continuation_token) do
     request =
-      ExAws.S3.list_objects_v2(
+      s3_op(:list_objects_v2, [
         bucket,
-        prefix: prefix,
-        delimiter: "/",
-        continuation_token: continuation_token
-      )
+        [prefix: prefix, delimiter: "/", continuation_token: continuation_token]
+      ])
 
     collect_entries(request, bucket, prefix, state, entries)
   end
@@ -518,6 +518,18 @@ defmodule Sftpd.Backends.S3 do
   defp aws_request(%{aws_client: client}, op) do
     client.request(op)
   end
+
+  defp ensure_s3_available do
+    if Code.ensure_loaded?(s3_module()) do
+      :ok
+    else
+      {:error, :missing_s3_dependency}
+    end
+  end
+
+  defp ex_aws_module, do: Module.concat([ExAws])
+  defp s3_module, do: Module.concat([ExAws, S3])
+  defp s3_op(function, args), do: apply(s3_module(), function, args)
 
   defp normalize_error({:http_error, status, _response}) when status in [404, 416], do: :enoent
   defp normalize_error({:http_error, 403, _response}), do: :eacces

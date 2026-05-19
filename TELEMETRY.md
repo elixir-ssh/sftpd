@@ -1,19 +1,14 @@
 # Telemetry
 
 `Sftpd` emits `:telemetry` events for server lifecycle and SFTP operations.
+The package depends on `:telemetry` directly, so applications can attach
+handlers without adding another dependency.
 
-Telemetry support is optional. If the `:telemetry` module is unavailable at
-runtime, event emission is skipped and the SFTP server continues normally.
-
-## Installing `:telemetry`
-
-If your application wants to attach handlers and does not already depend on
-`:telemetry`, add it explicitly:
+## Installing `Sftpd`
 
 ```elixir
 def deps do
   [
-    {:telemetry, ">= 0.4.3 and < 2.0.0"},
     {:sftpd, "~> 0.1.0"}
   ]
 end
@@ -222,5 +217,4 @@ Convert durations before exporting metrics:
 - Telemetry is emitted from `Sftpd` and `Sftpd.FileHandler`, so event timings
   reflect the library's wrapper and backend call boundaries rather than network
   round-trip timings observed by the SFTP client.
-- Optional telemetry support means a deployment can run without `:telemetry`
-  installed, but no events will be emitted in that case.
+- Handlers run in the emitting process, so avoid slow handler work.

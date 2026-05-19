@@ -96,6 +96,22 @@ Because the memory backend is ephemeral, data disappears when the server stops.
 
 To persist files in S3-compatible storage, use `Sftpd.Backends.S3`:
 
+The S3 backend is optional. Add the S3 dependencies before using it:
+
+```elixir
+def deps do
+  [
+    {:sftpd, "~> 0.1.0"},
+    {:ex_aws, "~> 2.0"},
+    {:ex_aws_s3, "~> 2.0"},
+    {:hackney, "~> 1.9"},
+    {:sweet_xml, "~> 0.7"},
+    {:jason, "~> 1.3"},
+    {:configparser_ex, "~> 4.0"}
+  ]
+end
+```
+
 ```elixir
 {:ok, ref} =
   Sftpd.start_server(
@@ -128,19 +144,10 @@ config :ex_aws, :s3,
   port: 4566
 ```
 
-## 7. Add telemetry if you want instrumentation
+## 7. Add telemetry handlers if you want instrumentation
 
-Telemetry support is optional. If your application wants to attach handlers and
-does not already depend on `:telemetry`, add it explicitly:
-
-```elixir
-def deps do
-  [
-    {:telemetry, ">= 0.4.3 and < 2.0.0"},
-    {:sftpd, "~> 0.1.0"}
-  ]
-end
-```
+`Sftpd` depends on `:telemetry` directly. Applications only need to attach
+handlers for the events they want to consume.
 
 See `TELEMETRY.md` for the full event reference.
 

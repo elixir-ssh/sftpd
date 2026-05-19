@@ -15,7 +15,7 @@ defmodule Sftpd.MixProject do
       aliases: aliases(),
 
       # Hex
-      description: "Pluggable SFTP server with support for S3 and custom backends",
+      description: "Pluggable SFTP server with memory, custom, and optional S3 backends",
       package: package(),
 
       # Docs
@@ -43,7 +43,7 @@ defmodule Sftpd.MixProject do
       {:sweet_xml, "~> 0.7", optional: true},
       {:jason, "~> 1.3", optional: true},
       {:configparser_ex, "~> 4.0", optional: true},
-      {:telemetry, ">= 0.4.3 and < 2.0.0", optional: true},
+      {:telemetry, ">= 0.4.3 and < 2.0.0"},
 
       # Dev/test dependencies
       {:dialyxir, "~> 1.1", only: [:dev, :test], runtime: false},

@@ -2,8 +2,8 @@ defmodule Sftpd.Telemetry do
   @moduledoc """
   Telemetry helpers and event conventions for `Sftpd`.
 
-  Telemetry is optional. If the `:telemetry` module is not available at runtime,
-  these helpers become no-ops and the main library behavior is unchanged.
+  `Sftpd` depends on the lightweight `:telemetry` library and emits events
+  through the shared Erlang/Elixir instrumentation interface.
 
   See the `Telemetry` extra in HexDocs for the full event reference, payload
   details, examples, and caveats.
@@ -48,13 +48,7 @@ defmodule Sftpd.Telemetry do
   """
   @spec execute(event_name(), measurements(), metadata()) :: :ok
   def execute(event_name, measurements, metadata) do
-    case telemetry_available?() do
-      true ->
-        :telemetry.execute(event_name, measurements, metadata)
-
-      false ->
-        :ok
-    end
+    :telemetry.execute(event_name, measurements, metadata)
   end
 
   @doc """
@@ -62,44 +56,27 @@ defmodule Sftpd.Telemetry do
   """
   @spec span(event_name(), metadata(), (-> term()), finalize_fun()) :: term()
   def span(event_name, metadata, fun, finalize_fun \\ &default_finalize/2) do
-    case telemetry_available?() do
-      true ->
-        start = System.monotonic_time()
+    start = System.monotonic_time()
 
-        try do
-          result = fun.()
-          duration = System.monotonic_time() - start
-          {measurements, extra_metadata} = finalize_fun.(result, duration)
-          :telemetry.execute(event_name, measurements, Map.merge(metadata, extra_metadata))
-          result
-        catch
-          kind, reason ->
-            duration = System.monotonic_time() - start
+    try do
+      result = fun.()
+      duration = System.monotonic_time() - start
+      {measurements, extra_metadata} = finalize_fun.(result, duration)
+      execute(event_name, measurements, Map.merge(metadata, extra_metadata))
+      result
+    catch
+      kind, reason ->
+        duration = System.monotonic_time() - start
 
-            :telemetry.execute(
-              event_name,
-              %{duration: duration},
-              Map.merge(metadata, %{result: :exception, kind: kind, reason: reason})
-            )
+        execute(
+          event_name,
+          %{duration: duration},
+          Map.merge(metadata, %{result: :exception, kind: kind, reason: reason})
+        )
 
-            :erlang.raise(kind, reason, __STACKTRACE__)
-        end
-
-      false ->
-        fun.()
+        :erlang.raise(kind, reason, __STACKTRACE__)
     end
   end
 
   defp default_finalize(_result, duration), do: {%{duration: duration}, %{}}
-
-  defp telemetry_available? do
-    function_exported?(:telemetry, :execute, 3) and telemetry_started?()
-  end
-
-  defp telemetry_started? do
-    Enum.any?(Application.started_applications(), fn
-      {:telemetry, _description, _version} -> true
-      _app -> false
-    end)
-  end
 end

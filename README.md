@@ -7,7 +7,7 @@ it through a small backend behaviour. It ships with:
 
 - an in-memory backend for development and tests
 - an S3 backend with range reads and multipart streaming writes
-- optional telemetry hooks around server lifecycle and SFTP operations
+- telemetry hooks around server lifecycle and SFTP operations
 
 ## Installation
 
@@ -58,7 +58,7 @@ end
 - `Sftpd.Backend` defines the storage contract
 - `Sftpd.Backends.Memory` is the fastest local setup path
 - `Sftpd.Backends.S3` is the built-in persistent backend
-- `Sftpd.Telemetry` documents the optional instrumentation surface
+- `Sftpd.Telemetry` documents the instrumentation surface
 
 ## Backends
 
@@ -82,6 +82,22 @@ Stores files in Amazon S3 or S3-compatible storage (LocalStack, MinIO, etc.).
 The built-in S3 backend now uses range reads, paginated delimiter-based
 directory listings, and multipart streaming writes for better large-file
 performance.
+
+The S3 backend is optional. Add the S3 dependencies in applications that use it:
+
+```elixir
+def deps do
+  [
+    {:sftpd, "~> 0.1.0"},
+    {:ex_aws, "~> 2.0"},
+    {:ex_aws_s3, "~> 2.0"},
+    {:hackney, "~> 1.9"},
+    {:sweet_xml, "~> 0.7"},
+    {:jason, "~> 1.3"},
+    {:configparser_ex, "~> 4.0"}
+  ]
+end
+```
 
 ```elixir
 Sftpd.start_server(
@@ -144,8 +160,8 @@ If you need to bound how long close-time finalization can block a session, pass
 ## Telemetry
 
 `Sftpd` emits `:telemetry` events for server lifecycle and SFTP operations.
-Telemetry support is optional: if the `:telemetry` module is unavailable at
-runtime, event emission is skipped and the SFTP server continues normally.
+The package depends on `:telemetry` directly, so applications can attach
+handlers without adding another dependency.
 
 ```elixir
 :telemetry.attach(
