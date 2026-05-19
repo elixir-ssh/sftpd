@@ -84,8 +84,7 @@
             ]
             ++ lib.optional pkgs.stdenv.isLinux pkgs.libnotify
             ++ lib.optional pkgs.stdenv.isLinux pkgs.inotify-tools
-            ++ lib.optional pkgs.stdenv.isDarwin pkgs.terminal-notifier
-            ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [CoreFoundation CoreServices]);
+            ++ lib.optional pkgs.stdenv.isDarwin pkgs.terminal-notifier;
           shellHook = ''
             gh auth switch --user mjc
             export ERL_AFLAGS="-kernel shell_history enabled"
