@@ -164,14 +164,14 @@ config :ex_aws, :s3,
 `Sftpd` depends on `:telemetry` directly. Applications only need to attach
 handlers for the events they want to consume.
 
-See `TELEMETRY.md` for the full event reference.
+See [Telemetry](TELEMETRY.md) for the full event reference.
 
 ## 8. Build your own backend
 
 If neither built-in backend fits your storage model:
 
-- read `BACKENDS.md` for backend architecture and tradeoffs
-- read `CUSTOM_BACKENDS.md` for implementation guidance
+- read [Backends](BACKENDS.md) for backend architecture and tradeoffs
+- read [Custom Backends](CUSTOM_BACKENDS.md) for implementation guidance
 - implement the `Sftpd.Backend` behaviour
 
 ## Notes and Caveats

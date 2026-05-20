@@ -169,14 +169,14 @@ You can also pass a running GenServer as `{:genserver, server}`. In that mode,
 
 Calls follow this shape:
 
-- `{:list_dir, path, session}`
-- `{:file_info, path, session}`
-- `{:make_dir, path, session}`
-- `{:del_dir, path, session}`
-- `{:delete, path, session}`
-- `{:rename, src, dst, session}`
-- `{:read_file, path, session}`
-- `{:write_file, path, content, session}`
+- `{:list_dir, path}`
+- `{:file_info, path}`
+- `{:make_dir, path}`
+- `{:del_dir, path}`
+- `{:delete, path}`
+- `{:rename, src, dst}`
+- `{:read_file, path}`
+- `{:write_file, path, content}`
 
 If a process backend needs authenticated session context, opt in with
 `{:genserver, server, session: true}`. Session-aware calls follow this shape:
@@ -243,6 +243,6 @@ onto what SFTP clients expect.
 
 ## Next Steps
 
-- Read `CUSTOM_BACKENDS.md` for implementation guidance
+- Read [Custom Backends](CUSTOM_BACKENDS.md) for implementation guidance
 - See `Sftpd.Backend` for the authoritative callback contracts
-- See `TELEMETRY.md` for the emitted telemetry events around backend operations
+- See [Telemetry](TELEMETRY.md) for the emitted telemetry events around backend operations

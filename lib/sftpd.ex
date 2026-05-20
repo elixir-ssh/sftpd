@@ -32,18 +32,20 @@ defmodule Sftpd do
   - `Sftpd.Backends.S3` - optional Amazon S3 or S3-compatible storage
 
   To create a custom backend, implement the `Sftpd.Backend` behaviour.
-  See the HexDocs extras `Backends` and `Custom Backends` for package-level
-  guidance and examples. If you need persistent object storage, see the S3
-  backend docs for the optional dependency set required by that backend.
+  See the HexDocs extras [Backends](backends.html) and
+  [Custom Backends](custom_backends.html) for package-level guidance and
+  examples. If you need persistent object storage, see the S3 backend docs for
+  the optional dependency set required by that backend.
 
   ## Guides
 
   Package-level HexDocs extras:
 
-  - `Getting Started`
-  - `Backends`
-  - `Custom Backends`
-  - `Telemetry`
+  - [Getting Started](getting_started.html)
+  - [Phoenix Setup](phoenix.html)
+  - [Backends](backends.html)
+  - [Custom Backends](custom_backends.html)
+  - [Telemetry](telemetry.html)
 
   ## Options
 

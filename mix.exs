@@ -15,7 +15,8 @@ defmodule Sftpd.MixProject do
       aliases: aliases(),
 
       # Hex
-      description: "Pluggable SFTP server with memory, custom, and optional S3 backends",
+      description:
+        "Phoenix-ready SFTP server with password/public-key auth, session-aware backends, and optional S3 storage",
       package: package(),
 
       # Docs
@@ -68,7 +69,12 @@ defmodule Sftpd.MixProject do
       organization: "elixir_ssh",
       licenses: ["Apache-2.0"],
       links: %{
-        "GitHub" => @source_url
+        "HexDocs" => "https://elixir_ssh.hexorgs.pm/sftpd",
+        "Getting Started" => "https://elixir_ssh.hexorgs.pm/sftpd/getting_started.html",
+        "Phoenix Guide" => "https://elixir_ssh.hexorgs.pm/sftpd/phoenix.html",
+        "Backends Guide" => "https://elixir_ssh.hexorgs.pm/sftpd/backends.html",
+        "GitHub" => @source_url,
+        "GitHub Release" => "#{@source_url}/releases/tag/v#{@version}"
       },
       files:
         ~w(lib .formatter.exs mix.exs README.md GETTING_STARTED.md BACKENDS.md CUSTOM_BACKENDS.md PHOENIX.md TELEMETRY.md LICENSE)
@@ -77,7 +83,7 @@ defmodule Sftpd.MixProject do
 
   defp docs do
     [
-      main: "Sftpd",
+      main: "readme",
       extras: [
         "README.md",
         "GETTING_STARTED.md",
@@ -87,6 +93,15 @@ defmodule Sftpd.MixProject do
         "TELEMETRY.md"
       ],
       source_ref: "v#{@version}",
+      groups_for_extras: [
+        Guides: [
+          "GETTING_STARTED.md",
+          "BACKENDS.md",
+          "CUSTOM_BACKENDS.md",
+          "PHOENIX.md",
+          "TELEMETRY.md"
+        ]
+      ],
       groups_for_modules: [
         Core: [Sftpd, Sftpd.Auth, Sftpd.Backend, Sftpd.Telemetry],
         Backends: [Sftpd.Backends.S3, Sftpd.Backends.Memory],
