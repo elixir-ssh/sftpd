@@ -4,6 +4,15 @@ This guide shows the intended Phoenix integration path: supervise `Sftpd`,
 authenticate through your app, and use the auth session map to scope backend
 storage.
 
+It covers:
+
+- supervised startup and shutdown
+- runtime configuration for deploy-specific values
+- local static auth for development
+- password and public-key auth backed by your app
+- tenant-scoped S3 storage using session context
+- deployment notes for host keys and port exposure
+
 ## Supervision
 
 Add `Sftpd` to your application supervisor:
@@ -128,3 +137,9 @@ Expose the configured TCP port through your load balancer or host firewall.
 Persist the SSH host key directory across deploys. Keep application passwords,
 public-key fingerprints, S3 bucket names, and endpoint credentials in your
 normal runtime secret/config path.
+
+## Next Steps
+
+- Choose production storage in [Backends](BACKENDS.md).
+- Add metrics and logging with [Telemetry](TELEMETRY.md).
+- Implement non-S3 storage with [Custom Backends](CUSTOM_BACKENDS.md).

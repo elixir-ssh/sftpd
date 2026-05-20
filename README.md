@@ -48,11 +48,11 @@ end
 
 ## Guides
 
-- `GETTING_STARTED.md` for a step-by-step setup guide
-- `PHOENIX.md` for supervised Phoenix setup with app auth and S3
-- `BACKENDS.md` for backend architecture and built-in backend tradeoffs
-- `CUSTOM_BACKENDS.md` for implementing your own backend
-- `TELEMETRY.md` for emitted events, metadata, and examples
+- [Getting Started](GETTING_STARTED.md) for a step-by-step setup guide
+- [Phoenix Setup](PHOENIX.md) for supervised Phoenix setup with app auth and S3
+- [Backends](BACKENDS.md) for backend architecture and built-in backend tradeoffs
+- [Custom Backends](CUSTOM_BACKENDS.md) for implementing your own backend
+- [Telemetry](TELEMETRY.md) for emitted events, metadata, and examples
 
 ## Key Concepts
 
@@ -75,15 +75,16 @@ end
 | A shared process, cache, queue, or connection pool | `{:genserver, name_or_pid}` |
 | Async ingestion after upload | Store synchronously in the backend, then enqueue a Broadway job |
 
-See `BACKENDS.md` for backend tradeoffs and `CUSTOM_BACKENDS.md` for folder,
-GenServer, supervision, and post-write processing examples.
+See [Backends](BACKENDS.md) for backend tradeoffs and
+[Custom Backends](CUSTOM_BACKENDS.md) for folder, GenServer, supervision, and
+post-write processing examples.
 
-## Erlang/OTP 29 Note
+## Next Steps
 
-OTP 29 no longer enables SFTP implicitly for SSH daemons and also disables
-shell and exec services by default. `Sftpd.start_server/1` already passes the
-required SFTP subsystem configuration, so applications using this package do
-not need to configure OTP SSH subsystems themselves.
+- Adding SFTP to a Phoenix app? Start with [Phoenix Setup](PHOENIX.md).
+- Choosing storage? Read [Backends](BACKENDS.md).
+- Implementing your own storage layer? Read [Custom Backends](CUSTOM_BACKENDS.md).
+- Wiring observability? Read [Telemetry](TELEMETRY.md).
 
 ## Backends
 
@@ -128,9 +129,9 @@ end
 Without those dependencies, `Sftpd.Backends.S3.init/1` returns
 `{:error, :missing_s3_dependency}`.
 
-The same dependency set is documented in `GETTING_STARTED.md` and
-`BACKENDS.md`; those guides also cover when to choose S3 instead of Memory or a
-custom backend.
+The same dependency set is documented in [Getting Started](GETTING_STARTED.md)
+and [Backends](BACKENDS.md); those guides also cover when to choose S3 instead
+of Memory or a custom backend.
 
 ```elixir
 Sftpd.start_server(
@@ -228,14 +229,14 @@ handlers without adding another dependency.
 )
 ```
 
-See the full telemetry event reference in `TELEMETRY.md` or
+See the full telemetry event reference in [Telemetry](TELEMETRY.md) or
 `Sftpd.Telemetry`.
 
 ### Custom Backends
 
 Implement the `Sftpd.Backend` behaviour to create custom storage backends.
-See `BACKENDS.md` for backend overview and `CUSTOM_BACKENDS.md` for a full
-authoring guide.
+See [Backends](BACKENDS.md) for backend overview and
+[Custom Backends](CUSTOM_BACKENDS.md) for a full authoring guide.
 
 ## SSH Host Keys
 
@@ -259,7 +260,15 @@ Sftpd.start_server(
 
 ## Documentation
 
-Full documentation available at [HexDocs](https://hexdocs.pm/sftpd).
+Full documentation is available at
+[HexDocs](https://elixir_ssh.hexorgs.pm/sftpd).
+
+## Erlang/OTP 29 Note
+
+OTP 29 no longer enables SFTP implicitly for SSH daemons and also disables
+shell and exec services by default. `Sftpd.start_server/1` already passes the
+required SFTP subsystem configuration, so applications using this package do
+not need to configure OTP SSH subsystems themselves.
 
 ## License
 

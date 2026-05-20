@@ -2,8 +2,8 @@
 
 This guide explains how to build your own backend for `Sftpd`.
 
-If you only need a built-in backend, see `BACKENDS.md`. If you want the exact
-callback contracts, see `Sftpd.Backend`.
+If you only need a built-in backend, see [Backends](BACKENDS.md). If you want
+the exact callback contracts, see `Sftpd.Backend`.
 
 ## Backend Model
 
@@ -521,12 +521,12 @@ If you implement streaming callbacks, also test:
 ## Telemetry
 
 Backend activity is visible through `Sftpd` telemetry events emitted around
-server lifecycle and SFTP file-handler operations. See `TELEMETRY.md` for the
-event catalog and metadata.
+server lifecycle and SFTP file-handler operations. See
+[Telemetry](TELEMETRY.md) for the event catalog and metadata.
 
 ## Next Steps
 
 - See `Sftpd.Backend` for the exact callback contracts
-- See `BACKENDS.md` for tradeoffs between built-in and custom backends
+- See [Backends](BACKENDS.md) for tradeoffs between built-in and custom backends
 - See `Sftpd.Backends.Memory` for a simple reference implementation
 - See `Sftpd.Backends.S3` for a streaming-capable reference implementation
