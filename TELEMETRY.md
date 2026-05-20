@@ -97,6 +97,7 @@ Special cases:
 - `:path`
 - `:requested_modes`
 - `:mode`
+- `:open_timeout`
 
 `requested_modes` contains the raw mode list passed into the SFTP file handler.
 `mode` is the resolved value `:read` or `:write` after `Sftpd` normalizes it.

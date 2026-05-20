@@ -12,7 +12,15 @@
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
-        pkgs = import nixpkgs {inherit system;};
+        pkgs = import nixpkgs {
+          inherit system;
+          # nixpkgs currently marks MinIO insecure even on nixpkgs-unstable.
+          # Keep this only for the local S3-compatible integration-test server;
+          # CI runs MinIO through Docker Compose instead.
+          config.permittedInsecurePackages = [
+            "minio-2025-10-15T17-29-55Z"
+          ];
+        };
         lib = pkgs.lib;
 
         toolVersions =
@@ -81,11 +89,13 @@
               pkgs.cspell
               pkgs.alejandra
               pkgs.nil
+              pkgs.openssh
+              pkgs.minio
+              pkgs.minio-client
             ]
             ++ lib.optional pkgs.stdenv.isLinux pkgs.libnotify
             ++ lib.optional pkgs.stdenv.isLinux pkgs.inotify-tools
-            ++ lib.optional pkgs.stdenv.isDarwin pkgs.terminal-notifier
-            ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [CoreFoundation CoreServices]);
+            ++ lib.optional pkgs.stdenv.isDarwin pkgs.terminal-notifier;
           shellHook = ''
             gh auth switch --user mjc
             export ERL_AFLAGS="-kernel shell_history enabled"

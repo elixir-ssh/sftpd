@@ -56,7 +56,7 @@ jobs:
           exit 1
 
       - name: Run tests
-        run: mix test --exclude consumer_project
+        run: mix test --include integration --exclude consumer_project
         env:
           AWS_ENDPOINT_URL: http://localhost:9000
           AWS_ACCESS_KEY_ID: minioadmin
@@ -127,7 +127,7 @@ jobs:
           AWS_REGION: us-east-1
 
       - name: Run tests (with integration)
-        run: mix test --exclude consumer_project
+        run: mix test --include integration --exclude consumer_project
         env:
           AWS_ENDPOINT_URL: http://localhost:9000
           AWS_ACCESS_KEY_ID: minioadmin

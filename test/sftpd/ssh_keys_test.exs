@@ -59,14 +59,10 @@ defmodule Sftpd.Test.SSHKeysTest do
         # Exit immediately
       end)
 
-      # Get the directory path
-      assert_receive {:dir, dir}, 1000
+      # Key generation can be slower on CI, especially under load.
+      assert_receive {:dir, dir}, 10_000
 
-      # Wait for cleanup to happen
-      Process.sleep(100)
-
-      # Directory should be cleaned up
-      refute File.exists?(dir)
+      refute_eventually_exists(dir)
     end
 
     test "generates valid RSA key that can be parsed" do
@@ -92,5 +88,20 @@ defmodule Sftpd.Test.SSHKeysTest do
       # ECDSA key should be a tuple starting with :ECPrivateKey
       assert elem(key, 0) == :ECPrivateKey
     end
+  end
+
+  defp refute_eventually_exists(path, attempts_remaining \\ 50)
+
+  defp refute_eventually_exists(path, attempts_remaining) when attempts_remaining > 0 do
+    if File.exists?(path) do
+      Process.sleep(100)
+      refute_eventually_exists(path, attempts_remaining - 1)
+    else
+      refute File.exists?(path)
+    end
+  end
+
+  defp refute_eventually_exists(path, 0) do
+    refute File.exists?(path)
   end
 end

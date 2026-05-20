@@ -104,6 +104,168 @@ SFTP paths arrive as charlists. Common helpers:
 `normalize_path/1` is especially useful for key-based stores such as S3-like
 systems because it removes the leading `/`.
 
+## Example: Local Folder Backend
+
+This example maps SFTP paths into a single root directory on local disk. The
+important part is the `local_path/2` helper: it normalizes SFTP charlist paths,
+rejects `..` traversal, and uses a path-relative containment check that also
+works when the configured root is `/`. This example does not resolve symlink
+targets; if users can create symlinks inside the root, disallow symlinks or add
+real-path validation before using this pattern for untrusted writes.
+
+```elixir
+defmodule MyApp.LocalFolderBackend do
+  @behaviour Sftpd.Backend
+
+  alias Sftpd.Backend
+
+  @impl true
+  def init(opts) do
+    root = opts |> Keyword.fetch!(:root) |> Path.expand()
+    File.mkdir_p!(root)
+    {:ok, %{root: root}}
+  end
+
+  @impl true
+  def list_dir(path, state) do
+    with {:ok, local} <- local_path(path, state),
+         {:ok, entries} <- File.ls(local) do
+      {:ok, [~c".", ~c".." | Enum.map(entries, &String.to_charlist/1)]}
+    else
+      {:error, reason} -> {:error, map_error(reason)}
+    end
+  end
+
+  @impl true
+  def file_info(path, state) do
+    with {:ok, local} <- local_path(path, state),
+         {:ok, stat} <- File.stat(local) do
+      {:ok, stat_to_file_info(stat)}
+    else
+      {:error, reason} -> {:error, map_error(reason)}
+    end
+  end
+
+  @impl true
+  def make_dir(path, state) do
+    with {:ok, local} <- local_path(path, state),
+         :ok <- File.mkdir(local) do
+      :ok
+    else
+      {:error, reason} -> {:error, map_error(reason)}
+    end
+  end
+
+  @impl true
+  def del_dir(path, state) do
+    with {:ok, local} <- local_path(path, state),
+         :ok <- File.rmdir(local) do
+      :ok
+    else
+      {:error, reason} -> {:error, map_error(reason)}
+    end
+  end
+
+  @impl true
+  def delete(path, state) do
+    with {:ok, local} <- local_path(path, state),
+         :ok <- File.rm(local) do
+      :ok
+    else
+      {:error, reason} -> {:error, map_error(reason)}
+    end
+  end
+
+  @impl true
+  def rename(src, dst, state) do
+    with {:ok, src_local} <- local_path(src, state),
+         {:ok, dst_local} <- local_path(dst, state),
+         :ok <- File.rename(src_local, dst_local) do
+      :ok
+    else
+      {:error, reason} -> {:error, map_error(reason)}
+    end
+  end
+
+  @impl true
+  def read_file(path, state) do
+    with {:ok, local} <- local_path(path, state),
+         {:ok, content} <- File.read(local) do
+      {:ok, content}
+    else
+      {:error, reason} -> {:error, map_error(reason)}
+    end
+  end
+
+  @impl true
+  def write_file(path, content, state) do
+    with {:ok, local} <- local_path(path, state),
+         :ok <- File.mkdir_p(Path.dirname(local)),
+         :ok <- File.write(local, content) do
+      :ok
+    else
+      {:error, reason} -> {:error, map_error(reason)}
+    end
+  end
+
+  defp local_path(path, %{root: root}) do
+    parts =
+      path
+      |> Backend.normalize_path()
+      |> Path.split()
+      |> Enum.reject(&(&1 in ["", "."]))
+
+    if ".." in parts do
+      {:error, :eacces}
+    else
+      candidate = Path.expand(Path.join([root | parts]))
+
+      if contained_in_root?(candidate, root) do
+        {:ok, candidate}
+      else
+        {:error, :eacces}
+      end
+    end
+  end
+
+  defp contained_in_root?(candidate, root) do
+    relative = Path.relative_to(candidate, root)
+
+    candidate == root or
+      (Path.type(relative) == :relative and
+         relative != ".." and
+         not String.starts_with?(relative, "../"))
+  end
+
+  defp stat_to_file_info(%File.Stat{type: :directory}) do
+    Backend.directory_info()
+  end
+
+  defp stat_to_file_info(%File.Stat{size: size, mtime: mtime}) do
+    Backend.file_info(size, mtime)
+  end
+
+  defp map_error(:enoent), do: :enoent
+  defp map_error(:eacces), do: :eacces
+  defp map_error(:enotdir), do: :enoent
+  defp map_error(:eexist), do: :eexist
+  defp map_error(:enotempty), do: :eexist
+  defp map_error(_reason), do: :eio
+end
+```
+
+Use it like any module backend:
+
+```elixir
+Sftpd.start_server(
+  port: 2222,
+  backend: MyApp.LocalFolderBackend,
+  backend_opts: [root: "/srv/my_app/sftp"],
+  auth: {:passwords, [{"user", "pass"}]},
+  system_dir: "ssh_keys"
+)
+```
+
 ## Directory Listings
 
 `list_dir/2` must return entries as charlists and must include:
@@ -149,17 +311,194 @@ If you do not implement them, `Sftpd` falls back to the required callbacks.
 If your backend already lives inside a GenServer, you can provide:
 
 ```elixir
-backend: {:genserver, MyApp.BackendServer}
+backend: {:genserver, MyApp.BackendServer, session: true}
 ```
 
 In that mode, `Sftpd` does not call `init/1`. Instead it sends `handle_call/3`
 messages corresponding to the required backend operations.
+
+The default `{:genserver, server}` form preserves the legacy process-backend
+message contract. Use `{:genserver, server, session: true}` when the backend
+needs authenticated session context in each call.
 
 This is useful when:
 
 - the backend owns pooled connections
 - the backend has mutable shared state
 - the backend is already part of your supervision tree
+
+Process-based backends use only the required whole-file callback contract. The
+optional streaming callbacks are module-backend-only.
+
+Here is a complete in-memory GenServer shape:
+
+```elixir
+defmodule MyApp.SftpBackend do
+  use GenServer
+
+  alias Sftpd.Backend
+
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def init(_opts) do
+    {:ok, %{files: %{}}}
+  end
+
+  @impl true
+  def handle_call({:list_dir, _path, _session}, _from, state) do
+    names =
+      state.files
+      |> Map.keys()
+      |> Enum.map(&Path.basename/1)
+      |> Enum.uniq()
+      |> Enum.map(&String.to_charlist/1)
+
+    {:reply, {:ok, [~c".", ~c".." | names]}, state}
+  end
+
+  def handle_call({:file_info, path, _session}, _from, state) do
+    key = Backend.normalize_path(path)
+
+    reply =
+      case Map.fetch(state.files, key) do
+        {:ok, content} ->
+          mtime = NaiveDateTime.utc_now() |> NaiveDateTime.to_erl()
+          {:ok, Backend.file_info(byte_size(content), mtime)}
+
+        :error ->
+          {:error, :enoent}
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:make_dir, _path, _session}, _from, state), do: {:reply, :ok, state}
+  def handle_call({:del_dir, _path, _session}, _from, state), do: {:reply, :ok, state}
+  def handle_call({:delete, path, _session}, _from, state) do
+    {:reply, :ok, update_in(state.files, &Map.delete(&1, Backend.normalize_path(path)))}
+  end
+
+  def handle_call({:rename, src, dst, _session}, _from, state) do
+    src_key = Backend.normalize_path(src)
+    dst_key = Backend.normalize_path(dst)
+
+    case Map.pop(state.files, src_key) do
+      {nil, files} -> {:reply, {:error, :enoent}, %{state | files: files}}
+      {content, files} -> {:reply, :ok, %{state | files: Map.put(files, dst_key, content)}}
+    end
+  end
+
+  def handle_call({:read_file, path, _session}, _from, state) do
+    reply =
+      case Map.fetch(state.files, Backend.normalize_path(path)) do
+        {:ok, content} -> {:ok, content}
+        :error -> {:error, :enoent}
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:write_file, path, content, _session}, _from, state) do
+    key = Backend.normalize_path(path)
+    {:reply, :ok, put_in(state.files[key], content)}
+  end
+end
+```
+
+Add the backend process to your application supervision tree before starting
+the SFTP server:
+
+```elixir
+children = [
+  MyApp.SftpBackend,
+  MyApp.SftpServer
+]
+```
+
+Then point `Sftpd` at the registered process:
+
+```elixir
+Sftpd.start_server(
+  port: 2222,
+  backend: {:genserver, MyApp.SftpBackend, session: true},
+  auth: {:passwords, [{"user", "pass"}]},
+  system_dir: "ssh_keys"
+)
+```
+
+Backend calls are synchronous from the SFTP client's perspective. If a
+`GenServer.call/3` blocks, the client operation blocks too.
+
+## Post-Write Processing with Broadway
+
+Use Broadway for follow-up processing after the backend has durably accepted a
+file. Do not use it as the synchronous storage acknowledgement path unless the
+client can safely treat a queued message as durable storage.
+
+```elixir
+def handle_call({:write_file, path, content, _session}, _from, state) do
+  :ok = MyStorage.put(path, content)
+
+  Broadway.producer_names(MyApp.SftpIngestBroadway)
+  |> Enum.each(fn producer ->
+    message = %Broadway.Message{data: %{path: path}}
+    Broadway.push_messages(producer, [message])
+  end)
+
+  {:reply, :ok, state}
+end
+```
+
+The storage write happens before the reply. Broadway is then responsible for
+post-upload work such as parsing, indexing, thumbnails, notifications, or
+moving the file into a longer pipeline.
+
+## Running Under Supervision
+
+`Sftpd.child_spec/1` starts and stops the SSH daemon under your application
+supervisor:
+
+```elixir
+children = [
+  {Sftpd,
+   port: 2222,
+   backend: Sftpd.Backends.Memory,
+   backend_opts: [],
+   auth: {:passwords, [{"user", "pass"}]},
+   system_dir: "ssh_keys"}
+]
+```
+
+## Authentication
+
+Use `auth: {:passwords, [{"username", "password"}]}` for local development.
+For production, pass `auth: {MyApp.SftpAuth, opts}` and implement
+`Sftpd.Auth`.
+
+Auth callbacks return a session map. Module callbacks can opt into that context
+by implementing session-aware arities, for example:
+
+```elixir
+def list_dir(path, %{tenant_id: tenant_id}, state) do
+  list_tenant_dir(tenant_id, path, state)
+end
+```
+
+Process backends receive the session as the final tuple element, such as
+`{:read_file, path, session}`.
+
+## Known Semantics and Limitations
+
+- SFTP paths are charlists.
+- Non-streaming backends read and write whole files through the required
+  callbacks.
+- Process-based backends use synchronous `GenServer.call/3`.
+- Process-based backends do not use optional streaming callbacks.
+- OTP's stock SFTP server reports close success to the client even when a
+  close-time backend flush fails, so close-only failures are logged server-side.
 
 ## Testing Recommendations
 

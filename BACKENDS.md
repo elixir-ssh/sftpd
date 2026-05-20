@@ -16,6 +16,14 @@ Module-based backends are the simplest fit for stateless adapters and are what
 the built-in backends use. Process-based backends are useful when the storage
 layer already has a long-lived process, mutable state, or its own lifecycle.
 
+| Need | Use |
+| --- | --- |
+| Tests, demos, and local development | `Sftpd.Backends.Memory` |
+| Amazon S3, MinIO, or another S3-compatible store | `Sftpd.Backends.S3` |
+| A local disk folder | A custom folder backend |
+| A shared process, cache, queue, or connection pool | `{:genserver, name_or_pid}` |
+| Async ingestion after upload | Store synchronously in the backend, then enqueue a Broadway job |
+
 ## Built-In Backends
 
 ### `Sftpd.Backends.Memory`
@@ -41,7 +49,7 @@ Example:
     port: 2222,
     backend: Sftpd.Backends.Memory,
     backend_opts: [],
-    users: [{"dev", "dev"}],
+    auth: {:passwords, [{"dev", "dev"}]},
     system_dir: "ssh_keys"
   )
 ```
@@ -83,12 +91,22 @@ Example:
     port: 2222,
     backend: Sftpd.Backends.S3,
     backend_opts: [bucket: "my-bucket", prefix: "tenant-a/"],
-    users: [{"user", "pass"}],
+    auth: {:passwords, [{"user", "pass"}]},
     system_dir: "ssh_keys"
   )
 ```
 
-See `Sftpd.Backends.S3` for configuration details and caveats.
+The S3 `:prefix` option can be a static string or `{:session, key}`. Session
+prefixes read from the authenticated session map returned by `Sftpd.Auth`
+callbacks, which is useful for tenant-scoped object keys:
+
+```elixir
+backend_opts: [bucket: "uploads", prefix: {:session, :sftp_prefix}]
+```
+
+See `Sftpd.Backends.S3` for configuration details and caveats. The Getting
+Started guide has the same dependency list in the context of a full server
+setup.
 
 ## Module-Based Backends
 
@@ -138,7 +156,7 @@ Use it with:
 Sftpd.start_server(
   backend: MyApp.CustomBackend,
   backend_opts: [root: "/data"],
-  users: [{"user", "pass"}],
+  auth: {:passwords, [{"user", "pass"}]},
   system_dir: "ssh_keys"
 )
 ```
@@ -146,19 +164,31 @@ Sftpd.start_server(
 ## Process-Based Backends
 
 You can also pass a running GenServer as `{:genserver, server}`. In that mode,
-`Sftpd` skips `init/1` and forwards backend operations as `handle_call/3`
-messages.
+`Sftpd` skips `init/1` and forwards backend operations as legacy
+`handle_call/3` messages so existing process backends keep working.
 
 Calls follow this shape:
 
-- `{:list_dir, path}`
-- `{:file_info, path}`
-- `{:make_dir, path}`
-- `{:del_dir, path}`
-- `{:delete, path}`
-- `{:rename, src, dst}`
-- `{:read_file, path}`
-- `{:write_file, path, content}`
+- `{:list_dir, path, session}`
+- `{:file_info, path, session}`
+- `{:make_dir, path, session}`
+- `{:del_dir, path, session}`
+- `{:delete, path, session}`
+- `{:rename, src, dst, session}`
+- `{:read_file, path, session}`
+- `{:write_file, path, content, session}`
+
+If a process backend needs authenticated session context, opt in with
+`{:genserver, server, session: true}`. Session-aware calls follow this shape:
+
+- `{:list_dir, path, session}`
+- `{:file_info, path, session}`
+- `{:make_dir, path, session}`
+- `{:del_dir, path, session}`
+- `{:delete, path, session}`
+- `{:rename, src, dst, session}`
+- `{:read_file, path, session}`
+- `{:write_file, path, content, session}`
 
 The reply format must match the `Sftpd.Backend` callback contracts.
 
@@ -171,6 +201,11 @@ For large files, module backends can optionally implement:
 - `write_chunk/4`
 - `finish_write/2`
 - `abort_write/2`
+
+Session-aware variants are also supported by adding the authenticated session
+map immediately before backend state, for example `list_dir(path, session,
+state)` or `write_file(path, content, session, state)`. When both variants are
+available, `Sftpd` calls the session-aware function.
 
 When present:
 

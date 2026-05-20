@@ -5,4 +5,5 @@
 
 Mox.defmock(Sftpd.Test.MockExAws, for: Sftpd.ExAwsClient)
 
+ExUnit.configure(exclude: [integration: true])
 ExUnit.start()

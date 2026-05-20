@@ -367,9 +367,169 @@ defmodule SftpdIntegrationTest do
     end
   end
 
-  defp start_ssh_client do
+  describe "SFTP Server - Session-scoped S3" do
+    test "two password users with different session prefixes cannot see each other's objects", %{
+      bucket: bucket,
+      system_dir: system_dir
+    } do
+      run_id = System.unique_integer([:positive])
+      tenant_a_prefix = "integration/#{run_id}/tenant-a/"
+      tenant_b_prefix = "integration/#{run_id}/tenant-b/"
+
+      {:ok, ref} =
+        Sftpd.start_server(
+          port: @port,
+          backend: Sftpd.Backends.S3,
+          backend_opts: [bucket: bucket, prefix: {:session, :sftp_prefix}],
+          auth:
+            {SftpdIntegrationTest.TenantAuth,
+             [
+               tenants: %{
+                 "tenant-a" => tenant_a_prefix,
+                 "tenant-b" => tenant_b_prefix
+               }
+             ]},
+          system_dir: system_dir
+        )
+
+      on_exit(fn ->
+        Sftpd.stop_server(ref)
+        ExAws.S3.delete_object(bucket, tenant_a_prefix <> "shared.txt") |> ExAws.request()
+        ExAws.S3.delete_object(bucket, tenant_b_prefix <> "shared.txt") |> ExAws.request()
+      end)
+
+      tenant_a = start_ssh_client(user: ~c"tenant-a", password: ~c"password")
+      tenant_b = start_ssh_client(user: ~c"tenant-b", password: ~c"password")
+
+      assert :ok = write_sftp_file(tenant_a.channel_ref, ~c"/shared.txt", "tenant-a")
+      assert {:ok, listing_a} = :ssh_sftp.list_dir(tenant_a.channel_ref, ~c"/")
+      assert {:ok, listing_b} = :ssh_sftp.list_dir(tenant_b.channel_ref, ~c"/")
+
+      assert ~c"shared.txt" in listing_a
+      refute ~c"shared.txt" in listing_b
+
+      assert :ok = write_sftp_file(tenant_b.channel_ref, ~c"/shared.txt", "tenant-b")
+
+      assert read_sftp_file(tenant_a.channel_ref, ~c"/shared.txt") == "tenant-a"
+      assert read_sftp_file(tenant_b.channel_ref, ~c"/shared.txt") == "tenant-b"
+    end
+  end
+
+  describe "SFTP Server - Public Key Auth" do
+    test "sftp -i can upload list and download with memory backend", %{system_dir: system_dir} do
+      sftp = System.find_executable("sftp") || flunk("sftp executable not found")
+
+      ssh_keygen =
+        System.find_executable("ssh-keygen") || flunk("ssh-keygen executable not found")
+
+      tmp_dir = Path.join(System.tmp_dir!(), "sftpd_pubkey_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp_dir)
+
+      key_path = Path.join(tmp_dir, "id_ed25519")
+      batch_path = Path.join(tmp_dir, "batch")
+      upload_path = Path.join(tmp_dir, "upload.txt")
+      download_path = Path.join(tmp_dir, "download.txt")
+
+      assert {"", 0} =
+               System.cmd(ssh_keygen, [
+                 "-q",
+                 "-t",
+                 "ed25519",
+                 "-f",
+                 key_path,
+                 "-N",
+                 ""
+               ])
+
+      {:ok, public_key} =
+        key_path
+        |> then(&File.read!(&1 <> ".pub"))
+        |> Sftpd.Auth.decode_authorized_key()
+
+      fingerprint = Sftpd.Auth.fingerprint(public_key)
+      File.write!(upload_path, "public key upload")
+
+      File.write!(batch_path, """
+      put #{upload_path} uploaded.txt
+      ls
+      get uploaded.txt #{download_path}
+      rm uploaded.txt
+      """)
+
+      {:ok, ref} =
+        Sftpd.start_server(
+          port: @port,
+          backend: Sftpd.Backends.Memory,
+          backend_opts: [],
+          auth: {SftpdIntegrationTest.PublicKeyAuth, [fingerprint: fingerprint]},
+          system_dir: system_dir
+        )
+
+      on_exit(fn ->
+        Sftpd.stop_server(ref)
+        File.rm_rf(tmp_dir)
+      end)
+
+      {output, status} =
+        System.cmd(sftp, [
+          "-b",
+          batch_path,
+          "-i",
+          key_path,
+          "-P",
+          Integer.to_string(@port),
+          "-o",
+          "StrictHostKeyChecking=no",
+          "-o",
+          "UserKnownHostsFile=/dev/null",
+          "key-user@127.0.0.1"
+        ])
+
+      assert status == 0, output
+      assert output =~ "uploaded.txt"
+      assert File.read!(download_path) == "public key upload"
+    end
+  end
+
+  defmodule PublicKeyAuth do
+    @behaviour Sftpd.Auth
+
+    @impl true
+    def authenticate_password(_username, _password, _peer, _opts), do: :error
+
+    @impl true
+    def authorize_public_key("key-user", public_key, opts) do
+      if Sftpd.Auth.fingerprint(public_key) == Keyword.fetch!(opts, :fingerprint) do
+        {:ok, %{username: "key-user"}}
+      else
+        :error
+      end
+    end
+
+    def authorize_public_key(_username, _public_key, _opts), do: :error
+  end
+
+  defmodule TenantAuth do
+    @behaviour Sftpd.Auth
+
+    @impl true
+    def authenticate_password(username, "password", _peer, opts) do
+      case opts |> Keyword.fetch!(:tenants) |> Map.fetch(username) do
+        {:ok, prefix} -> {:ok, %{username: username, sftp_prefix: prefix}}
+        :error -> :error
+      end
+    end
+
+    def authenticate_password(_username, _password, _peer, _opts), do: :error
+
+    @impl true
+    def authorize_public_key(_username, _public_key, _opts), do: :error
+  end
+
+  defp start_ssh_client(opts \\ []) do
     # connect client
-    assert {:ok, client_connection_ref} = :ssh.connect(:localhost, @port, @client_opts)
+    client_opts = Keyword.merge(@client_opts, opts)
+    assert {:ok, client_connection_ref} = :ssh.connect(:localhost, @port, client_opts)
 
     assert {:ok, channel_ref} = :ssh_sftp.start_channel(client_connection_ref)
 
@@ -378,12 +538,26 @@ defmodule SftpdIntegrationTest do
     %{client_connection_ref: client_connection_ref, channel_ref: channel_ref}
   end
 
+  defp write_sftp_file(channel_ref, path, content) do
+    with {:ok, handle} <- :ssh_sftp.open(channel_ref, path, [:write]),
+         :ok <- :ssh_sftp.write(channel_ref, handle, content) do
+      :ssh_sftp.close(channel_ref, handle)
+    end
+  end
+
+  defp read_sftp_file(channel_ref, path) do
+    {:ok, handle} = :ssh_sftp.open(channel_ref, path, [:read])
+    {:ok, content} = :ssh_sftp.read(channel_ref, handle, 100)
+    :ok = :ssh_sftp.close(channel_ref, handle)
+    to_string(content)
+  end
+
   defp start_ssh_server(system_dir) do
     case Sftpd.start_server(
            port: @port,
            backend: Sftpd.Backends.S3,
            backend_opts: [bucket: Application.fetch_env!(:sftpd, :bucket)],
-           users: [{"user", "password"}],
+           auth: {:passwords, [{"user", "password"}]},
            system_dir: system_dir
          ) do
       {:ok, ref} ->

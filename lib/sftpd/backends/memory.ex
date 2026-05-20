@@ -9,11 +9,11 @@ defmodule Sftpd.Backends.Memory do
 
   ## Usage
 
-      {:ok, pid} = Sftpd.start_server(
+      {:ok, ref} = Sftpd.start_server(
         port: 2222,
         backend: Sftpd.Backends.Memory,
         backend_opts: [],
-        users: [{"user", "pass"}],
+        auth: {:passwords, [{"user", "pass"}]},
         system_dir: "path/to/ssh_keys"
       )
 
@@ -104,6 +104,7 @@ defmodule Sftpd.Backends.Memory do
       {:ok, Backend.directory_info()}
     else
       key = Backend.normalize_path(path)
+      dir_prefix = normalize_prefix(path)
 
       Agent.get(agent, fn files ->
         case Map.get(files, key) do
@@ -111,7 +112,7 @@ defmodule Sftpd.Backends.Memory do
             {:ok, Backend.file_info(byte_size(content), NaiveDateTime.to_erl(mtime), :read_write)}
 
           nil ->
-            if directory_exists?(files, key <> "/") do
+            if directory_exists?(files, dir_prefix) do
               {:ok, Backend.directory_info()}
             else
               {:error, :enoent}
@@ -124,7 +125,7 @@ defmodule Sftpd.Backends.Memory do
   @impl true
   @spec make_dir(Backend.path(), state()) :: :ok
   def make_dir(path, %{agent: agent}) do
-    key = Backend.normalize_path(path) <> "/" <> @keep_marker
+    key = normalize_prefix(path) <> @keep_marker
 
     Agent.update(agent, fn files ->
       Map.put(files, key, %{content: "", mtime: NaiveDateTime.utc_now()})
@@ -134,15 +135,18 @@ defmodule Sftpd.Backends.Memory do
   end
 
   @impl true
-  @spec del_dir(Backend.path(), state()) :: :ok
+  @spec del_dir(Backend.path(), state()) :: :ok | {:error, :eexist}
   def del_dir(path, %{agent: agent}) do
-    key = Backend.normalize_path(path) <> "/" <> @keep_marker
+    prefix = normalize_prefix(path)
+    keep_marker_key = prefix <> @keep_marker
 
-    Agent.update(agent, fn files ->
-      Map.delete(files, key)
+    Agent.get_and_update(agent, fn files ->
+      if non_marker_child_exists?(files, prefix) do
+        {{:error, :eexist}, files}
+      else
+        {:ok, Map.delete(files, keep_marker_key)}
+      end
     end)
-
-    :ok
   end
 
   @impl true
@@ -201,7 +205,16 @@ defmodule Sftpd.Backends.Memory do
   # Helpers
 
   defp normalize_prefix(path) do
-    if Backend.root_path?(path), do: "", else: Backend.normalize_path(path) <> "/"
+    if Backend.root_path?(path) do
+      ""
+    else
+      key =
+        path
+        |> Backend.normalize_path()
+        |> String.trim_trailing("/")
+
+      if key == "", do: "", else: key <> "/"
+    end
   end
 
   defp first_path_segment(path) do
@@ -213,5 +226,13 @@ defmodule Sftpd.Backends.Memory do
 
   defp directory_exists?(files, dir_prefix) do
     Enum.any?(files, fn {path, _data} -> String.starts_with?(path, dir_prefix) end)
+  end
+
+  defp non_marker_child_exists?(files, dir_prefix) do
+    keep_marker_key = dir_prefix <> @keep_marker
+
+    Enum.any?(files, fn {path, _data} ->
+      String.starts_with?(path, dir_prefix) and path != keep_marker_key
+    end)
   end
 end

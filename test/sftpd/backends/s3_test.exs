@@ -157,9 +157,79 @@ defmodule Sftpd.Backends.S3Test do
       assert listing == [~c".", ~c"..", ~c"file1.txt", ~c"nested"]
     end
 
-    test "list_dir handles S3 errors gracefully", %{state: state} do
+    test "list_dir propagates S3 errors", %{state: state} do
       expect(MockExAws, :request, fn _op -> {:error, :timeout} end)
-      assert {:ok, [~c".", ~c".."]} = S3.list_dir(~c"/", state)
+      assert {:error, :eio} = S3.list_dir(~c"/", state)
+    end
+  end
+
+  describe "session prefixes" do
+    setup do
+      {:ok, state} =
+        S3.init(bucket: "test-bucket", prefix: {:session, :sftp_prefix}, aws_client: MockExAws)
+
+      %{state: state, session: %{sftp_prefix: "tenants/acme/"}}
+    end
+
+    test "list_dir scopes listings to the authenticated session prefix", %{
+      state: state,
+      session: session
+    } do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "tenants/acme/uploads/"
+        assert op.params["delimiter"] == "/"
+
+        {:ok,
+         %{
+           body: %{
+             contents: [%{key: "tenants/acme/uploads/file.txt"}],
+             common_prefixes: [],
+             is_truncated: "false"
+           }
+         }}
+      end)
+
+      assert {:ok, [~c".", ~c"..", ~c"file.txt"]} = S3.list_dir(~c"/uploads", session, state)
+    end
+
+    test "write_file scopes object keys to the authenticated session prefix", %{
+      state: state,
+      session: session
+    } do
+      expect(MockExAws, :request, fn op ->
+        assert op.bucket == "test-bucket"
+        assert op.path == "tenants/acme/reports/q1.csv"
+        assert op.body == "content"
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.write_file(~c"/reports/q1.csv", "content", session, state)
+    end
+
+    test "missing session prefix key raises a clear KeyError", %{state: state} do
+      assert_raise KeyError, fn ->
+        S3.read_file(~c"/file.txt", %{}, state)
+      end
+    end
+
+    property "write_file composes session prefixes with normalized SFTP paths", %{state: state} do
+      check all(
+              prefix_segments <- list_of(s3_segment(), min_length: 1, max_length: 3),
+              leading_slashes <- integer(0..4),
+              path_segments <- list_of(s3_segment(), min_length: 1, max_length: 4),
+              max_runs: 20
+            ) do
+        prefix = Enum.join(prefix_segments, "/") <> "/"
+        path = String.duplicate("/", leading_slashes) <> Enum.join(path_segments, "/")
+        expected_key = prefix <> Enum.join(path_segments, "/")
+
+        expect(MockExAws, :request, fn op ->
+          assert op.path == expected_key
+          {:ok, %{}}
+        end)
+
+        assert :ok = S3.write_file(to_charlist(path), "content", %{sftp_prefix: prefix}, state)
+      end
     end
   end
 

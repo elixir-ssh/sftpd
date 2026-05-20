@@ -56,6 +56,40 @@ defmodule Sftpd.IODeviceTest do
     def read_file_range(_path, _offset, _len, _state), do: {:ok, "unused"}
   end
 
+  defmodule HangingOpenBackend do
+    def read_file(_path, %{test_pid: test_pid}) do
+      send(test_pid, {:open_started, self()})
+      Process.sleep(:infinity)
+    end
+  end
+
+  defmodule SlowProcessReadBackend do
+    use GenServer
+
+    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
+
+    def reply(pid, reply), do: GenServer.cast(pid, {:reply_read, reply})
+
+    @impl GenServer
+    def init(test_pid), do: {:ok, %{test_pid: test_pid, read_from: nil}}
+
+    @impl GenServer
+    def handle_call({:read_file, path}, from, state) do
+      send(state.test_pid, {:process_read_opened, self(), path})
+      {:noreply, %{state | read_from: from}}
+    end
+
+    @impl GenServer
+    def handle_cast({:reply_read, reply}, %{read_from: from} = state) do
+      GenServer.reply(from, reply)
+      {:noreply, %{state | read_from: nil}}
+    end
+  end
+
+  defmodule CrashingOpenBackend do
+    def read_file(_path, _state), do: raise("open failed")
+  end
+
   defmodule StreamingBackend do
     def begin_write(_path, %{test_pid: test_pid}), do: {:ok, %{chunks: [], test_pid: test_pid}}
 
@@ -74,6 +108,17 @@ defmodule Sftpd.IODeviceTest do
       send(handle.test_pid, {:stream_abort, handle.chunks})
       :ok
     end
+  end
+
+  defmodule HangingStreamingOpenBackend do
+    def begin_write(_path, %{test_pid: test_pid}) do
+      send(test_pid, {:stream_open_started, self()})
+      Process.sleep(:infinity)
+    end
+
+    def write_chunk(handle, _offset, _chunk, _state), do: {:ok, handle}
+    def finish_write(_handle, _state), do: :ok
+    def abort_write(_handle, _state), do: :ok
   end
 
   defmodule PartialStreamingBackend do
@@ -321,15 +366,13 @@ defmodule Sftpd.IODeviceTest do
     end
 
     test "handles read error gracefully" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/missing.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{error: :enoent}
-        })
-
-      assert {:error, :enoent} = GenServer.call(pid, {:read, 10})
+      assert {:error, :enoent} =
+               IODevice.start(%{
+                 path: ~c"/missing.txt",
+                 mode: :read,
+                 backend: MockBackend,
+                 backend_state: %{error: :enoent}
+               })
     end
 
     test "returns eof when a range backend yields an empty chunk" do
@@ -359,18 +402,90 @@ defmodule Sftpd.IODeviceTest do
     test "logs and surfaces file_info errors for range backends" do
       log =
         capture_log(fn ->
-          {:ok, pid} =
-            IODevice.start(%{
-              path: ~c"/range.txt",
-              mode: :read,
-              backend: RangeStatErrorBackend,
-              backend_state: %{}
-            })
-
-          assert {:error, :enoent} = GenServer.call(pid, {:read, 3})
+          assert {:error, :enoent} =
+                   IODevice.start(%{
+                     path: ~c"/range.txt",
+                     mode: :read,
+                     backend: RangeStatErrorBackend,
+                     backend_state: %{}
+                   })
         end)
 
       assert log =~ "Failed to stat file"
+    end
+
+    test "times out and terminates devices when read setup hangs" do
+      test_pid = self()
+
+      task =
+        Task.async(fn ->
+          capture_log(fn ->
+            result =
+              IODevice.start(%{
+                path: ~c"/stuck.txt",
+                mode: :read,
+                backend: HangingOpenBackend,
+                backend_state: %{test_pid: test_pid},
+                open_timeout: 10
+              })
+
+            send(test_pid, {:open_result, result})
+          end)
+        end)
+
+      assert_receive {:open_started, pid}, 1000
+      ref = Process.monitor(pid)
+      assert_receive {:open_result, {:error, :timeout}}, 1000
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1000
+
+      assert Task.await(task, 1000) =~ "Timed out waiting 10ms"
+    end
+
+    test "process backend read open honors open_timeout beyond GenServer call default" do
+      {:ok, backend} = SlowProcessReadBackend.start_link(self())
+
+      task =
+        Task.async(fn ->
+          IODevice.start(%{
+            path: ~c"/slow.txt",
+            mode: :read,
+            backend: {:genserver, backend},
+            backend_state: :ignored,
+            open_timeout: 7_000
+          })
+        end)
+
+      assert_receive {:process_read_opened, ^backend, ~c"/slow.txt"}, 1_000
+      Process.sleep(5_200)
+      refute Task.yield(task, 0)
+
+      SlowProcessReadBackend.reply(backend, {:ok, "slow"})
+
+      assert {:ok, pid} = Task.await(task, 2_000)
+      assert {:ok, "slow"} = GenServer.call(pid, {:read, 10})
+    end
+
+    test "returns eio immediately when read setup crashes" do
+      test_pid = self()
+
+      task =
+        Task.async(fn ->
+          capture_log(fn ->
+            result =
+              IODevice.start(%{
+                path: ~c"/crash.txt",
+                mode: :read,
+                backend: CrashingOpenBackend,
+                backend_state: %{},
+                open_timeout: 10_000
+              })
+
+            send(test_pid, {:open_result, result})
+          end)
+        end)
+
+      assert_receive {:open_result, {:error, :eio}}, 1_000
+      assert Task.await(task, 1_000) =~ "IODevice open worker failed: open failed"
     end
 
     test "position bof sets absolute position" do
@@ -577,6 +692,34 @@ defmodule Sftpd.IODeviceTest do
       assert Bitwise.band(mode, 0o777) == 0o600
 
       assert :ok = GenServer.call(pid, :close)
+    end
+
+    test "open timeout cleans up temp files while streaming write setup hangs" do
+      test_pid = self()
+      before = sftpd_temp_files()
+
+      task =
+        Task.async(fn ->
+          capture_log(fn ->
+            result =
+              IODevice.start(%{
+                path: ~c"/stuck-output.txt",
+                mode: :write,
+                backend: HangingStreamingOpenBackend,
+                backend_state: %{test_pid: test_pid},
+                open_timeout: 10
+              })
+
+            send(test_pid, {:open_result, result})
+          end)
+        end)
+
+      assert_receive {:stream_open_started, worker}, 1000
+      ref = Process.monitor(worker)
+      assert_receive {:open_result, {:error, :timeout}}, 1000
+      assert_receive {:DOWN, ^ref, :process, ^worker, :killed}, 1000
+      assert Task.await(task, 1000) =~ "Timed out waiting 10ms"
+      assert sftpd_temp_files() == before
     end
 
     test "logs temp file removal failures" do
@@ -898,5 +1041,12 @@ defmodule Sftpd.IODeviceTest do
         {:error, reason} -> flunk("unexpected read error: #{inspect(reason)}")
       end
     end)
+  end
+
+  defp sftpd_temp_files do
+    System.tmp_dir!()
+    |> Path.join("sftpd-*.tmp")
+    |> Path.wildcard()
+    |> MapSet.new()
   end
 end
