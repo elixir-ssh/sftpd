@@ -26,7 +26,7 @@ is pinned in `.tool-versions`.
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.0"}
+    {:sftpd, "~> 0.1.1"}
   ]
 end
 ```
@@ -115,7 +115,7 @@ Applications that use `Sftpd.Backends.S3` must add the S3 dependency set:
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.0"},
+    {:sftpd, "~> 0.1.1"},
     {:ex_aws, "~> 2.0"},
     {:ex_aws_s3, "~> 2.0"},
     {:hackney, "~> 1.9"},
@@ -261,7 +261,7 @@ Sftpd.start_server(
 ## Documentation
 
 Full documentation is available at
-[HexDocs](https://elixir_ssh.hexorgs.pm/sftpd).
+[HexDocs](https://hexdocs.pm/sftpd).
 
 ## Erlang/OTP 29 Note
 

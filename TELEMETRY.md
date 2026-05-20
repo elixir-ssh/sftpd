@@ -9,7 +9,7 @@ handlers without adding another dependency.
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.0"}
+    {:sftpd, "~> 0.1.1"}
   ]
 end
 ```

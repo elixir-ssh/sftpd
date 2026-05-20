@@ -1,7 +1,7 @@
 defmodule Sftpd.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
   @source_url "https://github.com/elixir-ssh/sftpd"
 
   def project do
@@ -66,13 +66,12 @@ defmodule Sftpd.MixProject do
   defp package do
     [
       maintainers: ["Michael Christensen"],
-      organization: "elixir_ssh",
       licenses: ["Apache-2.0"],
       links: %{
-        "HexDocs" => "https://elixir_ssh.hexorgs.pm/sftpd",
-        "Getting Started" => "https://elixir_ssh.hexorgs.pm/sftpd/getting_started.html",
-        "Phoenix Guide" => "https://elixir_ssh.hexorgs.pm/sftpd/phoenix.html",
-        "Backends Guide" => "https://elixir_ssh.hexorgs.pm/sftpd/backends.html",
+        "HexDocs" => "https://hexdocs.pm/sftpd",
+        "Getting Started" => "https://hexdocs.pm/sftpd/getting_started.html",
+        "Phoenix Guide" => "https://hexdocs.pm/sftpd/phoenix.html",
+        "Backends Guide" => "https://hexdocs.pm/sftpd/backends.html",
         "GitHub" => @source_url,
         "GitHub Release" => "#{@source_url}/releases/tag/v#{@version}"
       },
