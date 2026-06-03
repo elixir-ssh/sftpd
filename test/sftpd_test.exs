@@ -8,6 +8,10 @@ defmodule SftpdTest do
     user: ~c"testuser",
     password: ~c"testpass"
   ]
+  # OpenSSH caps an outbound SFTP message at 256KiB including request headers.
+  @openssh_sftp_block_size 256 * 1024 - 64
+  @pure_ssh_channel_window_size 64 * 1024 * 1024
+  @pure_ssh_channel_max_packet_size 1_048_576
 
   # GenServer backend that wraps Memory for testing {:genserver, pid} dispatch
   defmodule GenServerBackend do
@@ -419,6 +423,87 @@ defmodule SftpdTest do
       :ssh.close(conn)
     end
 
+    test "queues download responses until the client extends the channel window" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+      content = :binary.copy("0123456789abcdef", 16)
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [
+                   files: %{
+                     "large.bin" => %{content: content, mtime: NaiveDateTime.utc_now()}
+                   }
+                 ],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{
+        socket: socket,
+        c2s: c2s,
+        s2c: s2c,
+        client_channel: client_channel,
+        server_channel: server_channel
+      } = open_raw_authenticated_session(port, client_window: 128)
+
+      {c2s, s2c, buffer} = start_raw_sftp(socket, c2s, s2c, client_channel, server_channel)
+
+      open_packet = [
+        <<3, 1::32>>,
+        Sftpd.SSH.Wire.string("/large.bin"),
+        <<1::32>>,
+        <<0::32>>
+      ]
+
+      {packet, c2s} = encrypt_client_channel_data(c2s, server_channel, open_packet)
+      assert :ok = :gen_tcp.send(socket, packet)
+
+      assert {:ok, <<93, ^client_channel::32, _bytes::32>>, s2c, buffer} =
+               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+
+      assert {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, buffer} =
+               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+
+      assert {:ok, sftp_response, ""} = Sftpd.SSH.Wire.take_string(rest)
+
+      assert <<_len::32, 102, 1::32, handle_len::32, handle::binary-size(handle_len)>> =
+               sftp_response
+
+      read_len = byte_size(content)
+
+      read_packet = [
+        <<5, 2::32>>,
+        Sftpd.SSH.Wire.string(handle),
+        <<0::64, read_len::32>>
+      ]
+
+      {packet, c2s} = encrypt_client_channel_data(c2s, server_channel, read_packet)
+      assert :ok = :gen_tcp.send(socket, packet)
+
+      assert {:ok, <<93, ^client_channel::32, _bytes::32>>, s2c, ""} =
+               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+
+      assert {:error, :timeout} = :gen_tcp.recv(socket, 0, 100)
+
+      window_bytes = read_len + 64
+      {packet, _c2s} = encrypt_client_packet(c2s, <<93, server_channel::32, window_bytes::32>>)
+
+      assert :ok = :gen_tcp.send(socket, packet)
+
+      assert {:ok, <<94, ^client_channel::32, rest::binary>>, _s2c, _buffer} =
+               recv_encrypted_server_packet_with_rest(socket, s2c, "")
+
+      assert {:ok, sftp_response, ""} = Sftpd.SSH.Wire.take_string(rest)
+      assert <<_len::32, 103, 2::32, size::32, data::binary-size(size)>> = sftp_response
+      assert data == content
+    end
+
     test "supports common SFTP v3 memory operations through the Erlang client" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
@@ -500,7 +585,7 @@ defmodule SftpdTest do
       args = [
         "-vvv",
         "-B",
-        "32768",
+        Integer.to_string(@openssh_sftp_block_size),
         "-R",
         "64",
         "-b",
@@ -559,7 +644,7 @@ defmodule SftpdTest do
       args = [
         "-vvv",
         "-B",
-        "32768",
+        Integer.to_string(@openssh_sftp_block_size),
         "-R",
         "64",
         "-b",
@@ -1048,7 +1133,7 @@ defmodule SftpdTest do
     end
   end
 
-  defp open_raw_authenticated_session(port) do
+  defp open_raw_authenticated_session(port, opts \\ []) do
     assert {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
     assert {:ok, "SSH-2.0-sftpd-elixir\r\n"} = :gen_tcp.recv(socket, 0, 1_000)
     assert :ok = :gen_tcp.send(socket, "SSH-2.0-test-client\r\n")
@@ -1108,18 +1193,21 @@ defmodule SftpdTest do
     assert :ok = :gen_tcp.send(socket, Sftpd.SSH.Packet.encode_clear(<<21>>))
     {c2s, s2c} = assert_encrypted_exchange(socket, c2s, s2c)
     client_channel = 7
+    client_window = Keyword.get(opts, :client_window, 2_097_152)
+    client_max_packet = Keyword.get(opts, :client_max_packet, 262_144)
 
     {packet, c2s} =
       encrypt_client_packet(c2s, [
         <<90>>,
         Sftpd.SSH.Wire.string("session"),
-        <<client_channel::32, 2_097_152::32, 262_144::32>>
+        <<client_channel::32, client_window::32, client_max_packet::32>>
       ])
 
     assert :ok = :gen_tcp.send(socket, packet)
 
-    assert {:ok, <<91, ^client_channel::32, server_channel::32, _window::32, _max_packet::32>>,
-            s2c} =
+    assert {:ok,
+            <<91, ^client_channel::32, server_channel::32, @pure_ssh_channel_window_size::32,
+              @pure_ssh_channel_max_packet_size::32>>, s2c} =
              recv_encrypted_server_packet(socket, s2c)
 
     %{
@@ -1129,6 +1217,42 @@ defmodule SftpdTest do
       client_channel: client_channel,
       server_channel: server_channel
     }
+  end
+
+  defp start_raw_sftp(socket, c2s, s2c, client_channel, server_channel) do
+    {packet, c2s} =
+      encrypt_client_packet(c2s, [
+        <<98, server_channel::32>>,
+        Sftpd.SSH.Wire.string("subsystem"),
+        Sftpd.SSH.Wire.boolean(true),
+        Sftpd.SSH.Wire.string("sftp")
+      ])
+
+    assert :ok = :gen_tcp.send(socket, packet)
+    assert {:ok, <<99, ^client_channel::32>>, s2c} = recv_encrypted_server_packet(socket, s2c)
+
+    sftp_init = <<5::32, 1, 3::32>>
+
+    {packet, c2s} =
+      encrypt_client_packet(c2s, [
+        <<94, server_channel::32>>,
+        Sftpd.SSH.Wire.string(sftp_init)
+      ])
+
+    assert :ok = :gen_tcp.send(socket, packet)
+
+    assert {:ok, <<93, ^client_channel::32, bytes::32>>, s2c, buffer} =
+             recv_encrypted_server_packet_with_rest(socket, s2c, "")
+
+    assert bytes == byte_size(sftp_init)
+
+    assert {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, buffer} =
+             recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+
+    assert {:ok, sftp_response, ""} = Sftpd.SSH.Wire.take_string(rest)
+    assert <<5::32, 2, 3::32>> = sftp_response
+
+    {c2s, s2c, buffer}
   end
 
   defp recv_clear_packet(socket, buffer) do
@@ -1177,8 +1301,9 @@ defmodule SftpdTest do
 
     assert :ok = :gen_tcp.send(socket, packet)
 
-    assert {:ok, <<91, ^client_channel::32, server_channel::32, _window::32, _max_packet::32>>,
-            s2c} =
+    assert {:ok,
+            <<91, ^client_channel::32, server_channel::32, @pure_ssh_channel_window_size::32,
+              @pure_ssh_channel_max_packet_size::32>>, s2c} =
              recv_encrypted_server_packet(socket, s2c)
 
     {packet, c2s} =
@@ -1224,6 +1349,15 @@ defmodule SftpdTest do
       )
 
     {IO.iodata_to_binary(packet), cipher}
+  end
+
+  defp encrypt_client_channel_data(cipher, server_channel, sftp_payload) do
+    len = IO.iodata_length(sftp_payload)
+
+    encrypt_client_packet(cipher, [
+      <<94, server_channel::32>>,
+      Sftpd.SSH.Wire.string([<<len::32>>, sftp_payload])
+    ])
   end
 
   defp recv_encrypted_server_packet(socket, cipher, buffer \\ "") do

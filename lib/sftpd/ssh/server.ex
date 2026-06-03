@@ -12,6 +12,8 @@ defmodule Sftpd.SSH.Server do
   @banner "SSH-2.0-sftpd-elixir\r\n"
   @handshake_timeout 30_000
   @encrypted_idle_timeout :infinity
+  @channel_window_size 64 * 1024 * 1024
+  @channel_max_packet_size 1_048_576
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -264,7 +266,8 @@ defmodule Sftpd.SSH.Server do
         client_max_packet: client_max_packet,
         sftp?: false,
         sftp_session: sftp_session,
-        sftp_buffer: ""
+        sftp_buffer: "",
+        pending_responses: []
       }
 
       state = %{
@@ -274,7 +277,8 @@ defmodule Sftpd.SSH.Server do
       }
 
       payload = [
-        <<91, client_channel::32, server_channel::32, 2_097_152::32, 262_144::32>>
+        <<91, client_channel::32, server_channel::32, @channel_window_size::32,
+          @channel_max_packet_size::32>>
       ]
 
       {:ok, state} = send_encrypted_payload(socket, state, payload)
@@ -329,14 +333,27 @@ defmodule Sftpd.SSH.Server do
       {responses, state, channel, bytes_read} =
         drain_buffered_sftp_data(socket, recipient, state, channel, responses, byte_size(data))
 
-      payloads = [
-        <<93, channel.client_channel::32, bytes_read::32>>
-        | sftp_response_payloads(channel, responses)
-      ]
+      channel = append_pending_responses(channel, responses)
+      state = put_channel(state, channel)
 
-      {:ok, state} = send_encrypted_payloads(socket, state, payloads)
+      case flush_sftp_responses(socket, state, channel, bytes_read) do
+        {:ok, state} -> {:continue, state}
+        {:error, _reason, state} -> {:stop, state}
+      end
+    else
+      _ -> {:continue, state}
+    end
+  end
 
-      {:continue, state}
+  defp handle_encrypted_payload(<<93, recipient::32, bytes::32>>, state, socket) do
+    with {:ok, channel} <- fetch_channel(state, recipient) do
+      channel = %{channel | client_window: channel.client_window + bytes}
+      state = put_channel(state, channel)
+
+      case flush_sftp_responses(socket, state, channel, 0) do
+        {:ok, state} -> {:continue, state}
+        {:error, _reason, state} -> {:stop, state}
+      end
     else
       _ -> {:continue, state}
     end
@@ -361,6 +378,14 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
+    if sftp_responses_near_window?(channel, responses) do
+      {responses, state, channel, bytes_read}
+    else
+      drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+    end
+  end
+
+  defp drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
     case recv_buffered_encrypted_payload(state) do
       {:ok, <<94, ^recipient::32, rest::binary>>, state} ->
         with {:ok, data, ""} <- Wire.take_string(rest),
@@ -380,8 +405,18 @@ defmodule Sftpd.SSH.Server do
           _ -> {responses, state, channel, bytes_read}
         end
 
-      {:ok, <<93, _rest::binary>>, state} ->
-        drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+      {:ok, <<93, ^recipient::32, bytes::32>>, state} ->
+        channel = %{channel | client_window: channel.client_window + bytes}
+        state = put_channel(state, channel)
+
+        case flush_sftp_responses(socket, state, channel, 0) do
+          {:ok, state} ->
+            {:ok, channel} = fetch_channel(state, recipient)
+            drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+
+          {:error, _reason, state} ->
+            {responses, state, channel, bytes_read}
+        end
 
       {:ok, payload, state} ->
         case handle_encrypted_payload(payload, state, socket) do
@@ -572,6 +607,86 @@ defmodule Sftpd.SSH.Server do
       :ok -> {:ok, state}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp flush_sftp_responses(socket, state, channel, bytes_read) do
+    {ready, pending, response_bytes} =
+      split_responses_for_window(channel.pending_responses, channel.client_window)
+
+    channel = %{
+      channel
+      | pending_responses: pending,
+        client_window: channel.client_window - response_bytes
+    }
+
+    state = put_channel(state, channel)
+
+    payloads =
+      []
+      |> maybe_add_window_adjust(channel.client_channel, bytes_read)
+      |> prepend_sftp_response_payloads(channel, ready)
+      |> Enum.reverse()
+
+    case payloads do
+      [] ->
+        {:ok, state}
+
+      payloads ->
+        case send_encrypted_payloads(socket, state, payloads) do
+          {:ok, state} -> {:ok, state}
+          {:error, reason} -> {:error, reason, state}
+        end
+    end
+  end
+
+  defp maybe_add_window_adjust(payloads, _client_channel, 0), do: payloads
+
+  defp maybe_add_window_adjust(payloads, client_channel, bytes_read) do
+    [<<93, client_channel::32, bytes_read::32>> | payloads]
+  end
+
+  defp prepend_sftp_response_payloads(payloads, _channel, []), do: payloads
+
+  defp prepend_sftp_response_payloads(payloads, channel, responses) do
+    Enum.reverse(sftp_response_payloads(channel, responses), payloads)
+  end
+
+  defp append_pending_responses(channel, []), do: channel
+
+  defp append_pending_responses(channel, responses) do
+    Map.update!(channel, :pending_responses, &(&1 ++ responses))
+  end
+
+  defp split_responses_for_window(responses, window) do
+    split_responses_for_window(responses, max(window, 0), [], 0)
+  end
+
+  defp split_responses_for_window([], _window, ready, bytes) do
+    {Enum.reverse(ready), [], bytes}
+  end
+
+  defp split_responses_for_window([response | rest] = responses, window, ready, bytes) do
+    {response_size, _response_data} = sftp_response_iodata(response)
+
+    if bytes + response_size <= window do
+      split_responses_for_window(rest, window, [response | ready], bytes + response_size)
+    else
+      {Enum.reverse(ready), responses, bytes}
+    end
+  end
+
+  defp sftp_responses_near_window?(_channel, []), do: false
+
+  defp sftp_responses_near_window?(channel, responses) do
+    sftp_responses_window_size(responses) >=
+      max(channel.client_window - channel.client_max_packet, 0)
+  end
+
+  defp sftp_responses_window_size(responses) do
+    Enum.reduce(responses, 0, fn response, size ->
+      {response_size, _response_data} = sftp_response_iodata(response)
+      size + response_size
+    end)
   end
 
   defp sftp_response_payloads(channel, responses) when is_list(responses) do
