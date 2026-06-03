@@ -109,6 +109,30 @@ defmodule Sftpd.SSH.Cipher do
     end
   end
 
+  @spec decrypt_packet_payload(state(), non_neg_integer(), binary()) ::
+          {:ok, binary(), state()} | {:error, :bad_packet}
+  def decrypt_packet_payload(%{algorithm: @aes256_gcm} = state, packet_length, encrypted_body)
+      when byte_size(encrypted_body) == packet_length + @aes_tag_len do
+    <<ciphertext::binary-size(^packet_length), tag::binary-size(@aes_tag_len)>> = encrypted_body
+    aad = <<packet_length::32>>
+    iv = packet_iv(state.iv, state.sequence)
+
+    case :crypto.crypto_one_time_aead(:aes_256_gcm, state.key, iv, ciphertext, aad, tag, false) do
+      :error ->
+        {:error, :bad_packet}
+
+      plaintext ->
+        case Packet.decode_decrypted(packet_length, plaintext) do
+          {:ok, payload} -> {:ok, payload, increment_sequence(state)}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  def decrypt_packet_payload(%{algorithm: @aes256_gcm}, _packet_length, _encrypted_body) do
+    {:error, :bad_packet}
+  end
+
   defp packet_iv(<<fixed::32, counter::64>>, sequence) do
     <<fixed::32, counter + sequence::64>>
   end

@@ -545,18 +545,30 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp recv_encrypted_payload(socket, %{buffer: buffer, c2s_cipher: cipher} = state) do
-    with {:ok, buffer} <-
-           recv_encrypted_packet_bytes(socket, buffer || "", @encrypted_idle_timeout) do
-      case Cipher.decrypt_packet_payload(cipher, buffer) do
-        {:ok, payload, rest, cipher} ->
-          {:ok, payload, %{state | buffer: rest, c2s_cipher: cipher}}
+    case recv_encrypted_packet(socket, buffer || "", @encrypted_idle_timeout) do
+      {:ok, packet_length, encrypted_body, rest} ->
+        case Cipher.decrypt_packet_payload(cipher, packet_length, encrypted_body) do
+          {:ok, payload, cipher} ->
+            {:ok, payload, %{state | buffer: rest, c2s_cipher: cipher}}
 
-        :more ->
-          {:error, :bad_packet}
+          {:error, reason} ->
+            {:error, reason}
+        end
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+      {:ok, buffer} ->
+        case Cipher.decrypt_packet_payload(cipher, buffer) do
+          {:ok, payload, rest, cipher} ->
+            {:ok, payload, %{state | buffer: rest, c2s_cipher: cipher}}
+
+          :more ->
+            {:error, :bad_packet}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -576,14 +588,22 @@ defmodule Sftpd.SSH.Server do
 
   defp recv_buffered_encrypted_payload(_state), do: :none
 
-  defp recv_encrypted_packet_bytes(socket, buffer, timeout) do
+  defp recv_encrypted_packet(socket, "", timeout) do
+    with {:ok, <<packet_length::32>>} <- :gen_tcp.recv(socket, 4, timeout),
+         {:ok, encrypted_body} <-
+           :gen_tcp.recv(socket, packet_length + @aead_tag_size, timeout) do
+      {:ok, packet_length, encrypted_body, ""}
+    end
+  end
+
+  defp recv_encrypted_packet(socket, buffer, timeout) do
     case encrypted_packet_missing_bytes(buffer) do
       0 ->
         {:ok, buffer}
 
       bytes when is_integer(bytes) ->
         case :gen_tcp.recv(socket, bytes, timeout) do
-          {:ok, data} -> recv_encrypted_packet_bytes(socket, buffer <> data, timeout)
+          {:ok, data} -> recv_encrypted_packet(socket, buffer <> data, timeout)
           {:error, reason} -> {:error, reason}
         end
     end

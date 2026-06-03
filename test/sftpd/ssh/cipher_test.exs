@@ -45,6 +45,19 @@ defmodule Sftpd.SSH.CipherTest do
     assert {:ok, "payload", ""} = Packet.decode_clear(decrypted)
   end
 
+  test "decrypts packet payload from split length and encrypted body" do
+    state = state(:server_to_client)
+    clear = Packet.encode_aead_packet("payload")
+
+    {encrypted, _decrypt_state} = Cipher.encrypt_packet(state, clear)
+    <<packet_length::32, encrypted_body::binary>> = IO.iodata_to_binary(encrypted)
+
+    assert {:ok, "payload", next_state} =
+             Cipher.decrypt_packet_payload(state, packet_length, encrypted_body)
+
+    assert next_state.sequence == 1
+  end
+
   test "rejects tampered ciphertext" do
     state = state(:server_to_client)
     {encrypted, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))
