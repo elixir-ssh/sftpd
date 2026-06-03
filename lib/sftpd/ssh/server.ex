@@ -14,6 +14,7 @@ defmodule Sftpd.SSH.Server do
   @encrypted_idle_timeout :infinity
   @channel_window_size 64 * 1024 * 1024
   @channel_max_packet_size 1_048_576
+  @aead_tag_size 16
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -544,32 +545,26 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp recv_encrypted_payload(socket, %{buffer: buffer, c2s_cipher: cipher} = state) do
-    case Cipher.decrypt_packet(cipher, buffer || "") do
-      {:ok, clear_packet, rest, cipher} ->
-        case Packet.decode_clear(clear_packet) do
-          {:ok, payload, ""} -> {:ok, payload, %{state | buffer: rest, c2s_cipher: cipher}}
-          _ -> {:error, :bad_packet}
-        end
+    with {:ok, buffer} <-
+           recv_encrypted_packet_bytes(socket, buffer || "", @encrypted_idle_timeout) do
+      case Cipher.decrypt_packet_payload(cipher, buffer) do
+        {:ok, payload, rest, cipher} ->
+          {:ok, payload, %{state | buffer: rest, c2s_cipher: cipher}}
 
-      :more ->
-        case :gen_tcp.recv(socket, 0, @encrypted_idle_timeout) do
-          {:ok, data} -> recv_encrypted_payload(socket, %{state | buffer: (buffer || "") <> data})
-          {:error, reason} -> {:error, reason}
-        end
+        :more ->
+          {:error, :bad_packet}
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
   defp recv_buffered_encrypted_payload(%{buffer: buffer, c2s_cipher: cipher} = state)
        when is_binary(buffer) and byte_size(buffer) > 0 do
-    case Cipher.decrypt_packet(cipher, buffer) do
-      {:ok, clear_packet, rest, cipher} ->
-        case Packet.decode_clear(clear_packet) do
-          {:ok, payload, ""} -> {:ok, payload, %{state | buffer: rest, c2s_cipher: cipher}}
-          _ -> {:error, :bad_packet}
-        end
+    case Cipher.decrypt_packet_payload(cipher, buffer) do
+      {:ok, payload, rest, cipher} ->
+        {:ok, payload, %{state | buffer: rest, c2s_cipher: cipher}}
 
       :more ->
         :none
@@ -580,6 +575,25 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp recv_buffered_encrypted_payload(_state), do: :none
+
+  defp recv_encrypted_packet_bytes(socket, buffer, timeout) do
+    case encrypted_packet_missing_bytes(buffer) do
+      0 ->
+        {:ok, buffer}
+
+      bytes when is_integer(bytes) ->
+        case :gen_tcp.recv(socket, bytes, timeout) do
+          {:ok, data} -> recv_encrypted_packet_bytes(socket, buffer <> data, timeout)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp encrypted_packet_missing_bytes(<<packet_length::32, _rest::binary>> = buffer) do
+    max(4 + packet_length + @aead_tag_size - byte_size(buffer), 0)
+  end
+
+  defp encrypted_packet_missing_bytes(buffer), do: 4 - byte_size(buffer)
 
   defp send_encrypted_payload(socket, %{s2c_cipher: cipher} = state, payload) do
     {encrypted, cipher} =

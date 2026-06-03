@@ -65,6 +65,28 @@ defmodule Sftpd.SSH.Packet do
 
   def decode_clear(_), do: :more
 
+  @spec decode_decrypted(non_neg_integer(), binary()) :: {:ok, binary()} | {:error, :bad_packet}
+  def decode_decrypted(packet_len, plaintext) when byte_size(plaintext) == packet_len do
+    case plaintext do
+      <<padding_len, payload_and_padding::binary>> ->
+        payload_len = packet_len - padding_len - 1
+
+        if payload_len < 0 or byte_size(payload_and_padding) < payload_len do
+          {:error, :bad_packet}
+        else
+          <<payload::binary-size(^payload_len), _padding::binary-size(^padding_len)>> =
+            payload_and_padding
+
+          {:ok, payload}
+        end
+
+      _ ->
+        {:error, :bad_packet}
+    end
+  end
+
+  def decode_decrypted(_packet_len, _plaintext), do: {:error, :bad_packet}
+
   @spec message_id(binary()) :: non_neg_integer() | nil
   def message_id(<<id, _rest::binary>>), do: id
   def message_id(_), do: nil

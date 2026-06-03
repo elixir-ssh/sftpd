@@ -23,4 +23,15 @@ defmodule Sftpd.SSH.PacketTest do
     assert {:ok, "one", rest} = Packet.decode_clear(encoded)
     assert {:ok, "two", ""} = Packet.decode_clear(rest)
   end
+
+  test "decrypted packet decoder returns payload without a length-prefixed copy" do
+    <<packet_len::32, plaintext::binary>> = IO.iodata_to_binary(Packet.encode_clear("payload"))
+
+    assert {:ok, "payload"} = Packet.decode_decrypted(packet_len, plaintext)
+  end
+
+  test "decrypted packet decoder rejects malformed plaintext" do
+    assert {:error, :bad_packet} = Packet.decode_decrypted(3, <<4, 1, 2>>)
+    assert {:error, :bad_packet} = Packet.decode_decrypted(4, <<4, 1, 2>>)
+  end
 end

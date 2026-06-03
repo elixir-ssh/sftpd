@@ -1,7 +1,7 @@
 defmodule Sftpd.SSH.Cipher do
   @moduledoc false
 
-  alias Sftpd.SSH.Kex
+  alias Sftpd.SSH.{Kex, Packet}
 
   @aes256_gcm "aes256-gcm@openssh.com"
   @aes_key_len 32
@@ -77,6 +77,32 @@ defmodule Sftpd.SSH.Cipher do
 
         plaintext ->
           {:ok, <<packet_length::32, plaintext::binary>>, rest, increment_sequence(state)}
+      end
+    else
+      _ -> :more
+    end
+  end
+
+  @spec decrypt_packet_payload(state(), binary()) ::
+          {:ok, binary(), binary(), state()} | :more | {:error, :bad_packet}
+  def decrypt_packet_payload(%{algorithm: @aes256_gcm} = state, buffer) do
+    with <<packet_length::32, rest::binary>> when byte_size(rest) >= packet_length + @aes_tag_len <-
+           buffer do
+      <<ciphertext::binary-size(^packet_length), tag::binary-size(@aes_tag_len), rest::binary>> =
+        rest
+
+      aad = <<packet_length::32>>
+      iv = packet_iv(state.iv, state.sequence)
+
+      case :crypto.crypto_one_time_aead(:aes_256_gcm, state.key, iv, ciphertext, aad, tag, false) do
+        :error ->
+          {:error, :bad_packet}
+
+        plaintext ->
+          case Packet.decode_decrypted(packet_length, plaintext) do
+            {:ok, payload} -> {:ok, payload, rest, increment_sequence(state)}
+            {:error, reason} -> {:error, reason}
+          end
       end
     else
       _ -> :more
