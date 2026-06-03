@@ -88,7 +88,7 @@ defmodule Sftpd do
   @default_max_sessions 10
   @server_event_prefix [:sftpd, :server]
 
-  @type server_ref :: :ssh.daemon_ref()
+  @type server_ref :: :ssh.daemon_ref() | {:elixir, pid()}
 
   @doc """
   Start an SFTP server.
@@ -128,6 +128,7 @@ defmodule Sftpd do
     backend_opts = Keyword.get(opts, :backend_opts, [])
     auth = Keyword.fetch!(opts, :auth)
     system_dir = Keyword.fetch!(opts, :system_dir)
+    transport = Keyword.get(opts, :transport, :otp)
     max_sessions = Keyword.get(opts, :max_sessions, @default_max_sessions)
     open_timeout = Keyword.get(opts, :open_timeout, 30_000)
     close_timeout = Keyword.get(opts, :close_timeout, 30_000)
@@ -146,33 +147,55 @@ defmodule Sftpd do
         with :ok <- Sftpd.Auth.Registry.ensure_started(),
              :ok <- validate_auth(auth),
              {:ok, {backend, backend_state}} <- init_backend(backend, backend_opts) do
-          :ssh.daemon(port, [
-            {:max_sessions, max_sessions},
-            {:pwdfun, Sftpd.Auth.Adapter.password_fun(auth)},
-            {:key_cb, {Sftpd.Auth.KeyCallback, [auth: auth]}},
-            {:system_dir, to_charlist(system_dir)},
-            {:subsystems,
-             [
-               Sftpd.Subsystem.subsystem_spec(
-                 cwd: ~c"/",
-                 root: ~c"/",
-                 file_handler: {
-                   Sftpd.FileHandler,
-                   %{
-                     backend: backend,
-                     backend_state: backend_state,
-                     open_timeout: open_timeout,
-                     close_timeout: close_timeout
-                   }
-                 }
-               )
-             ]}
-          ])
+          start_transport(transport,
+            port: port,
+            max_sessions: max_sessions,
+            auth: auth,
+            system_dir: system_dir,
+            backend: backend,
+            backend_state: backend_state,
+            open_timeout: open_timeout,
+            close_timeout: close_timeout
+          )
         end
       end,
       &server_finalize/2
     )
   end
+
+  defp start_transport(:otp, opts) do
+    :ssh.daemon(Keyword.fetch!(opts, :port), [
+      {:max_sessions, Keyword.fetch!(opts, :max_sessions)},
+      {:pwdfun, Sftpd.Auth.Adapter.password_fun(Keyword.fetch!(opts, :auth))},
+      {:key_cb, {Sftpd.Auth.KeyCallback, [auth: Keyword.fetch!(opts, :auth)]}},
+      {:system_dir, opts |> Keyword.fetch!(:system_dir) |> to_charlist()},
+      {:subsystems,
+       [
+         Sftpd.Subsystem.subsystem_spec(
+           cwd: ~c"/",
+           root: ~c"/",
+           file_handler: {
+             Sftpd.FileHandler,
+             %{
+               backend: Keyword.fetch!(opts, :backend),
+               backend_state: Keyword.fetch!(opts, :backend_state),
+               open_timeout: Keyword.fetch!(opts, :open_timeout),
+               close_timeout: Keyword.fetch!(opts, :close_timeout)
+             }
+           }
+         )
+       ]}
+    ])
+  end
+
+  defp start_transport(:elixir, opts) do
+    case Sftpd.ElixirServer.start_link(opts) do
+      {:ok, pid} -> {:ok, {:elixir, pid}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp start_transport(transport, _opts), do: {:error, {:invalid_option, {:transport, transport}}}
 
   @doc """
   Return a child spec for supervising an SFTP server.
@@ -239,11 +262,19 @@ defmodule Sftpd do
       @server_event_prefix ++ [:stop],
       %{server_ref: ref},
       fn ->
-        :ssh.stop_daemon(ref)
+        stop_ref(ref)
       end,
       &stop_finalize/2
     )
   end
+
+  defp stop_ref({:elixir, pid}) when is_pid(pid) do
+    GenServer.stop(pid)
+  catch
+    :exit, {:noproc, _} -> :ok
+  end
+
+  defp stop_ref(ref), do: :ssh.stop_daemon(ref)
 
   defp server_finalize({:ok, ref}, duration),
     do: {%{duration: duration}, %{result: :ok, server_ref: ref}}

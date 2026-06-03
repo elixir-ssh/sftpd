@@ -279,6 +279,123 @@ defmodule SftpdTest do
     end
   end
 
+  describe "pure Elixir transport" do
+    defmodule NonMemoryBackend do
+      def init(_opts), do: {:ok, %{}}
+    end
+
+    test "starts and stops as an opt-in memory-only transport" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, {:elixir, pid} = ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      assert Process.alive?(pid)
+
+      assert {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
+      assert {:ok, "SSH-2.0-sftpd-elixir\r\n"} = :gen_tcp.recv(socket, 0, 1_000)
+      assert :ok = :gen_tcp.send(socket, "SSH-2.0-test-client\r\n")
+      assert {:ok, packet} = :gen_tcp.recv(socket, 0, 1_000)
+      assert {:ok, <<20, _rest::binary>> = kexinit, ""} = Sftpd.SSH.Packet.decode_clear(packet)
+      assert {:ok, parsed} = Sftpd.SSH.Algorithms.decode_kexinit(kexinit)
+      assert "curve25519-sha256" in parsed.kex_algorithms
+      assert ["aes256-gcm@openssh.com" | _] = parsed.encryption_algorithms_server_to_client
+
+      {client_kexinit, _parsed} = Sftpd.SSH.Algorithms.server_kexinit()
+      {client_public, client_private} = Sftpd.SSH.Kex.generate_keypair()
+      assert :ok = :gen_tcp.send(socket, Sftpd.SSH.Packet.encode_clear(client_kexinit))
+
+      assert :ok =
+               :gen_tcp.send(
+                 socket,
+                 Sftpd.SSH.Packet.encode_clear([<<30>>, Sftpd.SSH.Wire.string(client_public)])
+               )
+
+      assert {:ok, <<31, reply::binary>>, rest} = recv_clear_packet(socket, "")
+      assert {:ok, host_key_blob, reply} = Sftpd.SSH.Wire.take_string(reply)
+      assert {:ok, server_public, reply} = Sftpd.SSH.Wire.take_string(reply)
+      assert {:ok, signature_blob, ""} = Sftpd.SSH.Wire.take_string(reply)
+      assert byte_size(server_public) == 32
+      assert {:ok, "ssh-ed25519", host_key_rest} = Sftpd.SSH.Wire.take_string(host_key_blob)
+      assert {:ok, public_key, ""} = Sftpd.SSH.Wire.take_string(host_key_rest)
+      assert byte_size(public_key) == 32
+      assert {:ok, "ssh-ed25519", signature_rest} = Sftpd.SSH.Wire.take_string(signature_blob)
+      assert {:ok, signature, ""} = Sftpd.SSH.Wire.take_string(signature_rest)
+      assert byte_size(signature) == 64
+      assert {:ok, <<21>>, _rest} = recv_clear_packet(socket, rest)
+
+      shared_secret = Sftpd.SSH.Kex.shared_secret(server_public, client_private)
+
+      exchange_hash =
+        Sftpd.SSH.Kex.exchange_hash(%{
+          client_version: "SSH-2.0-test-client",
+          server_version: "SSH-2.0-sftpd-elixir",
+          client_kexinit: client_kexinit,
+          server_kexinit: kexinit,
+          host_key_blob: host_key_blob,
+          client_public: client_public,
+          server_public: server_public,
+          shared_secret: shared_secret
+        })
+
+      assert Sftpd.SSH.Keys.verify_signature(
+               %{
+                 private_key:
+                   {:ECPrivateKey, 1, <<>>, {:namedCurve, {1, 3, 101, 112}}, public_key,
+                    :asn1_NOVALUE}
+               },
+               exchange_hash,
+               signature
+             )
+
+      c2s =
+        Sftpd.SSH.Cipher.new(
+          "aes256-gcm@openssh.com",
+          :client_to_server,
+          shared_secret,
+          exchange_hash,
+          exchange_hash
+        )
+
+      s2c =
+        Sftpd.SSH.Cipher.new(
+          "aes256-gcm@openssh.com",
+          :server_to_client,
+          shared_secret,
+          exchange_hash,
+          exchange_hash
+        )
+
+      assert :ok = :gen_tcp.send(socket, Sftpd.SSH.Packet.encode_clear(<<21>>))
+      {c2s, s2c} = assert_encrypted_exchange(socket, c2s, s2c)
+      {_c2s, _s2c} = assert_encrypted_sftp_init(socket, c2s, s2c)
+      :gen_tcp.close(socket)
+
+      assert :ok = Sftpd.stop_server(ref)
+      refute Process.alive?(pid)
+    end
+
+    test "rejects non-memory backends for the first Elixir transport milestone" do
+      assert {:error, {:unsupported_elixir_transport_backend, NonMemoryBackend}} =
+               Sftpd.start_server(
+                 port: 20_000 + :rand.uniform(10_000),
+                 transport: :elixir,
+                 backend: NonMemoryBackend,
+                 backend_opts: [],
+                 system_dir: "/tmp",
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+    end
+  end
+
   describe "authentication API" do
     test "passing legacy users returns a clear error" do
       assert {:error, {:deprecated_option, :users}} =
@@ -628,5 +745,107 @@ defmodule SftpdTest do
     assert [{_, child, :worker, [Sftpd.Server]}] = Supervisor.which_children(supervisor)
     refute child == old_child
     child
+  end
+
+  defp recv_clear_packet(socket, buffer) do
+    case Sftpd.SSH.Packet.decode_clear(buffer) do
+      {:ok, payload, rest} ->
+        {:ok, payload, rest}
+
+      :more ->
+        {:ok, data} = :gen_tcp.recv(socket, 0, 1_000)
+        recv_clear_packet(socket, buffer <> data)
+    end
+  end
+
+  defp assert_encrypted_exchange(socket, c2s, s2c) do
+    {packet, c2s} =
+      encrypt_client_packet(c2s, [<<5>>, Sftpd.SSH.Wire.string("ssh-userauth")])
+
+    assert :ok = :gen_tcp.send(socket, packet)
+    assert {:ok, <<6, rest::binary>>, s2c} = recv_encrypted_server_packet(socket, s2c)
+    assert {:ok, "ssh-userauth", ""} = Sftpd.SSH.Wire.take_string(rest)
+
+    {packet, c2s} =
+      encrypt_client_packet(c2s, [
+        <<50>>,
+        Sftpd.SSH.Wire.string("user"),
+        Sftpd.SSH.Wire.string("ssh-connection"),
+        Sftpd.SSH.Wire.string("password"),
+        Sftpd.SSH.Wire.boolean(false),
+        Sftpd.SSH.Wire.string("password")
+      ])
+
+    assert :ok = :gen_tcp.send(socket, packet)
+    assert {:ok, <<52>>, s2c} = recv_encrypted_server_packet(socket, s2c)
+    {c2s, s2c}
+  end
+
+  defp assert_encrypted_sftp_init(socket, c2s, s2c) do
+    client_channel = 7
+
+    {packet, c2s} =
+      encrypt_client_packet(c2s, [
+        <<90>>,
+        Sftpd.SSH.Wire.string("session"),
+        <<client_channel::32, 2_097_152::32, 262_144::32>>
+      ])
+
+    assert :ok = :gen_tcp.send(socket, packet)
+
+    assert {:ok, <<91, ^client_channel::32, server_channel::32, _window::32, _max_packet::32>>,
+            s2c} =
+             recv_encrypted_server_packet(socket, s2c)
+
+    {packet, c2s} =
+      encrypt_client_packet(c2s, [
+        <<98, server_channel::32>>,
+        Sftpd.SSH.Wire.string("subsystem"),
+        Sftpd.SSH.Wire.boolean(true),
+        Sftpd.SSH.Wire.string("sftp")
+      ])
+
+    assert :ok = :gen_tcp.send(socket, packet)
+    assert {:ok, <<99, ^client_channel::32>>, s2c} = recv_encrypted_server_packet(socket, s2c)
+
+    sftp_init = <<5::32, 1, 3::32>>
+
+    {packet, c2s} =
+      encrypt_client_packet(c2s, [
+        <<94, server_channel::32>>,
+        Sftpd.SSH.Wire.string(sftp_init)
+      ])
+
+    assert :ok = :gen_tcp.send(socket, packet)
+
+    assert {:ok, <<94, ^client_channel::32, rest::binary>>, s2c} =
+             recv_encrypted_server_packet(socket, s2c)
+
+    assert {:ok, sftp_response, ""} = Sftpd.SSH.Wire.take_string(rest)
+    assert <<5::32, 2, 3::32>> = sftp_response
+
+    {c2s, s2c}
+  end
+
+  defp encrypt_client_packet(cipher, payload) do
+    {packet, cipher} =
+      Sftpd.SSH.Cipher.encrypt_packet(
+        cipher,
+        Sftpd.SSH.Packet.encode_aead(payload, Sftpd.SSH.Cipher.block_size(cipher))
+      )
+
+    {IO.iodata_to_binary(packet), cipher}
+  end
+
+  defp recv_encrypted_server_packet(socket, cipher, buffer \\ "") do
+    case Sftpd.SSH.Cipher.decrypt_packet(cipher, buffer) do
+      {:ok, clear_packet, _rest, cipher} ->
+        assert {:ok, payload, ""} = Sftpd.SSH.Packet.decode_clear(clear_packet)
+        {:ok, payload, cipher}
+
+      :more ->
+        {:ok, data} = :gen_tcp.recv(socket, 0, 1_000)
+        recv_encrypted_server_packet(socket, cipher, buffer <> data)
+    end
   end
 end
