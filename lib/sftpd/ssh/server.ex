@@ -331,9 +331,17 @@ defmodule Sftpd.SSH.Server do
       {responses, channel} = handle_sftp_data(data, channel)
       state = put_channel(state, channel)
 
-      {responses, state, channel, bytes_read} =
-        drain_buffered_sftp_data(socket, recipient, state, channel, responses, byte_size(data))
+      {responses_acc, state, channel, bytes_read} =
+        drain_buffered_sftp_data(
+          socket,
+          recipient,
+          state,
+          channel,
+          Enum.reverse(responses),
+          byte_size(data)
+        )
 
+      responses = Enum.reverse(responses_acc)
       channel = append_pending_responses(channel, responses)
       state = put_channel(state, channel)
 
@@ -393,13 +401,14 @@ defmodule Sftpd.SSH.Server do
              {:ok, %{sftp?: true} = channel} <- fetch_channel(state, recipient) do
           {new_responses, channel} = handle_sftp_data(data, channel)
           state = put_channel(state, channel)
+          responses = prepend_reversed(new_responses, responses)
 
           drain_buffered_sftp_data(
             socket,
             recipient,
             state,
             channel,
-            responses ++ new_responses,
+            responses,
             bytes_read + byte_size(data)
           )
         else
@@ -435,6 +444,9 @@ defmodule Sftpd.SSH.Server do
         {responses, state, channel, bytes_read}
     end
   end
+
+  defp prepend_reversed([], acc), do: acc
+  defp prepend_reversed([response | rest], acc), do: prepend_reversed(rest, [response | acc])
 
   defp handle_public_key_userauth(rest, state, socket) do
     with {:ok, username, rest} <- Wire.take_string(rest),
@@ -757,12 +769,17 @@ defmodule Sftpd.SSH.Server do
     [channel_data_payload(client_channel, parts) | payloads]
   end
 
-  defp sftp_response_iodata(%SerializedPacket{kind: :iodata, iodata: data}) do
-    {IO.iodata_length(data), data}
+  defp sftp_response_iodata(%SerializedPacket{kind: :iodata, iodata: data, size: size}) do
+    {size, data}
   end
 
-  defp sftp_response_iodata(%SerializedPacket{kind: :data, header: header, data: data}) do
-    {[header, data] |> IO.iodata_length(), [header, data]}
+  defp sftp_response_iodata(%SerializedPacket{
+         kind: :data,
+         header: header,
+         data: data,
+         size: size
+       }) do
+    {size, [header, data]}
   end
 
   defp sftp_response_split_payloads(channel, %SerializedPacket{kind: :iodata, iodata: data}) do

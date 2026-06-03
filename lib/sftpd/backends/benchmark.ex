@@ -12,6 +12,7 @@ defmodule Sftpd.Backends.Benchmark do
   alias Sftpd.{Backend, FastBackend}
 
   @keep_marker ".keep"
+  @zero_slab :binary.copy(<<0>>, 1024 * 1024)
 
   @type state :: %{agent: pid()}
 
@@ -267,7 +268,20 @@ defmodule Sftpd.Backends.Benchmark do
   end
 
   defp zeroes(0), do: ""
-  defp zeroes(size), do: :binary.copy(<<0>>, size)
+
+  defp zeroes(size) when size <= byte_size(@zero_slab) do
+    binary_part(@zero_slab, 0, size)
+  end
+
+  defp zeroes(size) do
+    full_slabs = div(size, byte_size(@zero_slab))
+    tail = rem(size, byte_size(@zero_slab))
+
+    [
+      List.duplicate(@zero_slab, full_slabs),
+      binary_part(@zero_slab, 0, tail)
+    ]
+  end
 
   defp child_path(_path, name) when name in [~c".", ~c".."], do: to_string(name)
 
