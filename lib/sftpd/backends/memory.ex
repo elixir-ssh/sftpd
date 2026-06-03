@@ -230,6 +230,13 @@ defmodule Sftpd.Backends.Memory do
     read_content_at(content, offset, len)
   end
 
+  @impl true
+  def read_file_range(path, offset, len, state) do
+    with {:ok, handle} <- open_read(path, %{}, state) do
+      read_at(handle, offset, len, state)
+    end
+  end
+
   defp read_content_at(content, offset, len) do
     cond do
       offset >= byte_size(content) ->
@@ -248,6 +255,12 @@ defmodule Sftpd.Backends.Memory do
   def write_at(%{chunks: chunks} = handle, offset, data, _state) do
     {:ok, %{handle | chunks: [{offset, IO.iodata_to_binary(data)} | chunks]}}
   end
+
+  @impl true
+  def begin_write(path, state), do: open_write(path, %{}, %{}, state)
+
+  @impl true
+  def write_chunk(handle, offset, data, state), do: write_at(handle, offset, data, state)
 
   @impl true
   def finish_write(%{path: path, chunks: chunks}, %{agent: agent}) do

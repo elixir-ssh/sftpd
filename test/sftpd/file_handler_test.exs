@@ -4,7 +4,8 @@ defmodule Sftpd.FileHandlerTest do
 
   import ExUnit.CaptureLog
 
-  alias Sftpd.FileHandler
+  alias Sftpd.{DirectIODevice, FileHandler}
+  alias Sftpd.Backends.Memory
   alias Sftpd.Test.TelemetryHelper
 
   @state %{backend: nil, backend_state: nil}
@@ -147,6 +148,23 @@ defmodule Sftpd.FileHandlerTest do
       state = %{backend: ReadErrorBackend, backend_state: %{}}
 
       assert {{:error, :enoent}, ^state} = FileHandler.open(~c"/missing.txt", [:read], state)
+    end
+
+    test "uses direct handles for memory backend reads and writes" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/file.txt", "content", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:ok, read_handle}, ^state} = FileHandler.open(~c"/file.txt", [:read], state)
+      assert DirectIODevice.handle?(read_handle)
+      assert {{:ok, "content"}, ^state} = FileHandler.read(read_handle, 16, state)
+      assert {:ok, ^state} = FileHandler.close(read_handle, state)
+
+      assert {{:ok, write_handle}, ^state} = FileHandler.open(~c"/out.txt", [:write], state)
+      assert DirectIODevice.handle?(write_handle)
+      assert {:ok, ^state} = FileHandler.write(write_handle, ["fast", "-", "path"], state)
+      assert {:ok, ^state} = FileHandler.close(write_handle, state)
+      assert {:ok, "fast-path"} = Memory.read_file(~c"/out.txt", backend_state)
     end
 
     test "returns timeout when read setup hangs before issuing a handle" do
