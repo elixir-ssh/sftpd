@@ -498,7 +498,7 @@ defmodule SftpdTest do
       File.write!(batch, "put #{upload_path} /bench.bin\nget /bench.bin #{download_path}\n")
 
       args = [
-        "-q",
+        "-vvv",
         "-B",
         "32768",
         "-R",
@@ -522,8 +522,80 @@ defmodule SftpdTest do
         "key-user@127.0.0.1"
       ]
 
-      assert {_, 0} = System.cmd(sftp, args, stderr_to_stdout: true)
+      assert {openssh_output, 0} = System.cmd(sftp, args, stderr_to_stdout: true)
+      assert openssh_output =~ "debug1:"
       assert File.read!(download_path) == payload
+    end
+
+    test "keeps OpenSSH sftp sessions open across idle gaps" do
+      sftp = System.find_executable("sftp") || flunk("OpenSSH sftp executable not found")
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      tmp =
+        Path.join(System.tmp_dir!(), "sftpd_openssh_idle_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+
+      key_path = Path.join(tmp, "id_ed25519")
+      make_ed25519_key!(key_path)
+      fingerprint = public_key_fingerprint!(key_path <> ".pub")
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {CustomAuth, fingerprint: fingerprint}
+               )
+
+      on_exit(fn ->
+        Sftpd.stop_server(ref)
+        File.rm_rf(tmp)
+      end)
+
+      args = [
+        "-vvv",
+        "-B",
+        "32768",
+        "-R",
+        "64",
+        "-b",
+        "-",
+        "-P",
+        Integer.to_string(port),
+        "-c",
+        "aes256-gcm@openssh.com",
+        "-i",
+        key_path,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "IdentitiesOnly=yes",
+        "key-user@127.0.0.1"
+      ]
+
+      port =
+        Port.open({:spawn_executable, sftp}, [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: args
+        ])
+
+      Port.command(port, "ls /\n")
+      Process.sleep(6_000)
+      Port.command(port, "ls /\nquit\n")
+
+      assert {output, 0} = collect_port_exit(port, "", 10_000)
+      assert output =~ "debug1:"
+      refute output =~ "Connection closed"
     end
 
     test "rejects shell and exec channel requests" do
@@ -960,6 +1032,20 @@ defmodule SftpdTest do
   defp public_key_fingerprint!(pub_path) do
     {:ok, public_key} = pub_path |> File.read!() |> Sftpd.Auth.decode_authorized_key()
     Sftpd.Auth.fingerprint(public_key)
+  end
+
+  defp collect_port_exit(port, output, timeout) do
+    receive do
+      {^port, {:data, data}} ->
+        collect_port_exit(port, output <> data, timeout)
+
+      {^port, {:exit_status, status}} ->
+        {output, status}
+    after
+      timeout ->
+        Port.close(port)
+        flunk("timed out waiting for sftp to exit; output: #{output}")
+    end
   end
 
   defp open_raw_authenticated_session(port) do

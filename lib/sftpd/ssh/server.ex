@@ -10,6 +10,8 @@ defmodule Sftpd.SSH.Server do
   alias Sftpd.SSH.{Algorithms, Cipher, Kex, Keys, Packet, Wire}
 
   @banner "SSH-2.0-sftpd-elixir\r\n"
+  @handshake_timeout 30_000
+  @encrypted_idle_timeout :infinity
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -428,7 +430,7 @@ defmodule Sftpd.SSH.Server do
   defp recv_identification(socket), do: recv_identification(socket, "")
 
   defp recv_identification(socket, acc) when byte_size(acc) <= 255 do
-    case :gen_tcp.recv(socket, 1, 5_000) do
+    case :gen_tcp.recv(socket, 1, @handshake_timeout) do
       {:ok, "\n"} -> {:ok, String.trim_trailing(acc, "\r")}
       {:ok, byte} -> recv_identification(socket, acc <> byte)
       {:error, reason} -> {:error, reason}
@@ -445,7 +447,7 @@ defmodule Sftpd.SSH.Server do
         {:ok, payload, rest}
 
       :more ->
-        case :gen_tcp.recv(socket, 0, 5_000) do
+        case :gen_tcp.recv(socket, 0, @handshake_timeout) do
           {:ok, data} -> recv_clear_packet(socket, buffer <> data)
           {:error, reason} -> {:error, reason}
         end
@@ -472,7 +474,7 @@ defmodule Sftpd.SSH.Server do
         end
 
       :more ->
-        case :gen_tcp.recv(socket, 0, 5_000) do
+        case :gen_tcp.recv(socket, 0, @encrypted_idle_timeout) do
           {:ok, data} -> recv_encrypted_payload(socket, %{state | buffer: (buffer || "") <> data})
           {:error, reason} -> {:error, reason}
         end
