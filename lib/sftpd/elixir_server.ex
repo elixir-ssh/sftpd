@@ -226,14 +226,7 @@ defmodule Sftpd.ElixirServer do
       {:continue, %{state | auth_session: session}}
     else
       _ ->
-        {:ok, state} =
-          send_encrypted_payload(socket, state, [
-            <<51>>,
-            Wire.name_list(["password"]),
-            Wire.boolean(false)
-          ])
-
-        {:continue, state}
+        handle_public_key_userauth(rest, state, socket)
     end
   end
 
@@ -330,9 +323,7 @@ defmodule Sftpd.ElixirServer do
 
       state =
         Enum.reduce(responses, state, fn response, state ->
-          payload = [<<94, channel.client_channel::32>>, Wire.string(response)]
-          {:ok, state} = send_encrypted_payload(socket, state, payload)
-          state
+          send_channel_data(socket, state, channel, response)
         end)
 
       {:continue, state}
@@ -356,6 +347,76 @@ defmodule Sftpd.ElixirServer do
 
   defp handle_encrypted_payload(payload, state, _socket) do
     Logger.debug("elixir ssh ignored encrypted message #{inspect(Packet.message_id(payload))}")
+    {:continue, state}
+  end
+
+  defp handle_public_key_userauth(rest, state, socket) do
+    with {:ok, username, rest} <- Wire.take_string(rest),
+         {:ok, "ssh-connection", rest} <- Wire.take_string(rest),
+         {:ok, "publickey", rest} <- Wire.take_string(rest),
+         {:ok, signed?, rest} <- Wire.take_boolean(rest),
+         {:ok, "ssh-ed25519" = algorithm, rest} <- Wire.take_string(rest),
+         {:ok, key_blob, rest} <- Wire.take_string(rest),
+         {:ok, public_key} <- decode_public_key(key_blob),
+         {:ok, session} <-
+           Sftpd.Auth.Adapter.authorize_public_key(state.auth, username, public_key) do
+      if signed? do
+        verify_public_key_userauth(rest, state, socket, session, username, algorithm, key_blob)
+      else
+        {:ok, state} =
+          send_encrypted_payload(socket, state, [
+            <<60>>,
+            Wire.string(algorithm),
+            Wire.string(key_blob)
+          ])
+
+        {:continue, state}
+      end
+    else
+      _ -> userauth_failure(state, socket)
+    end
+  end
+
+  defp verify_public_key_userauth(
+         rest,
+         state,
+         socket,
+         session,
+         username,
+         algorithm,
+         key_blob
+       ) do
+    signed_payload = [
+      Wire.string(state.session_id),
+      <<50>>,
+      Wire.string(username),
+      Wire.string("ssh-connection"),
+      Wire.string("publickey"),
+      Wire.boolean(true),
+      Wire.string(algorithm),
+      Wire.string(key_blob)
+    ]
+
+    with {:ok, signature_blob, ""} <- Wire.take_string(rest),
+         {:ok, ^algorithm, signature_rest} <- Wire.take_string(signature_blob),
+         {:ok, signature, ""} <- Wire.take_string(signature_rest),
+         true <-
+           verify_ed25519_signature(key_blob, IO.iodata_to_binary(signed_payload), signature),
+         {:ok, state} <- send_encrypted_payload(socket, state, <<52>>) do
+      {:continue, %{state | auth_session: session}}
+    else
+      _ -> userauth_failure(state, socket)
+    end
+  end
+
+  defp userauth_failure(state, socket) do
+    {:ok, state} =
+      send_encrypted_payload(socket, state, [
+        <<51>>,
+        Wire.name_list(["publickey", "password"]),
+        Wire.boolean(false)
+      ])
+
     {:continue, state}
   end
 
@@ -426,6 +487,21 @@ defmodule Sftpd.ElixirServer do
     end
   end
 
+  defp send_channel_data(socket, state, channel, data) do
+    max_packet = max(1, channel.client_max_packet)
+    send_channel_data(socket, state, channel.client_channel, data, max_packet)
+  end
+
+  defp send_channel_data(_socket, state, _client_channel, "", _max_packet), do: state
+
+  defp send_channel_data(socket, state, client_channel, data, max_packet) do
+    bytes = min(byte_size(data), max_packet)
+    <<chunk::binary-size(^bytes), rest::binary>> = data
+    payload = [<<94, client_channel::32>>, Wire.string(chunk)]
+    {:ok, state} = send_encrypted_payload(socket, state, payload)
+    send_channel_data(socket, state, client_channel, rest, max_packet)
+  end
+
   defp authenticate_password(auth, username, password, socket) do
     peer =
       case :inet.peername(socket) do
@@ -436,6 +512,22 @@ defmodule Sftpd.ElixirServer do
     case Sftpd.Auth.Adapter.authenticate_password(auth, username, password, peer) do
       {:ok, session} when is_map(session) -> {:ok, session}
       _ -> :error
+    end
+  end
+
+  defp decode_public_key(key_blob) do
+    {:ok, :ssh_message.ssh2_pubkey_decode(key_blob)}
+  rescue
+    _ -> {:error, :invalid_public_key}
+  end
+
+  defp verify_ed25519_signature(key_blob, data, signature) do
+    with {:ok, "ssh-ed25519", rest} <- Wire.take_string(key_blob),
+         {:ok, public_key, ""} <- Wire.take_string(rest) do
+      key = {{:ECPoint, public_key}, {:namedCurve, {1, 3, 101, 112}}}
+      :public_key.verify(data, :none, signature, key)
+    else
+      _ -> false
     end
   end
 

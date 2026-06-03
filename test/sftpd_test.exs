@@ -460,6 +460,72 @@ defmodule SftpdTest do
       :ssh.close(conn)
     end
 
+    test "supports OpenSSH sftp public-key upload and download" do
+      sftp = System.find_executable("sftp") || flunk("OpenSSH sftp executable not found")
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      tmp =
+        Path.join(System.tmp_dir!(), "sftpd_openssh_test_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+
+      key_path = Path.join(tmp, "id_ed25519")
+      make_ed25519_key!(key_path)
+      fingerprint = public_key_fingerprint!(key_path <> ".pub")
+
+      upload_path = Path.join(tmp, "upload.bin")
+      download_path = Path.join(tmp, "download.bin")
+      payload = :binary.copy(:crypto.strong_rand_bytes(1024), 1024)
+      File.write!(upload_path, payload)
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {CustomAuth, fingerprint: fingerprint}
+               )
+
+      on_exit(fn ->
+        Sftpd.stop_server(ref)
+        File.rm_rf(tmp)
+      end)
+
+      batch = Path.join(tmp, "batch")
+      File.write!(batch, "put #{upload_path} /bench.bin\nget /bench.bin #{download_path}\n")
+
+      args = [
+        "-q",
+        "-B",
+        "32768",
+        "-R",
+        "64",
+        "-b",
+        batch,
+        "-P",
+        Integer.to_string(port),
+        "-c",
+        "aes256-gcm@openssh.com",
+        "-i",
+        key_path,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "IdentitiesOnly=yes",
+        "key-user@127.0.0.1"
+      ]
+
+      assert {_, 0} = System.cmd(sftp, args, stderr_to_stdout: true)
+      assert File.read!(download_path) == payload
+    end
+
     test "rejects shell and exec channel requests" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
@@ -882,6 +948,18 @@ defmodule SftpdTest do
       user_interaction: false,
       preferred_algorithms: [cipher: [:"aes256-gcm@openssh.com"]]
     )
+  end
+
+  defp make_ed25519_key!(path) do
+    {_, 0} =
+      System.cmd("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", path],
+        stderr_to_stdout: true
+      )
+  end
+
+  defp public_key_fingerprint!(pub_path) do
+    {:ok, public_key} = pub_path |> File.read!() |> Sftpd.Auth.decode_authorized_key()
+    Sftpd.Auth.fingerprint(public_key)
   end
 
   defp open_raw_authenticated_session(port) do
