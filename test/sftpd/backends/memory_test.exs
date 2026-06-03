@@ -70,6 +70,43 @@ defmodule Sftpd.Backends.MemoryTest do
     end
   end
 
+  describe "fast write handles" do
+    test "materializes sequential chunks without changing content", %{state: state} do
+      {:ok, handle} = Memory.open_write("/sequential.bin", %{}, %{}, state)
+
+      handle =
+        Enum.reduce(0..63, handle, fn index, handle ->
+          chunk = :binary.copy(<<index>>, 1024)
+          {:ok, handle} = Memory.write_at(handle, index * 1024, chunk, state)
+          handle
+        end)
+
+      assert :ok = Memory.finish_write(handle, state)
+      assert {:ok, content} = Memory.read_file("/sequential.bin", state)
+      assert byte_size(content) == 64 * 1024
+      assert binary_part(content, 0, 1024) == :binary.copy(<<0>>, 1024)
+      assert binary_part(content, 63 * 1024, 1024) == :binary.copy(<<63>>, 1024)
+    end
+
+    test "fills gaps in sparse non-overlapping chunks", %{state: state} do
+      {:ok, handle} = Memory.open_write("/sparse-fast.bin", %{}, %{}, state)
+      {:ok, handle} = Memory.write_at(handle, 0, "head", state)
+      {:ok, handle} = Memory.write_at(handle, 8, "tail", state)
+
+      assert :ok = Memory.finish_write(handle, state)
+      assert {:ok, <<"head", 0, 0, 0, 0, "tail">>} = Memory.read_file("/sparse-fast.bin", state)
+    end
+
+    test "preserves overwrite semantics for overlapping chunks", %{state: state} do
+      {:ok, handle} = Memory.open_write("/overlap-fast.bin", %{}, %{}, state)
+      {:ok, handle} = Memory.write_at(handle, 0, "abcdef", state)
+      {:ok, handle} = Memory.write_at(handle, 2, "XY", state)
+
+      assert :ok = Memory.finish_write(handle, state)
+      assert {:ok, "abXYef"} = Memory.read_file("/overlap-fast.bin", state)
+    end
+  end
+
   describe "directory operations" do
     property "directory listings expose only immediate children plus dot entries" do
       check all(

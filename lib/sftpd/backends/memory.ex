@@ -302,8 +302,40 @@ defmodule Sftpd.Backends.Memory do
   end
 
   defp materialize_chunks(chunks) do
+    sorted_chunks = Enum.sort_by(chunks, fn {offset, _data} -> offset end)
+
+    if overlapping_chunks?(sorted_chunks) do
+      materialize_overlapping_chunks(sorted_chunks)
+    else
+      sorted_chunks
+      |> Enum.map_reduce(0, fn {offset, data}, position ->
+        gap =
+          if offset > position do
+            :binary.copy(<<0>>, offset - position)
+          else
+            []
+          end
+
+        {[gap, data], offset + byte_size(data)}
+      end)
+      |> elem(0)
+      |> IO.iodata_to_binary()
+    end
+  end
+
+  defp overlapping_chunks?(chunks) do
     chunks
-    |> Enum.sort_by(fn {offset, _data} -> offset end)
+    |> Enum.reduce_while(0, fn {offset, data}, position ->
+      if offset < position do
+        {:halt, true}
+      else
+        {:cont, offset + byte_size(data)}
+      end
+    end) == true
+  end
+
+  defp materialize_overlapping_chunks(chunks) do
+    chunks
     |> Enum.reduce(<<>>, fn {offset, data}, acc ->
       acc =
         if offset > byte_size(acc) do

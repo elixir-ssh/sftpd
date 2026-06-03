@@ -321,6 +321,13 @@ defmodule Sftpd.ElixirServer do
       {responses, channel} = handle_sftp_data(data, channel)
       state = put_channel(state, channel)
 
+      {:ok, state} =
+        send_encrypted_payload(
+          socket,
+          state,
+          <<93, channel.client_channel::32, byte_size(data)::32>>
+        )
+
       state =
         Enum.reduce(responses, state, fn response, state ->
           payload = [<<94, channel.client_channel::32>>, Wire.string(response)]
@@ -410,7 +417,8 @@ defmodule Sftpd.ElixirServer do
   end
 
   defp send_encrypted_payload(socket, %{s2c_cipher: cipher} = state, payload) do
-    {encrypted, cipher} = Cipher.encrypt_packet(cipher, Packet.encode_aead(payload, Cipher.block_size(cipher)))
+    {encrypted, cipher} =
+      Cipher.encrypt_packet(cipher, Packet.encode_aead(payload, Cipher.block_size(cipher)))
 
     case :gen_tcp.send(socket, encrypted) do
       :ok -> {:ok, %{state | s2c_cipher: cipher}}
