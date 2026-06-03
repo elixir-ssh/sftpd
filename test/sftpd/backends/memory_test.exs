@@ -86,6 +86,10 @@ defmodule Sftpd.Backends.MemoryTest do
       assert byte_size(content) == 64 * 1024
       assert binary_part(content, 0, 1024) == :binary.copy(<<0>>, 1024)
       assert binary_part(content, 63 * 1024, 1024) == :binary.copy(<<63>>, 1024)
+
+      {:ok, read_handle} = Memory.open_read("/sequential.bin", %{}, state)
+      assert {:ok, chunk} = Memory.read_at(read_handle, 31 * 1024, 1024, state)
+      assert chunk == :binary.copy(<<31>>, 1024)
     end
 
     test "fills gaps in sparse non-overlapping chunks", %{state: state} do
@@ -95,6 +99,10 @@ defmodule Sftpd.Backends.MemoryTest do
 
       assert :ok = Memory.finish_write(handle, state)
       assert {:ok, <<"head", 0, 0, 0, 0, "tail">>} = Memory.read_file("/sparse-fast.bin", state)
+
+      {:ok, read_handle} = Memory.open_read("/sparse-fast.bin", %{}, state)
+      assert {:ok, <<0, 0, 0, 0>>} = Memory.read_at(read_handle, 4, 4, state)
+      assert {:ok, "tail"} = Memory.read_at(read_handle, 8, 4, state)
     end
 
     test "preserves overwrite semantics for overlapping chunks", %{state: state} do

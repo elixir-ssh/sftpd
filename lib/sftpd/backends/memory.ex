@@ -56,7 +56,14 @@ defmodule Sftpd.Backends.Memory do
   @type state :: %{agent: pid()}
 
   @typedoc "File data stored in memory"
-  @type file_data :: %{content: binary(), mtime: NaiveDateTime.t()}
+  @type file_data ::
+          %{content: binary(), mtime: NaiveDateTime.t()}
+          | %{
+              chunks: %{non_neg_integer() => binary()},
+              offsets: [non_neg_integer()],
+              size: non_neg_integer(),
+              mtime: NaiveDateTime.t()
+            }
 
   @impl true
   @spec init(keyword()) :: {:ok, state()}
@@ -108,8 +115,9 @@ defmodule Sftpd.Backends.Memory do
 
       Agent.get(agent, fn files ->
         case Map.get(files, key) do
-          %{content: content, mtime: mtime} ->
-            {:ok, Backend.file_info(byte_size(content), NaiveDateTime.to_erl(mtime), :read_write)}
+          %{mtime: mtime} = file_data ->
+            {:ok,
+             Backend.file_info(file_size(file_data), NaiveDateTime.to_erl(mtime), :read_write)}
 
           nil ->
             if directory_exists?(files, dir_prefix) do
@@ -152,7 +160,7 @@ defmodule Sftpd.Backends.Memory do
   @impl true
   @spec delete(Backend.path(), state()) :: :ok
   def delete(path, %{agent: agent}) do
-    key = Backend.normalize_path(path)
+    key = copied_normalized_path(path)
 
     Agent.update(agent, fn files ->
       Map.delete(files, key)
@@ -184,7 +192,7 @@ defmodule Sftpd.Backends.Memory do
 
     Agent.get(agent, fn files ->
       case Map.get(files, key) do
-        %{content: content} -> {:ok, content}
+        file_data when is_map(file_data) -> {:ok, materialize_file_data(file_data)}
         nil -> {:error, :enoent}
       end
     end)
@@ -193,7 +201,8 @@ defmodule Sftpd.Backends.Memory do
   @impl true
   @spec write_file(Backend.path(), binary(), state()) :: :ok
   def write_file(path, content, %{agent: agent}) do
-    key = Backend.normalize_path(path)
+    key = copied_normalized_path(path)
+    content = IO.iodata_to_binary(content)
 
     Agent.update(agent, fn files ->
       Map.put(files, key, %{content: content, mtime: NaiveDateTime.utc_now()})
@@ -202,14 +211,26 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
-  def open_read(path, _session, state) do
-    case read_file(path, state) do
-      {:ok, content} -> {:ok, %{path: normalize_binary_path(path), content: content}}
-      {:error, reason} -> {:error, reason}
-    end
+  def open_read(path, _session, %{agent: agent}) do
+    key = copied_normalized_path(path)
+
+    Agent.get(agent, fn files ->
+      case Map.get(files, key) do
+        nil -> {:error, :enoent}
+        file_data -> {:ok, %{path: key, file: file_data}}
+      end
+    end)
+  end
+
+  def read_at(%{file: file_data}, offset, len, _state) do
+    read_file_data_at(file_data, offset, len)
   end
 
   def read_at(%{content: content}, offset, len, _state) do
+    read_content_at(content, offset, len)
+  end
+
+  defp read_content_at(content, offset, len) do
     cond do
       offset >= byte_size(content) ->
         :eof
@@ -221,7 +242,7 @@ defmodule Sftpd.Backends.Memory do
   end
 
   def open_write(path, _attrs, _session, _state) do
-    {:ok, %{path: normalize_binary_path(path), chunks: []}}
+    {:ok, %{path: copied_normalized_path(path), chunks: []}}
   end
 
   def write_at(%{chunks: chunks} = handle, offset, data, _state) do
@@ -229,8 +250,14 @@ defmodule Sftpd.Backends.Memory do
   end
 
   @impl true
-  def finish_write(%{path: path, chunks: chunks}, state) do
-    write_file(path, materialize_chunks(chunks), state)
+  def finish_write(%{path: path, chunks: chunks}, %{agent: agent}) do
+    file_data = chunks_to_file_data(chunks)
+
+    Agent.update(agent, fn files ->
+      Map.put(files, path, file_data)
+    end)
+
+    :ok
   end
 
   @impl true
@@ -291,7 +318,7 @@ defmodule Sftpd.Backends.Memory do
   defp child_path(_path, name) when name in [~c".", ~c".."], do: to_string(name)
 
   defp child_path(path, name) do
-    path = normalize_binary_path(path)
+    path = copied_normalized_path(path)
     name = to_string(name)
 
     case path do
@@ -301,26 +328,103 @@ defmodule Sftpd.Backends.Memory do
     end
   end
 
-  defp materialize_chunks(chunks) do
+  defp chunks_to_file_data(chunks) do
     sorted_chunks = Enum.sort_by(chunks, fn {offset, _data} -> offset end)
 
     if overlapping_chunks?(sorted_chunks) do
-      materialize_overlapping_chunks(sorted_chunks)
+      %{content: materialize_overlapping_chunks(sorted_chunks), mtime: NaiveDateTime.utc_now()}
     else
-      sorted_chunks
-      |> Enum.map_reduce(0, fn {offset, data}, position ->
-        gap =
-          if offset > position do
-            :binary.copy(<<0>>, offset - position)
-          else
-            []
-          end
+      offsets = Enum.map(sorted_chunks, fn {offset, _data} -> offset end)
+      chunks = Map.new(sorted_chunks)
+      size = indexed_size(sorted_chunks)
 
-        {[gap, data], offset + byte_size(data)}
-      end)
-      |> elem(0)
-      |> IO.iodata_to_binary()
+      %{chunks: chunks, offsets: offsets, size: size, mtime: NaiveDateTime.utc_now()}
     end
+  end
+
+  defp indexed_size([]), do: 0
+
+  defp indexed_size(chunks) do
+    chunks
+    |> List.last()
+    |> then(fn {offset, data} -> offset + byte_size(data) end)
+  end
+
+  defp file_size(%{content: content}), do: byte_size(content)
+  defp file_size(%{size: size}), do: size
+
+  defp materialize_file_data(%{content: content}), do: content
+
+  defp materialize_file_data(%{offsets: offsets, size: size} = file_data) do
+    case offsets do
+      [] -> ""
+      _ -> materialize_indexed_file(file_data, 0, size)
+    end
+  end
+
+  defp read_file_data_at(%{content: content}, offset, len),
+    do: read_content_at(content, offset, len)
+
+  defp read_file_data_at(%{size: size} = file_data, offset, len) do
+    cond do
+      offset >= size ->
+        :eof
+
+      true ->
+        bytes = min(len, size - offset)
+        {:ok, read_indexed_range(file_data, offset, bytes)}
+    end
+  end
+
+  defp read_indexed_range(%{chunks: chunks, offsets: offsets}, offset, len) do
+    case Map.get(chunks, offset) do
+      chunk when is_binary(chunk) and byte_size(chunk) >= len ->
+        binary_part(chunk, 0, len)
+
+      _ ->
+        materialize_indexed_file(%{chunks: chunks, offsets: offsets}, offset, offset + len)
+    end
+  end
+
+  defp materialize_indexed_file(%{chunks: chunks, offsets: offsets}, start_offset, end_offset) do
+    offsets
+    |> Enum.reduce_while({[], start_offset}, fn chunk_offset, {parts, position} ->
+      chunk = Map.fetch!(chunks, chunk_offset)
+      chunk_end = chunk_offset + byte_size(chunk)
+
+      cond do
+        chunk_end <= start_offset ->
+          {:cont, {parts, position}}
+
+        chunk_offset >= end_offset ->
+          {:halt, {parts, position}}
+
+        true ->
+          gap =
+            if chunk_offset > position do
+              :binary.copy(<<0>>, min(chunk_offset, end_offset) - position)
+            else
+              []
+            end
+
+          take_start = max(position, chunk_offset)
+          take_end = min(chunk_end, end_offset)
+          take_size = max(0, take_end - take_start)
+          chunk_part = binary_part(chunk, take_start - chunk_offset, take_size)
+
+          {:cont, {[parts, gap, chunk_part], take_end}}
+      end
+    end)
+    |> then(fn {parts, position} ->
+      tail_gap =
+        if position < end_offset do
+          :binary.copy(<<0>>, end_offset - position)
+        else
+          []
+        end
+
+      IO.iodata_to_binary([parts, tail_gap])
+    end)
   end
 
   defp overlapping_chunks?(chunks) do
@@ -351,7 +455,7 @@ defmodule Sftpd.Backends.Memory do
     end)
   end
 
-  defp normalize_binary_path(path), do: Backend.normalize_path(path)
+  defp copied_normalized_path(path), do: path |> Backend.normalize_path() |> :binary.copy()
 
   defp normalize_prefix(path) do
     if Backend.root_path?(path) do
