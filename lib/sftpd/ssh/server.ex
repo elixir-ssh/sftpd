@@ -326,9 +326,12 @@ defmodule Sftpd.SSH.Server do
       {responses, channel} = handle_sftp_data(data, channel)
       state = put_channel(state, channel)
 
+      {responses, state, channel, bytes_read} =
+        drain_buffered_sftp_data(socket, recipient, state, channel, responses, byte_size(data))
+
       payloads = [
-        <<93, channel.client_channel::32, byte_size(data)::32>>
-        | Enum.flat_map(responses, &sftp_response_payloads(channel, &1))
+        <<93, channel.client_channel::32, bytes_read::32>>
+        | sftp_response_payloads(channel, responses)
       ]
 
       {:ok, state} = send_encrypted_payloads(socket, state, payloads)
@@ -355,6 +358,46 @@ defmodule Sftpd.SSH.Server do
   defp handle_encrypted_payload(payload, state, _socket) do
     Logger.debug("pure ssh ignored encrypted message #{inspect(Packet.message_id(payload))}")
     {:continue, state}
+  end
+
+  defp drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
+    case recv_buffered_encrypted_payload(state) do
+      {:ok, <<94, ^recipient::32, rest::binary>>, state} ->
+        with {:ok, data, ""} <- Wire.take_string(rest),
+             {:ok, %{sftp?: true} = channel} <- fetch_channel(state, recipient) do
+          {new_responses, channel} = handle_sftp_data(data, channel)
+          state = put_channel(state, channel)
+
+          drain_buffered_sftp_data(
+            socket,
+            recipient,
+            state,
+            channel,
+            responses ++ new_responses,
+            bytes_read + byte_size(data)
+          )
+        else
+          _ -> {responses, state, channel, bytes_read}
+        end
+
+      {:ok, <<93, _rest::binary>>, state} ->
+        drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+
+      {:ok, payload, state} ->
+        case handle_encrypted_payload(payload, state, socket) do
+          {:continue, state} ->
+            drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+
+          {:stop, state} ->
+            {responses, state, channel, bytes_read}
+        end
+
+      :none ->
+        {responses, state, channel, bytes_read}
+
+      {:error, _reason} ->
+        {responses, state, channel, bytes_read}
+    end
   end
 
   defp handle_public_key_userauth(rest, state, socket) do
@@ -484,6 +527,25 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
+  defp recv_buffered_encrypted_payload(%{buffer: buffer, c2s_cipher: cipher} = state)
+       when is_binary(buffer) and byte_size(buffer) > 0 do
+    case Cipher.decrypt_packet(cipher, buffer) do
+      {:ok, clear_packet, rest, cipher} ->
+        case Packet.decode_clear(clear_packet) do
+          {:ok, payload, ""} -> {:ok, payload, %{state | buffer: rest, c2s_cipher: cipher}}
+          _ -> {:error, :bad_packet}
+        end
+
+      :more ->
+        :none
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp recv_buffered_encrypted_payload(_state), do: :none
+
   defp send_encrypted_payload(socket, %{s2c_cipher: cipher} = state, payload) do
     {encrypted, cipher} =
       Cipher.encrypt_packet(cipher, Packet.encode_aead_packet(payload, Cipher.block_size(cipher)))
@@ -512,12 +574,57 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
-  defp sftp_response_payloads(channel, %SerializedPacket{kind: :iodata, iodata: data}) do
+  defp sftp_response_payloads(channel, responses) when is_list(responses) do
+    max_packet = max(1, channel.client_max_packet)
+    client_channel = channel.client_channel
+
+    {payloads, parts, size} =
+      Enum.reduce(responses, {[], [], 0}, fn response, {payloads, parts, size} ->
+        {response_size, response_data} = sftp_response_iodata(response)
+
+        cond do
+          response_size > max_packet ->
+            payloads = flush_channel_data_payload(payloads, client_channel, parts, size)
+            payloads = Enum.reverse(sftp_response_split_payloads(channel, response), payloads)
+            {payloads, [], 0}
+
+          size + response_size <= max_packet ->
+            {payloads, [parts, response_data], size + response_size}
+
+          true ->
+            payloads = flush_channel_data_payload(payloads, client_channel, parts, size)
+            {payloads, response_data, response_size}
+        end
+      end)
+
+    payloads
+    |> flush_channel_data_payload(client_channel, parts, size)
+    |> Enum.reverse()
+  end
+
+  defp flush_channel_data_payload(payloads, _client_channel, _parts, 0), do: payloads
+
+  defp flush_channel_data_payload(payloads, client_channel, parts, _size) do
+    [channel_data_payload(client_channel, parts) | payloads]
+  end
+
+  defp sftp_response_iodata(%SerializedPacket{kind: :iodata, iodata: data}) do
+    {IO.iodata_length(data), data}
+  end
+
+  defp sftp_response_iodata(%SerializedPacket{kind: :data, header: header, data: data}) do
+    {[header, data] |> IO.iodata_length(), [header, data]}
+  end
+
+  defp sftp_response_split_payloads(channel, %SerializedPacket{kind: :iodata, iodata: data}) do
     data = IO.iodata_to_binary(data)
     channel_data_payloads(channel, data)
   end
 
-  defp sftp_response_payloads(channel, %SerializedPacket{kind: :data, header: header, data: data}) do
+  defp sftp_response_split_payloads(
+         channel,
+         %SerializedPacket{kind: :data, header: header, data: data}
+       ) do
     channel_data_pair_payloads(channel, header, data)
   end
 
@@ -531,8 +638,12 @@ defmodule Sftpd.SSH.Server do
   defp channel_data_payloads(client_channel, data, max_packet, acc) do
     bytes = min(byte_size(data), max_packet)
     <<chunk::binary-size(^bytes), rest::binary>> = data
-    payload = [<<94, client_channel::32>>, Wire.string(chunk)]
+    payload = channel_data_payload(client_channel, chunk)
     channel_data_payloads(client_channel, rest, max_packet, [payload | acc])
+  end
+
+  defp channel_data_payload(client_channel, data) do
+    [<<94, client_channel::32>>, Wire.string(data)]
   end
 
   defp channel_data_pair_payloads(channel, header, data) do
@@ -555,7 +666,7 @@ defmodule Sftpd.SSH.Server do
     first_data_size = min(byte_size(data), max_packet - byte_size(header))
     <<first_data::binary-size(^first_data_size), rest::binary>> = data
 
-    first_payload = [<<94, client_channel::32>>, Wire.string([header, first_data])]
+    first_payload = channel_data_payload(client_channel, [header, first_data])
 
     [first_payload | channel_data_payloads(client_channel, rest, max_packet, [])]
   end
