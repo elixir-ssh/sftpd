@@ -47,7 +47,7 @@ defmodule Sftpd.Backends.Memory do
 
   @behaviour Sftpd.Backend
 
-  alias Sftpd.Backend
+  alias Sftpd.{Backend, FastBackend}
 
   # Marker file used to represent empty directories (matching S3 convention)
   @keep_marker ".keep"
@@ -202,7 +202,124 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
+  def open_read(path, _session, state) do
+    case read_file(path, state) do
+      {:ok, content} -> {:ok, %{path: normalize_binary_path(path), content: content}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def read_at(%{content: content}, offset, len, _state) do
+    cond do
+      offset >= byte_size(content) ->
+        :eof
+
+      true ->
+        bytes = min(len, byte_size(content) - offset)
+        {:ok, binary_part(content, offset, bytes)}
+    end
+  end
+
+  def open_write(path, _attrs, _session, _state) do
+    {:ok, %{path: normalize_binary_path(path), chunks: []}}
+  end
+
+  def write_at(%{chunks: chunks} = handle, offset, data, _state) do
+    {:ok, %{handle | chunks: [{offset, IO.iodata_to_binary(data)} | chunks]}}
+  end
+
+  @impl true
+  def finish_write(%{path: path, chunks: chunks}, state) do
+    write_file(path, materialize_chunks(chunks), state)
+  end
+
+  @impl true
+  def abort_write(_handle, _state), do: :ok
+
+  def open_dir(path, _session, state) do
+    {:ok, entries} = fast_list_dir(path, state)
+    {:ok, %{entries: entries, read?: false}}
+  end
+
+  def read_dir(%{read?: true}, _state), do: :eof
+
+  def read_dir(%{entries: entries, read?: false} = handle, _state) do
+    {:ok, entries, %{handle | read?: true}}
+  end
+
+  def close_dir(_handle, _state), do: :ok
+
+  def file_attrs(path, _session, state) do
+    case file_info(path, state) do
+      {:ok, info} -> {:ok, FastBackend.attrs_from_file_info(info)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def make_dir(path, _attrs, _session, state), do: make_dir(path, state)
+
+  @impl true
+  def del_dir(path, _session, state), do: del_dir(path, state)
+
+  @impl true
+  def delete(path, _session, state), do: delete(path, state)
+
+  @impl true
+  def rename(src, dst, _session, state), do: rename(src, dst, state)
+
   # Helpers
+
+  defp fast_list_dir(path, state) do
+    with {:ok, names} <- list_dir(path, state) do
+      entries =
+        Enum.map(names, fn name ->
+          child_path = child_path(path, name)
+
+          attrs =
+            case file_attrs(child_path, %{}, state) do
+              {:ok, attrs} -> attrs
+              {:error, _reason} -> %{type: :directory, size: 0, permissions: 0o040755}
+            end
+
+          %{name: to_string(name), attrs: attrs}
+        end)
+
+      {:ok, entries}
+    end
+  end
+
+  defp child_path(_path, name) when name in [~c".", ~c".."], do: to_string(name)
+
+  defp child_path(path, name) do
+    path = normalize_binary_path(path)
+    name = to_string(name)
+
+    case path do
+      "" -> name
+      "/" -> name
+      _ -> path <> "/" <> name
+    end
+  end
+
+  defp materialize_chunks(chunks) do
+    chunks
+    |> Enum.sort_by(fn {offset, _data} -> offset end)
+    |> Enum.reduce(<<>>, fn {offset, data}, acc ->
+      acc =
+        if offset > byte_size(acc) do
+          acc <> :binary.copy(<<0>>, offset - byte_size(acc))
+        else
+          acc
+        end
+
+      prefix = binary_part(acc, 0, min(offset, byte_size(acc)))
+      suffix_offset = min(offset + byte_size(data), byte_size(acc))
+      suffix = binary_part(acc, suffix_offset, byte_size(acc) - suffix_offset)
+      prefix <> data <> suffix
+    end)
+  end
+
+  defp normalize_binary_path(path), do: Backend.normalize_path(path)
 
   defp normalize_prefix(path) do
     if Backend.root_path?(path) do
