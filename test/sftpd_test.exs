@@ -1134,7 +1134,7 @@ defmodule SftpdTest do
     {packet, cipher} =
       Sftpd.SSH.Cipher.encrypt_packet(
         cipher,
-        Sftpd.SSH.Packet.encode_aead(payload, Sftpd.SSH.Cipher.block_size(cipher))
+        Sftpd.SSH.Packet.encode_aead_packet(payload, Sftpd.SSH.Cipher.block_size(cipher))
       )
 
     {IO.iodata_to_binary(packet), cipher}

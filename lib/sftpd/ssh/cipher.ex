@@ -38,12 +38,14 @@ defmodule Sftpd.SSH.Cipher do
   @spec block_size(state()) :: pos_integer()
   def block_size(%{algorithm: @aes256_gcm}), do: 16
 
-  @spec encrypt_packet(state(), iodata()) :: {iodata(), state()}
-  def encrypt_packet(%{algorithm: @aes256_gcm} = state, clear_packet) do
-    clear_packet = IO.iodata_to_binary(clear_packet)
-    <<packet_length::32, plaintext::binary>> = clear_packet
+  @spec encrypt_packet(state(), Sftpd.SSH.Packet.aead_packet()) :: {iodata(), state()}
+  def encrypt_packet(
+        %{algorithm: @aes256_gcm} = state,
+        %Sftpd.SSH.Packet.AEADPacket{packet_length: packet_length, plaintext: plaintext}
+      ) do
     aad = <<packet_length::32>>
     iv = packet_iv(state.iv, state.sequence)
+    plaintext = IO.iodata_to_binary(plaintext)
 
     {ciphertext, tag} =
       :crypto.crypto_one_time_aead(
@@ -56,7 +58,7 @@ defmodule Sftpd.SSH.Cipher do
         true
       )
 
-    {[<<packet_length::32>>, ciphertext, tag], increment_sequence(state)}
+    {[aad, ciphertext, tag], increment_sequence(state)}
   end
 
   @spec decrypt_packet(state(), binary()) ::

@@ -21,10 +21,9 @@ defmodule Sftpd.SSH.CipherTest do
 
   test "encrypts and decrypts one clear SSH packet" do
     state = state(:server_to_client)
-    clear = Packet.encode_clear("payload")
+    clear = Packet.encode_aead_packet("payload")
 
     {encrypted, decrypt_state} = Cipher.encrypt_packet(state, clear)
-    assert IO.iodata_to_binary(encrypted) != IO.iodata_to_binary(clear)
     assert decrypt_state.sequence == 1
 
     assert {:ok, decrypted, "", next_state} =
@@ -36,7 +35,7 @@ defmodule Sftpd.SSH.CipherTest do
 
   test "rejects tampered ciphertext" do
     state = state(:server_to_client)
-    {encrypted, _state} = Cipher.encrypt_packet(state, Packet.encode_clear("payload"))
+    {encrypted, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))
     encrypted = IO.iodata_to_binary(encrypted)
     last = byte_size(encrypted) - 1
     <<prefix::binary-size(^last), byte>> = encrypted
@@ -47,8 +46,8 @@ defmodule Sftpd.SSH.CipherTest do
 
   test "decrypts multiple encrypted packets with sequence increments" do
     state = state(:server_to_client)
-    {first, state} = Cipher.encrypt_packet(state, Packet.encode_clear("one"))
-    {second, _state} = Cipher.encrypt_packet(state, Packet.encode_clear("two"))
+    {first, state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("one"))
+    {second, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("two"))
 
     decrypt_state = state(:server_to_client)
 

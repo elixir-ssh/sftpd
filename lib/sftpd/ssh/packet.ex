@@ -1,6 +1,15 @@
 defmodule Sftpd.SSH.Packet do
   @moduledoc false
 
+  defmodule AEADPacket do
+    @moduledoc false
+
+    @enforce_keys [:packet_length, :plaintext]
+    defstruct [:packet_length, :plaintext]
+  end
+
+  @type aead_packet :: %AEADPacket{packet_length: non_neg_integer(), plaintext: iodata()}
+
   @spec encode_clear(iodata(), pos_integer()) :: iodata()
   def encode_clear(payload, block_size \\ 8) do
     payload_len = IO.iodata_length(payload)
@@ -13,12 +22,20 @@ defmodule Sftpd.SSH.Packet do
 
   @spec encode_aead(iodata(), pos_integer()) :: iodata()
   def encode_aead(payload, block_size \\ 16) do
+    %AEADPacket{packet_length: packet_len, plaintext: plaintext} =
+      encode_aead_packet(payload, block_size)
+
+    [<<packet_len::32>>, plaintext]
+  end
+
+  @spec encode_aead_packet(iodata(), pos_integer()) :: aead_packet()
+  def encode_aead_packet(payload, block_size \\ 16) do
     payload_len = IO.iodata_length(payload)
     padding_len = aead_padding_len(payload_len, block_size)
     padding = :crypto.strong_rand_bytes(padding_len)
     packet_len = payload_len + padding_len + 1
 
-    [<<packet_len::32, padding_len>>, payload, padding]
+    %AEADPacket{packet_length: packet_len, plaintext: [<<padding_len>>, payload, padding]}
   end
 
   @spec decode_clear(binary()) :: {:ok, binary(), binary()} | :more | {:error, :bad_packet}

@@ -324,14 +324,12 @@ defmodule Sftpd.SSH.Server do
       {responses, channel} = handle_sftp_data(data, channel)
       state = put_channel(state, channel)
 
-      {:ok, state} =
-        send_encrypted_payload(
-          socket,
-          state,
-          <<93, channel.client_channel::32, byte_size(data)::32>>
-        )
+      payloads = [
+        <<93, channel.client_channel::32, byte_size(data)::32>>
+        | Enum.flat_map(responses, &sftp_response_payloads(channel, &1))
+      ]
 
-      state = Enum.reduce(responses, state, &send_sftp_response(socket, &2, channel, &1))
+      {:ok, state} = send_encrypted_payloads(socket, state, payloads)
 
       {:continue, state}
     else
@@ -486,7 +484,7 @@ defmodule Sftpd.SSH.Server do
 
   defp send_encrypted_payload(socket, %{s2c_cipher: cipher} = state, payload) do
     {encrypted, cipher} =
-      Cipher.encrypt_packet(cipher, Packet.encode_aead(payload, Cipher.block_size(cipher)))
+      Cipher.encrypt_packet(cipher, Packet.encode_aead_packet(payload, Cipher.block_size(cipher)))
 
     case :gen_tcp.send(socket, encrypted) do
       :ok -> {:ok, %{state | s2c_cipher: cipher}}
@@ -494,68 +492,74 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
-  defp send_sftp_response(socket, state, channel, %SerializedPacket{kind: :iodata, iodata: data}) do
+  defp send_encrypted_payloads(socket, state, payloads) do
+    {encrypted, state} =
+      Enum.map_reduce(payloads, state, fn payload, %{s2c_cipher: cipher} = state ->
+        {encrypted, cipher} =
+          Cipher.encrypt_packet(
+            cipher,
+            Packet.encode_aead_packet(payload, Cipher.block_size(cipher))
+          )
+
+        {encrypted, %{state | s2c_cipher: cipher}}
+      end)
+
+    case :gen_tcp.send(socket, encrypted) do
+      :ok -> {:ok, state}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp sftp_response_payloads(channel, %SerializedPacket{kind: :iodata, iodata: data}) do
     data = IO.iodata_to_binary(data)
-    send_channel_data(socket, state, channel, data)
+    channel_data_payloads(channel, data)
   end
 
-  defp send_sftp_response(
-         socket,
-         state,
-         channel,
-         %SerializedPacket{kind: :data, header: header, data: data}
-       ) do
-    send_channel_data_pair(socket, state, channel, header, data)
+  defp sftp_response_payloads(channel, %SerializedPacket{kind: :data, header: header, data: data}) do
+    channel_data_pair_payloads(channel, header, data)
   end
 
-  defp send_channel_data(socket, state, channel, data) do
+  defp channel_data_payloads(channel, data) do
     max_packet = max(1, channel.client_max_packet)
-    send_channel_data(socket, state, channel.client_channel, data, max_packet)
+    channel_data_payloads(channel.client_channel, data, max_packet, [])
   end
 
-  defp send_channel_data(_socket, state, _client_channel, "", _max_packet), do: state
+  defp channel_data_payloads(_client_channel, "", _max_packet, acc), do: Enum.reverse(acc)
 
-  defp send_channel_data(socket, state, client_channel, data, max_packet) do
+  defp channel_data_payloads(client_channel, data, max_packet, acc) do
     bytes = min(byte_size(data), max_packet)
     <<chunk::binary-size(^bytes), rest::binary>> = data
     payload = [<<94, client_channel::32>>, Wire.string(chunk)]
-    {:ok, state} = send_encrypted_payload(socket, state, payload)
-    send_channel_data(socket, state, client_channel, rest, max_packet)
+    channel_data_payloads(client_channel, rest, max_packet, [payload | acc])
   end
 
-  defp send_channel_data_pair(socket, state, channel, header, data) do
+  defp channel_data_pair_payloads(channel, header, data) do
     max_packet = max(1, channel.client_max_packet)
     client_channel = channel.client_channel
     header_size = byte_size(header)
 
     cond do
       header_size >= max_packet ->
-        state = send_channel_data(socket, state, client_channel, header, max_packet)
-        send_channel_data(socket, state, client_channel, IO.iodata_to_binary(data), max_packet)
+        channel_data_payloads(client_channel, header, max_packet, []) ++
+          channel_data_payloads(client_channel, IO.iodata_to_binary(data), max_packet, [])
 
       true ->
-        send_channel_data_pair(socket, state, client_channel, header, data, max_packet)
+        channel_data_pair_payloads(client_channel, header, data, max_packet)
     end
   end
 
-  defp send_channel_data_pair(socket, state, client_channel, header, data, max_packet)
+  defp channel_data_pair_payloads(client_channel, header, data, max_packet)
        when is_binary(data) do
     first_data_size = min(byte_size(data), max_packet - byte_size(header))
     <<first_data::binary-size(^first_data_size), rest::binary>> = data
 
-    {:ok, state} =
-      send_encrypted_payload(socket, state, [
-        <<94, client_channel::32>>,
-        Wire.string([header, first_data])
-      ])
+    first_payload = [<<94, client_channel::32>>, Wire.string([header, first_data])]
 
-    send_channel_data(socket, state, client_channel, rest, max_packet)
+    [first_payload | channel_data_payloads(client_channel, rest, max_packet, [])]
   end
 
-  defp send_channel_data_pair(socket, state, client_channel, header, data, max_packet) do
-    send_channel_data_pair(
-      socket,
-      state,
+  defp channel_data_pair_payloads(client_channel, header, data, max_packet) do
+    channel_data_pair_payloads(
       client_channel,
       header,
       IO.iodata_to_binary(data),
