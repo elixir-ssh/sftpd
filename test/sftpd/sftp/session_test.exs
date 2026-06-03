@@ -4,6 +4,7 @@ defmodule Sftpd.SFTP.SessionTest do
   import Bitwise
 
   alias Sftpd.Backends.Memory
+  alias Sftpd.SFTP.SerializedPacket
   alias Sftpd.SFTP.Session
 
   @ssh_fxp_open 3
@@ -91,6 +92,12 @@ defmodule Sftpd.SFTP.SessionTest do
   defp handle(packet, session) do
     {:ok, request} = unwrap(packet)
     Session.handle_packet(request, session)
+  end
+
+  defp unwrap(%SerializedPacket{kind: :iodata, iodata: iodata}), do: unwrap(iodata)
+
+  defp unwrap(%SerializedPacket{kind: :data, header: header, data: data}) do
+    unwrap([header, data])
   end
 
   defp unwrap(iodata) do

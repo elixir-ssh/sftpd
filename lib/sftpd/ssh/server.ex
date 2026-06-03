@@ -1,4 +1,4 @@
-defmodule Sftpd.ElixirServer do
+defmodule Sftpd.SSH.Server do
   @moduledoc false
 
   use GenServer
@@ -6,6 +6,7 @@ defmodule Sftpd.ElixirServer do
   require Logger
 
   alias Sftpd.SFTP
+  alias Sftpd.SFTP.SerializedPacket
   alias Sftpd.SSH.{Algorithms, Cipher, Kex, Keys, Packet, Wire}
 
   @banner "SSH-2.0-sftpd-elixir\r\n"
@@ -69,6 +70,7 @@ defmodule Sftpd.ElixirServer do
   end
 
   defp validate_backend(Sftpd.Backends.Memory), do: :ok
+  defp validate_backend(Sftpd.Backends.Benchmark), do: :ok
   defp validate_backend(backend), do: {:error, {:unsupported_elixir_transport_backend, backend}}
 
   defp start_acceptor(%{socket: socket}) do
@@ -202,7 +204,7 @@ defmodule Sftpd.ElixirServer do
   end
 
   defp handle_encrypted_payload(<<5, rest::binary>>, state, socket) do
-    Logger.debug("elixir ssh received service request")
+    Logger.debug("pure ssh received service request")
 
     with {:ok, "ssh-userauth", ""} <- Wire.take_string(rest),
          {:ok, state} <-
@@ -214,7 +216,7 @@ defmodule Sftpd.ElixirServer do
   end
 
   defp handle_encrypted_payload(<<50, rest::binary>>, state, socket) do
-    Logger.debug("elixir ssh received userauth request")
+    Logger.debug("pure ssh received userauth request")
 
     with {:ok, username, rest} <- Wire.take_string(rest),
          {:ok, "ssh-connection", rest} <- Wire.take_string(rest),
@@ -236,7 +238,7 @@ defmodule Sftpd.ElixirServer do
          socket
        )
        when is_map(auth_session) do
-    Logger.debug("elixir ssh received channel open")
+    Logger.debug("pure ssh received channel open")
 
     with {:ok, "session", rest} <- Wire.take_string(rest),
          <<client_channel::32, client_window::32, client_max_packet::32, ""::binary>> <- rest do
@@ -273,7 +275,7 @@ defmodule Sftpd.ElixirServer do
   end
 
   defp handle_encrypted_payload(<<98, recipient::32, rest::binary>>, state, socket) do
-    Logger.debug("elixir ssh received channel request")
+    Logger.debug("pure ssh received channel request")
 
     with {:ok, "subsystem", rest} <- Wire.take_string(rest),
          {:ok, want_reply?, rest} <- Wire.take_boolean(rest),
@@ -307,7 +309,7 @@ defmodule Sftpd.ElixirServer do
   end
 
   defp handle_encrypted_payload(<<94, recipient::32, rest::binary>>, state, socket) do
-    Logger.debug("elixir ssh received channel data")
+    Logger.debug("pure ssh received channel data")
 
     with {:ok, data, ""} <- Wire.take_string(rest),
          {:ok, %{sftp?: true} = channel} <- fetch_channel(state, recipient) do
@@ -321,10 +323,7 @@ defmodule Sftpd.ElixirServer do
           <<93, channel.client_channel::32, byte_size(data)::32>>
         )
 
-      state =
-        Enum.reduce(responses, state, fn response, state ->
-          send_channel_data(socket, state, channel, response)
-        end)
+      state = Enum.reduce(responses, state, &send_sftp_response(socket, &2, channel, &1))
 
       {:continue, state}
     else
@@ -346,7 +345,7 @@ defmodule Sftpd.ElixirServer do
   end
 
   defp handle_encrypted_payload(payload, state, _socket) do
-    Logger.debug("elixir ssh ignored encrypted message #{inspect(Packet.message_id(payload))}")
+    Logger.debug("pure ssh ignored encrypted message #{inspect(Packet.message_id(payload))}")
     {:continue, state}
   end
 
@@ -446,7 +445,7 @@ defmodule Sftpd.ElixirServer do
         end
 
       {:error, reason} ->
-        Logger.debug("elixir ssh decrypt failed: #{inspect(reason)}")
+        Logger.debug("pure ssh decrypt failed: #{inspect(reason)}")
         {:error, reason}
     end
   end
@@ -487,6 +486,20 @@ defmodule Sftpd.ElixirServer do
     end
   end
 
+  defp send_sftp_response(socket, state, channel, %SerializedPacket{kind: :iodata, iodata: data}) do
+    data = IO.iodata_to_binary(data)
+    send_channel_data(socket, state, channel, data)
+  end
+
+  defp send_sftp_response(
+         socket,
+         state,
+         channel,
+         %SerializedPacket{kind: :data, header: header, data: data}
+       ) do
+    send_channel_data_pair(socket, state, channel, header, data)
+  end
+
   defp send_channel_data(socket, state, channel, data) do
     max_packet = max(1, channel.client_max_packet)
     send_channel_data(socket, state, channel.client_channel, data, max_packet)
@@ -500,6 +513,46 @@ defmodule Sftpd.ElixirServer do
     payload = [<<94, client_channel::32>>, Wire.string(chunk)]
     {:ok, state} = send_encrypted_payload(socket, state, payload)
     send_channel_data(socket, state, client_channel, rest, max_packet)
+  end
+
+  defp send_channel_data_pair(socket, state, channel, header, data) do
+    max_packet = max(1, channel.client_max_packet)
+    client_channel = channel.client_channel
+    header_size = byte_size(header)
+
+    cond do
+      header_size >= max_packet ->
+        state = send_channel_data(socket, state, client_channel, header, max_packet)
+        send_channel_data(socket, state, client_channel, IO.iodata_to_binary(data), max_packet)
+
+      true ->
+        send_channel_data_pair(socket, state, client_channel, header, data, max_packet)
+    end
+  end
+
+  defp send_channel_data_pair(socket, state, client_channel, header, data, max_packet)
+       when is_binary(data) do
+    first_data_size = min(byte_size(data), max_packet - byte_size(header))
+    <<first_data::binary-size(^first_data_size), rest::binary>> = data
+
+    {:ok, state} =
+      send_encrypted_payload(socket, state, [
+        <<94, client_channel::32>>,
+        Wire.string([header, first_data])
+      ])
+
+    send_channel_data(socket, state, client_channel, rest, max_packet)
+  end
+
+  defp send_channel_data_pair(socket, state, client_channel, header, data, max_packet) do
+    send_channel_data_pair(
+      socket,
+      state,
+      client_channel,
+      header,
+      IO.iodata_to_binary(data),
+      max_packet
+    )
   end
 
   defp authenticate_password(auth, username, password, socket) do
@@ -548,8 +601,7 @@ defmodule Sftpd.ElixirServer do
 
     {responses, sftp_session} =
       Enum.map_reduce(packets, channel.sftp_session, fn packet, session ->
-        {response, session} = SFTP.Session.handle_packet(packet, session)
-        {IO.iodata_to_binary(response), session}
+        SFTP.Session.handle_packet(packet, session)
       end)
 
     {responses, %{channel | sftp_buffer: rest, sftp_session: sftp_session}}

@@ -3,6 +3,8 @@ defmodule Sftpd.SFTP.Codec do
 
   import Bitwise
 
+  alias Sftpd.SFTP.SerializedPacket
+
   @ssh_fxp_init 1
   @ssh_fxp_version 2
   @ssh_fxp_open 3
@@ -161,7 +163,7 @@ defmodule Sftpd.SFTP.Codec do
 
   def decode(_), do: {:error, :bad_message}
 
-  @spec version(non_neg_integer(), map()) :: iodata()
+  @spec version(non_neg_integer(), map()) :: SerializedPacket.t()
   def version(version \\ 3, extensions \\ %{}) do
     payload =
       [
@@ -172,23 +174,23 @@ defmodule Sftpd.SFTP.Codec do
     packet(payload)
   end
 
-  @spec status(non_neg_integer(), atom() | non_neg_integer(), iodata()) :: iodata()
+  @spec status(non_neg_integer(), atom() | non_neg_integer(), iodata()) :: SerializedPacket.t()
   def status(id, status, message \\ nil) do
     code = status_code(status)
     message = message || status_message(code)
     packet([<<@ssh_fxp_status, id::32, code::32>>, string(message), string("en-US")])
   end
 
-  @spec handle(non_neg_integer(), binary()) :: iodata()
+  @spec handle(non_neg_integer(), binary()) :: SerializedPacket.t()
   def handle(id, handle), do: packet([<<@ssh_fxp_handle, id::32>>, string(handle)])
 
-  @spec data(non_neg_integer(), iodata()) :: iodata()
+  @spec data(non_neg_integer(), iodata()) :: SerializedPacket.t()
   def data(id, data) do
     size = IO.iodata_length(data)
-    packet([<<@ssh_fxp_data, id::32, size::32>>, data])
+    SerializedPacket.data(<<size + 9::32, @ssh_fxp_data, id::32, size::32>>, data)
   end
 
-  @spec name(non_neg_integer(), [map()]) :: iodata()
+  @spec name(non_neg_integer(), [map()]) :: SerializedPacket.t()
   def name(id, entries) do
     packet([
       <<@ssh_fxp_name, id::32, length(entries)::32>>,
@@ -204,7 +206,7 @@ defmodule Sftpd.SFTP.Codec do
     ])
   end
 
-  @spec attrs(non_neg_integer(), map()) :: iodata()
+  @spec attrs(non_neg_integer(), map()) :: SerializedPacket.t()
   def attrs(id, attrs), do: packet([<<@ssh_fxp_attrs, id::32>>, encode_attrs(attrs)])
 
   @spec status_code(atom() | non_neg_integer()) :: non_neg_integer()
@@ -235,7 +237,7 @@ defmodule Sftpd.SFTP.Codec do
 
   defp packet(payload) do
     len = IO.iodata_length(payload)
-    [<<len::32>>, payload]
+    SerializedPacket.iodata([<<len::32>>, payload])
   end
 
   defp string(data) when is_list(data), do: data |> to_string() |> string()

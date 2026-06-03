@@ -3,7 +3,7 @@ defmodule Sftpd.SFTP.Session do
 
   import Bitwise
 
-  alias Sftpd.SFTP.Codec
+  alias Sftpd.SFTP.{Codec, SerializedPacket}
 
   @open_read 0x0000_0001
   @open_write 0x0000_0002
@@ -29,7 +29,7 @@ defmodule Sftpd.SFTP.Session do
     }
   end
 
-  @spec handle_packet(binary(), state()) :: {iodata(), state()}
+  @spec handle_packet(binary(), state()) :: {SerializedPacket.t(), state()}
   def handle_packet(packet, state) do
     case Codec.decode(packet) do
       {:ok, request} -> handle_request(request, state)

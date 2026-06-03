@@ -189,7 +189,7 @@ defmodule Sftpd do
   end
 
   defp start_transport(:elixir, opts) do
-    case Sftpd.ElixirServer.start_link(opts) do
+    case Sftpd.SSH.Server.start_link(opts) do
       {:ok, pid} -> {:ok, {:elixir, pid}}
       {:error, reason} -> {:error, reason}
     end
