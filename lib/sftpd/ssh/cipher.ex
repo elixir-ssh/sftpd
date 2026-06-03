@@ -45,7 +45,6 @@ defmodule Sftpd.SSH.Cipher do
       ) do
     aad = <<packet_length::32>>
     iv = packet_iv(state.iv, state.sequence)
-    plaintext = IO.iodata_to_binary(plaintext)
 
     {ciphertext, tag} =
       :crypto.crypto_one_time_aead(
