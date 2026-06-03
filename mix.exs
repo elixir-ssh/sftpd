@@ -28,7 +28,7 @@ defmodule Sftpd.MixProject do
 
   def application do
     [
-      extra_applications: [:crypto, :logger, :ssh]
+      extra_applications: [:crypto, :logger, :ssh, :tools]
     ]
   end
 

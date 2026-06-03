@@ -104,7 +104,15 @@ defmodule Sftpd.SSH.Server do
       end)
 
     :ok = :gen_tcp.controlling_process(socket, pid)
+    notify_profile_owner(pid)
     send(pid, {:serve, socket, connection_state})
+  end
+
+  defp notify_profile_owner(pid) do
+    case Process.whereis(:sftpd_profile_owner) do
+      nil -> :ok
+      owner -> send(owner, {:sftpd_connection, pid})
+    end
   end
 
   defp serve_connection(socket, state) do
