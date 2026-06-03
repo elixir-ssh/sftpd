@@ -1,0 +1,80 @@
+defmodule Sftpd.SSH.Packet do
+  @moduledoc false
+
+  @spec encode_clear(iodata(), pos_integer()) :: iodata()
+  def encode_clear(payload, block_size \\ 8) do
+    payload_len = IO.iodata_length(payload)
+    padding_len = padding_len(payload_len, block_size)
+    padding = :crypto.strong_rand_bytes(padding_len)
+    packet_len = payload_len + padding_len + 1
+
+    [<<packet_len::32, padding_len>>, payload, padding]
+  end
+
+  @spec encode_aead(iodata(), pos_integer()) :: iodata()
+  def encode_aead(payload, block_size \\ 16) do
+    payload_len = IO.iodata_length(payload)
+    padding_len = aead_padding_len(payload_len, block_size)
+    padding = :crypto.strong_rand_bytes(padding_len)
+    packet_len = payload_len + padding_len + 1
+
+    [<<packet_len::32, padding_len>>, payload, padding]
+  end
+
+  @spec decode_clear(binary()) :: {:ok, binary(), binary()} | :more | {:error, :bad_packet}
+  def decode_clear(<<packet_len::32, rest::binary>>) do
+    cond do
+      packet_len < 5 ->
+        {:error, :bad_packet}
+
+      byte_size(rest) < packet_len ->
+        :more
+
+      true ->
+        <<packet_body::binary-size(^packet_len), rest::binary>> = rest
+        <<padding_len, payload_and_padding::binary>> = packet_body
+        payload_len = packet_len - padding_len - 1
+
+        if payload_len < 0 or byte_size(payload_and_padding) < payload_len do
+          {:error, :bad_packet}
+        else
+          <<payload::binary-size(^payload_len), _padding::binary-size(^padding_len)>> =
+            payload_and_padding
+
+          {:ok, payload, rest}
+        end
+    end
+  end
+
+  def decode_clear(_), do: :more
+
+  @spec message_id(binary()) :: non_neg_integer() | nil
+  def message_id(<<id, _rest::binary>>), do: id
+  def message_id(_), do: nil
+
+  defp padding_len(payload_len, block_size) do
+    minimum = 4
+    base = payload_len + 5
+    rem = rem(base + minimum, block_size)
+    padding = if rem == 0, do: minimum, else: minimum + block_size - rem
+
+    if base + padding < 16 do
+      padding + block_size
+    else
+      padding
+    end
+  end
+
+  defp aead_padding_len(payload_len, block_size) do
+    minimum = 4
+    base = payload_len + 1
+    rem = rem(base + minimum, block_size)
+    padding = if rem == 0, do: minimum, else: minimum + block_size - rem
+
+    if base + padding < block_size do
+      padding + block_size
+    else
+      padding
+    end
+  end
+end
