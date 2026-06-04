@@ -184,6 +184,9 @@ defmodule Sftpd.Backends.MemoryTest do
     test "root is always a directory", %{state: state} do
       assert {:ok, {:file_info, _, :directory, _, _, _, _, _, _, _, _, _, _, _}} =
                Memory.file_info(~c"/", state)
+
+      assert {:ok, {:file_info, _, :directory, _, _, _, _, _, _, _, _, _, _, _}} =
+               Memory.file_info("/", state)
     end
 
     test "file returns regular type", %{state: state} do
