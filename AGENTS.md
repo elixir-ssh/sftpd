@@ -2,7 +2,10 @@
 
 ## Project Overview
 
-Sftpd is an Elixir library that provides a pluggable SFTP server with support for multiple backends (S3, memory, custom). It implements a file handler for OTP's `:ssh_sftpd` subsystem.
+Sftpd is an Elixir library that provides an SFTP-only SSH daemon with
+pluggable backends (memory, S3, and custom modules). The default transport uses
+OTP's `:ssh_sftpd` subsystem; `transport: :elixir` uses the experimental
+pure-Elixir SSH/SFTP implementation.
 
 `Sftpd.start_server/1` explicitly configures the SFTP subsystem via
 `:ssh_sftpd.subsystem_spec/1`. This matters on OTP 29, where SSH daemons no
@@ -40,14 +43,16 @@ and exec are disabled unless explicitly configured.
 ### Running Tests
 
 ```bash
-# Start MinIO first
-docker compose up -d minio
-
-# Run tests
-mix test
+nix develop -c mix test
 ```
 
-Tests use MinIO as the S3 backend. The bucket `sftpd-test-bucket` is used for integration tests.
+Integration tests use MinIO as the S3 backend. The bucket
+`sftpd-test-bucket` is used for integration tests.
+
+```bash
+docker compose up -d minio
+nix develop -c mix test --only integration
+```
 
 ### Manual Testing
 
@@ -60,7 +65,8 @@ mix run test_manual.exs
 ## S3 Constraints
 
 - S3 multipart uploads require minimum 5MB per part
-- Small file writes use single-part uploads when `finish_write/2` closes the backend-owned handle
+- Small file writes use single-part uploads when `finish_write/2` closes the
+  backend-owned handle
 - Directories are virtual (represented by `.keep` marker files)
 
 ## Configuration

@@ -12,8 +12,8 @@ defmodule Sftpd do
   `:ssh_sftpd.subsystem_spec/1` to `:ssh.daemon/2`, so callers do not need to
   configure the OTP daemon subsystem list themselves.
 
-  OTP 29 also disables shell and exec services by default. `Sftpd` is an
-  SFTP-only wrapper and does not enable remote shell or exec channels.
+  OTP 29 also disables shell and exec services by default. `Sftpd` is
+  SFTP-only and does not enable remote shell or exec channels.
 
   ## Quick Start
 

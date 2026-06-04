@@ -12,7 +12,6 @@ defmodule Sftpd.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases(),
 
       # Hex
       description:
@@ -51,15 +50,6 @@ defmodule Sftpd.MixProject do
       {:ex_doc, "~> 0.30", only: :dev, runtime: false},
       {:mox, "~> 1.0", only: :test},
       {:stream_data, "~> 1.1", only: :test}
-    ]
-  end
-
-  defp aliases do
-    [
-      # Use --no-start to prevent automatic application startup. Applications are
-      # started explicitly in test_helper.exs to control the startup order and
-      # avoid issues with SSH daemon initialization during test discovery.
-      test: ["test --no-start"]
     ]
   end
 

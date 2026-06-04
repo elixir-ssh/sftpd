@@ -3,9 +3,9 @@ defmodule Sftpd.Backend do
   Handle-first storage backend contract for SFTP transports.
 
   Backends keep open file and directory state in backend-managed handles. SFTP
-  transports call the callbacks with normalized binary paths and explicit
-  offsets, which keeps hot-path reads and writes out of per-file adapter
-  processes.
+  transports call the callbacks with binary SFTP paths and explicit offsets.
+  Backends should normalize paths for their own storage model with
+  `normalize_path/1` when they need slash-free keys.
   """
 
   @type state :: term()

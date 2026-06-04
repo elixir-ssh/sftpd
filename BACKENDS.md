@@ -1,8 +1,8 @@
 # Backends
 
 `Sftpd.Backend` is a handle-first storage contract. Backends own open file and
-directory state, and transports call them with normalized binary paths plus
-explicit read/write offsets.
+directory state, and transports call them with binary SFTP paths plus explicit
+read/write offsets. Backends normalize paths for their own storage keys.
 
 ## Built-In Backends
 
@@ -24,9 +24,9 @@ The S3 backend maps SFTP operations onto Amazon S3 or S3-compatible object
 storage. It implements the handle-first contract with ranged reads and
 multipart writes behind backend-owned handles.
 
-Directory listings are returned from S3 LIST operations without statting every
-child object. Call `file_attrs/3` for a specific path when exact object metadata
-is needed.
+Directory listings come from S3 LIST operations. Listed entries carry generic
+attrs; call `file_attrs/3` for a specific path when exact object metadata is
+needed.
 
 ## Callback Shape
 

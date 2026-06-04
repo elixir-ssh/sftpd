@@ -5,13 +5,8 @@ then shows how to switch to S3.
 
 ## 1. Add the dependency
 
-This guide uses the current pinned development environment:
-
-- Erlang/OTP 29.0
-- Elixir 1.20.0-rc.5 on OTP 29
-
-The package itself still declares an older minimum Elixir version in `mix.exs`.
-The current verified minimum is Elixir 1.14.5 on OTP 26.
+The package requirement is Elixir `~> 1.14`. The pinned development runtime is
+recorded in `.tool-versions`.
 
 ```elixir
 def deps do
@@ -73,8 +68,8 @@ OTP 29 no longer enables the SFTP subsystem implicitly for SSH daemons.
 `Sftpd.start_server/1` supplies the required `:subsystems` option internally,
 so the setup above works on both OTP 29 and older supported OTP releases.
 
-OTP 29 also disables remote shell and exec services by default. `Sftpd` is an
-SFTP-only wrapper and does not enable those services.
+OTP 29 also disables remote shell and exec services by default. `Sftpd` is
+SFTP-only and does not enable those services.
 
 The OTP and pure-Elixir transports use the same `Sftpd.Backend` contract. A
 backend that implements the handle-first callbacks can be used with either
@@ -180,8 +175,8 @@ If neither built-in backend fits your storage model:
 
 ## Notes and Caveats
 
-- `Sftpd` wraps Erlang's `:ssh_sftpd` implementation and explicitly enables
-  the SFTP subsystem required by OTP 29
+- The default `:otp` transport wraps Erlang's `:ssh_sftpd` implementation and
+  explicitly enables the SFTP subsystem required by OTP 29
 - OTP 29 disables SSH shell and exec services by default; `Sftpd` does not
   expose or enable those services
 - OTP's stock SFTP server always reports close success to the client, even if

@@ -4,24 +4,23 @@
 
 Run the default automated test suite. Integration tests are excluded by default
 so this does not require MinIO:
+
 ```bash
 mix test
 ```
 
-Run the non-integration suite without starting MinIO:
-```bash
-mix test --exclude consumer_project
-```
-
 Run the consumer compatibility checks:
+
 ```bash
 mix test --only consumer_project
 ```
 
 ## Manual Testing Options
 
-### Option 1: Elixir Test Script
+### Elixir Test Script
+
 Run the manual Elixir test script that tests upload/download operations:
+
 ```bash
 MIX_ENV=test mix run test_manual.exs
 ```
@@ -34,17 +33,20 @@ This script will:
 - Download and verify the file
 - Clean up
 
-### Option 2: Shell Script with Real SFTP Client
+### Shell Script With Real SFTP Client
+
 Run the bash script that uses the system `sftp` command:
+
 ```bash
 ./test_sftp.sh
 ```
 
-Note: This requires the `sftp` command-line tool to be installed.
+This requires the OpenSSH `sftp` command-line tool.
 
-### Option 3: Interactive Testing
+### Interactive Testing
 
 1. Start the SFTP server:
+
 ```elixir
 MIX_ENV=test iex -S mix
 iex> system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
@@ -58,6 +60,7 @@ iex> Sftpd.start_server(
 ```
 
 2. In another terminal, connect with an SFTP client:
+
 ```bash
 sftp -P 2222 user@localhost
 # Password: password
@@ -105,6 +108,7 @@ docker compose down
 ```
 
 Default settings:
+
 - Bucket: `sftpd-test-bucket`
 - S3 endpoint: `http://localhost:9000`
 - AWS access key: `minioadmin`
@@ -126,22 +130,18 @@ exec channel is available on the test daemon.
 
 ## Backend Contract Coverage
 
-The automated tests cover the handle-first `Sftpd.Backend` contract through:
+The default suite covers the handle-first `Sftpd.Backend` contract through:
 
-1. **Memory backend tests**: direct read, write, directory, metadata, and rename callbacks.
-2. **S3 backend tests**: ranged reads, multipart writes, one-shot directory handles, session prefixes, and error normalization.
-3. **OTP file-handler tests**: adaptation from `:ssh_sftpd_file_api` to backend-owned handles.
-4. **Pure-Elixir transport tests**: SSH negotiation, authentication, SFTP v3 operations, OpenSSH `sftp` compatibility, and rejection of shell/exec requests.
-5. **Benchmark backend tests**: size-tracking uploads and zero-filled ranged downloads for transport benchmarking.
+- Memory backend callback tests for direct reads, writes, directories, metadata,
+  and renames.
+- S3 backend tests for ranged reads, multipart writes, directory handles,
+  session prefixes, and error normalization.
+- OTP file-handler tests for adapting `:ssh_sftpd_file_api` to backend-owned
+  handles.
+- Pure-Elixir transport tests for SSH negotiation, authentication, SFTP v3
+  operations, OpenSSH `sftp` compatibility, and rejection of shell/exec
+  requests.
+- Benchmark backend tests for size-tracking uploads and zero-filled ranged
+  downloads.
 
-## Expected Behavior
-
-- ✅ **Upload files** via SFTP to S3
-- ✅ **Download files** from S3 via SFTP
-- ✅ **List directories** and files
-- ✅ **Create/delete directories**
-- ✅ **Delete files**
-- ✅ **Rename files**
-- ✅ **Multiple concurrent operations**
-- ✅ **Backend-owned handles without per-file adapter processes**
-- ✅ **OpenSSH `sftp` compatibility for the pure-Elixir transport**
+Integration tests add MinIO-backed S3 coverage through the public server API.

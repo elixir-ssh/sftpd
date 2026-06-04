@@ -14,52 +14,54 @@ defmodule MyApp.Backend do
   def init(opts), do: {:ok, %{root: Keyword.fetch!(opts, :root)}}
 
   @impl true
-  def open_read(path, session, state), do: {:error, :enoent}
+  def open_read(_path, _session, _state), do: {:error, :enoent}
 
   @impl true
-  def read_at(handle, offset, len, state), do: :eof
+  def read_at(_handle, _offset, _len, _state), do: :eof
 
   @impl true
-  def open_write(path, attrs, session, state), do: {:ok, %{path: path, chunks: []}}
+  def open_write(path, _attrs, _session, _state), do: {:ok, %{path: path, chunks: []}}
 
   @impl true
-  def write_at(handle, offset, data, state), do: {:ok, handle}
+  def write_at(handle, _offset, _data, _state), do: {:ok, handle}
 
   @impl true
-  def finish_write(handle, state), do: :ok
+  def finish_write(_handle, _state), do: :ok
 
   @impl true
-  def abort_write(handle, state), do: :ok
+  def abort_write(_handle, _state), do: :ok
 
   @impl true
-  def open_dir(path, session, state), do: {:ok, %{entries: [], read?: false}}
+  def open_dir(_path, _session, _state), do: {:ok, %{entries: [], read?: false}}
 
   @impl true
-  def read_dir(%{read?: false} = handle, state), do: {:ok, handle.entries, %{handle | read?: true}}
-  def read_dir(%{read?: true}, state), do: :eof
+  def read_dir(%{read?: false} = handle, _state),
+    do: {:ok, handle.entries, %{handle | read?: true}}
+
+  def read_dir(%{read?: true}, _state), do: :eof
 
   @impl true
-  def close_dir(handle, state), do: :ok
+  def close_dir(_handle, _state), do: :ok
 
   @impl true
-  def file_attrs(path, session, state), do: {:error, :enoent}
+  def file_attrs(_path, _session, _state), do: {:error, :enoent}
 
   @impl true
-  def make_dir(path, attrs, session, state), do: :ok
+  def make_dir(_path, _attrs, _session, _state), do: :ok
 
   @impl true
-  def del_dir(path, session, state), do: :ok
+  def del_dir(_path, _session, _state), do: :ok
 
   @impl true
-  def delete(path, session, state), do: :ok
+  def delete(_path, _session, _state), do: :ok
 
   @impl true
-  def rename(src, dst, session, state), do: :ok
+  def rename(_src, _dst, _session, _state), do: :ok
 end
 ```
 
-Paths are binaries. Use `Sftpd.Backend.normalize_path/1` and
-`Sftpd.Backend.root_path?/1` when adapting SFTP paths to storage keys.
+Callback paths are binary SFTP paths. Use `Sftpd.Backend.normalize_path/1` and
+`Sftpd.Backend.root_path?/1` when adapting them to storage keys.
 Backends own the opaque handles returned from `open_read/3`, `open_write/4`,
 and `open_dir/3`; transports pass those handles back to the corresponding
 read, write, finish, abort, and close callbacks.
