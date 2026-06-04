@@ -22,6 +22,7 @@ defmodule Sftpd.Backends.S3 do
 
   @keep_marker ".keep"
   @multipart_part_size 5 * 1024 * 1024
+  @max_sparse_write_gap 4 * @multipart_part_size
 
   @typedoc "S3 backend state containing bucket name, optional prefix, and AWS client module"
   @type prefix :: String.t() | {:session, atom()}
@@ -277,20 +278,25 @@ defmodule Sftpd.Backends.S3 do
   @spec write_chunk(writer_handle(), non_neg_integer(), iodata(), state()) ::
           {:ok, writer_handle()} | {:error, atom()}
   def write_chunk(writer, offset, chunk, state) do
-    if offset < Map.get(writer, :uploaded_size, 0) do
-      {:error, :einval}
-    else
-      chunk = IO.iodata_to_binary(chunk)
-      chunk_size = byte_size(chunk)
+    cond do
+      offset < Map.get(writer, :uploaded_size, 0) ->
+        {:error, :einval}
 
-      writer = %{
-        writer
-        | pending_chunks: :queue.in({offset, chunk}, writer.pending_chunks),
-          pending_size: writer.pending_size + chunk_size,
-          next_offset: max(writer.next_offset, offset + chunk_size)
-      }
+      offset > writer.next_offset and offset - writer.next_offset > @max_sparse_write_gap ->
+        {:error, :einval}
 
-      flush_full_parts(writer, state)
+      true ->
+        chunk = IO.iodata_to_binary(chunk)
+        chunk_size = byte_size(chunk)
+
+        writer = %{
+          writer
+          | pending_chunks: :queue.in({offset, chunk}, writer.pending_chunks),
+            pending_size: writer.pending_size + chunk_size,
+            next_offset: max(writer.next_offset, offset + chunk_size)
+        }
+
+        flush_full_parts(writer, state)
     end
   end
 

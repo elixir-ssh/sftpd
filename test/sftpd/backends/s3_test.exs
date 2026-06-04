@@ -766,6 +766,13 @@ defmodule Sftpd.Backends.S3Test do
       assert {:error, :einval} = S3.write_chunk(writer, 0, "abc", state)
     end
 
+    test "write_chunk rejects huge sparse gaps before materializing zeroes", %{state: state} do
+      assert {:ok, writer} = S3.begin_write(~c"/sparse.bin", state)
+
+      assert {:error, :einval} =
+               S3.write_chunk(writer, 100 * @multipart_part_size, "tail", state)
+    end
+
     test "finish_write uses put_object directly for small files", %{state: state} do
       writer = %{
         bucket: "test-bucket",

@@ -761,6 +761,38 @@ defmodule SftpdTest do
       :gen_tcp.close(socket)
     end
 
+    test "disconnects after repeated failed userauth requests" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{socket: socket, c2s: c2s, s2c: s2c} = open_raw_userauth_session(port)
+
+      {c2s, s2c} =
+        Enum.reduce(1..5, {c2s, s2c}, fn _attempt, {c2s, s2c} ->
+          {packet, c2s} = encrypt_client_password_auth(c2s, "user", "wrong")
+          assert :ok = :gen_tcp.send(socket, packet)
+          assert {:ok, <<51, _rest::binary>>, s2c} = recv_encrypted_server_packet(socket, s2c)
+          {c2s, s2c}
+        end)
+
+      {packet, _c2s} = encrypt_client_password_auth(c2s, "user", "wrong")
+      assert :ok = :gen_tcp.send(socket, packet)
+      assert {:ok, <<1, 14::32, _rest::binary>>, _s2c} = recv_encrypted_server_packet(socket, s2c)
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
+    end
+
     test "acknowledges channel close and ignores later messages for that channel" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
@@ -1310,6 +1342,37 @@ defmodule SftpdTest do
   end
 
   defp open_raw_authenticated_session(port, opts \\ []) do
+    %{socket: socket, c2s: c2s, s2c: s2c} = open_raw_userauth_session(port)
+    {c2s, s2c} = assert_password_auth_success(socket, c2s, s2c)
+
+    client_channel = 7
+    client_window = Keyword.get(opts, :client_window, 2_097_152)
+    client_max_packet = Keyword.get(opts, :client_max_packet, 262_144)
+
+    {packet, c2s} =
+      encrypt_client_packet(c2s, [
+        <<90>>,
+        Sftpd.SSH.Wire.string("session"),
+        <<client_channel::32, client_window::32, client_max_packet::32>>
+      ])
+
+    assert :ok = :gen_tcp.send(socket, packet)
+
+    assert {:ok,
+            <<91, ^client_channel::32, server_channel::32, @pure_ssh_channel_window_size::32,
+              @pure_ssh_channel_max_packet_size::32>>, s2c} =
+             recv_encrypted_server_packet(socket, s2c)
+
+    %{
+      socket: socket,
+      c2s: c2s,
+      s2c: s2c,
+      client_channel: client_channel,
+      server_channel: server_channel
+    }
+  end
+
+  defp open_raw_userauth_session(port) do
     assert {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
     assert {:ok, "SSH-2.0-sftpd-elixir\r\n"} = :gen_tcp.recv(socket, 0, 1_000)
     assert :ok = :gen_tcp.send(socket, "SSH-2.0-test-client\r\n")
@@ -1367,32 +1430,8 @@ defmodule SftpdTest do
       )
 
     assert :ok = :gen_tcp.send(socket, Sftpd.SSH.Packet.encode_clear(<<21>>))
-    {c2s, s2c} = assert_encrypted_exchange(socket, c2s, s2c)
-    client_channel = 7
-    client_window = Keyword.get(opts, :client_window, 2_097_152)
-    client_max_packet = Keyword.get(opts, :client_max_packet, 262_144)
-
-    {packet, c2s} =
-      encrypt_client_packet(c2s, [
-        <<90>>,
-        Sftpd.SSH.Wire.string("session"),
-        <<client_channel::32, client_window::32, client_max_packet::32>>
-      ])
-
-    assert :ok = :gen_tcp.send(socket, packet)
-
-    assert {:ok,
-            <<91, ^client_channel::32, server_channel::32, @pure_ssh_channel_window_size::32,
-              @pure_ssh_channel_max_packet_size::32>>, s2c} =
-             recv_encrypted_server_packet(socket, s2c)
-
-    %{
-      socket: socket,
-      c2s: c2s,
-      s2c: s2c,
-      client_channel: client_channel,
-      server_channel: server_channel
-    }
+    {c2s, s2c} = assert_service_accept(socket, c2s, s2c)
+    %{socket: socket, c2s: c2s, s2c: s2c}
   end
 
   defp start_raw_sftp(socket, c2s, s2c, client_channel, server_channel) do
@@ -1443,26 +1482,37 @@ defmodule SftpdTest do
   end
 
   defp assert_encrypted_exchange(socket, c2s, s2c) do
+    {c2s, s2c} = assert_service_accept(socket, c2s, s2c)
+    assert_password_auth_success(socket, c2s, s2c)
+  end
+
+  defp assert_service_accept(socket, c2s, s2c) do
     {packet, c2s} =
       encrypt_client_packet(c2s, [<<5>>, Sftpd.SSH.Wire.string("ssh-userauth")])
 
     assert :ok = :gen_tcp.send(socket, packet)
     assert {:ok, <<6, rest::binary>>, s2c} = recv_encrypted_server_packet(socket, s2c)
     assert {:ok, "ssh-userauth", ""} = Sftpd.SSH.Wire.take_string(rest)
+    {c2s, s2c}
+  end
 
-    {packet, c2s} =
-      encrypt_client_packet(c2s, [
-        <<50>>,
-        Sftpd.SSH.Wire.string("user"),
-        Sftpd.SSH.Wire.string("ssh-connection"),
-        Sftpd.SSH.Wire.string("password"),
-        Sftpd.SSH.Wire.boolean(false),
-        Sftpd.SSH.Wire.string("password")
-      ])
+  defp assert_password_auth_success(socket, c2s, s2c) do
+    {packet, c2s} = encrypt_client_password_auth(c2s, "user", "password")
 
     assert :ok = :gen_tcp.send(socket, packet)
     assert {:ok, <<52>>, s2c} = recv_encrypted_server_packet(socket, s2c)
     {c2s, s2c}
+  end
+
+  defp encrypt_client_password_auth(cipher, username, password) do
+    encrypt_client_packet(cipher, [
+      <<50>>,
+      Sftpd.SSH.Wire.string(username),
+      Sftpd.SSH.Wire.string("ssh-connection"),
+      Sftpd.SSH.Wire.string("password"),
+      Sftpd.SSH.Wire.boolean(false),
+      Sftpd.SSH.Wire.string(password)
+    ])
   end
 
   defp assert_encrypted_sftp_init(socket, c2s, s2c) do

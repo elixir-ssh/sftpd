@@ -165,10 +165,10 @@ defmodule Sftpd.DirectIODeviceTest do
     assert Agent.get(state, & &1) == %{aborts: 1, content: "abXYZf", opens: 2}
   end
 
-  test "returns read errors for read/write handles without a readable backend side" do
+  test "rejects read/write handles without a readable backend side for existing files" do
     {:ok, state} = Agent.start_link(fn -> %{} end)
 
-    assert {:ok, handle} =
+    assert {:error, :eio} =
              DirectIODevice.start(%{
                path: ~c"/sized.bin",
                mode: :read_write,
@@ -176,9 +176,6 @@ defmodule Sftpd.DirectIODeviceTest do
                backend_state: state,
                session: %{}
              })
-
-    assert {:error, :einval} = DirectIODevice.read(handle, 1)
-    assert :ok = DirectIODevice.close(handle)
   end
 
   test "closing untouched read/write handles preserves existing content", %{
@@ -198,6 +195,26 @@ defmodule Sftpd.DirectIODeviceTest do
     assert {:ok, "content"} = DirectIODevice.read(handle, 16)
     assert :ok = DirectIODevice.close(handle)
     assert {:ok, "content"} = Memory.read_file(~c"/file.bin", backend_state)
+  end
+
+  test "read/write handles preserve existing bytes around partial writes", %{
+    backend_state: backend_state
+  } do
+    :ok = Memory.write_file(~c"/file.bin", "abcdef", backend_state)
+
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: ~c"/file.bin",
+               mode: :read_write,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
+    assert :ok = DirectIODevice.write(handle, "XY", 2)
+    assert :ok = DirectIODevice.close(handle)
+    assert {:ok, "abXYef"} = Memory.read_file(~c"/file.bin", backend_state)
   end
 
   test "aborts replay writer when replay finalize fails" do
@@ -349,5 +366,15 @@ defmodule Sftpd.DirectIODeviceTest do
 
     assert :eof = DirectIODevice.read(handle, 1)
     assert :ok = DirectIODevice.close(handle)
+  end
+
+  test "read/write start rejects existing files that cannot be seeded" do
+    assert {:error, :eio} =
+             DirectIODevice.start(%{
+               path: "/open-read-error",
+               mode: :read_write,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
   end
 end

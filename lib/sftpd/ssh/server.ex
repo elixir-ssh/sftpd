@@ -12,6 +12,7 @@ defmodule Sftpd.SSH.Server do
   @banner "SSH-2.0-sftpd-elixir\r\n"
   @handshake_timeout 30_000
   @encrypted_idle_timeout :infinity
+  @max_auth_failures 6
   @channel_window_size 64 * 1024 * 1024
   @channel_max_packet_size 1_048_576
   @aead_tag_size 16
@@ -291,6 +292,7 @@ defmodule Sftpd.SSH.Server do
     with {:ok, <<21>>, state} <- recv_clear_transport_packet(socket, state) do
       state
       |> Map.put(:auth_session, nil)
+      |> Map.put(:auth_failures, 0)
       |> Map.put(:channels, %{})
       |> Map.put(:next_channel_id, 0)
       |> encrypted_loop(socket)
@@ -360,7 +362,7 @@ defmodule Sftpd.SSH.Server do
          {:ok, password, ""} <- Wire.take_string(rest),
          {:ok, session} <- authenticate_password(state.auth, username, password, socket),
          {:ok, state} <- send_encrypted_payload(socket, state, <<52>>) do
-      {:continue, %{state | auth_session: session}}
+      {:continue, %{state | auth_session: session, auth_failures: 0}}
     else
       :disconnect ->
         {:stop, state}
@@ -646,21 +648,35 @@ defmodule Sftpd.SSH.Server do
          true <-
            verify_ed25519_signature(key_blob, IO.iodata_to_binary(signed_payload), signature),
          {:ok, state} <- send_encrypted_payload(socket, state, <<52>>) do
-      {:continue, %{state | auth_session: session}}
+      {:continue, %{state | auth_session: session, auth_failures: 0}}
     else
       _ -> userauth_failure(state, socket)
     end
   end
 
   defp userauth_failure(state, socket) do
-    {:ok, state} =
-      send_encrypted_payload(socket, state, [
-        <<51>>,
-        Wire.name_list(["publickey", "password"]),
-        Wire.boolean(false)
-      ])
+    failures = Map.get(state, :auth_failures, 0) + 1
+    state = %{state | auth_failures: failures}
 
-    {:continue, state}
+    if failures >= @max_auth_failures do
+      {:ok, state} =
+        send_encrypted_payload(socket, state, [
+          <<1, 14::32>>,
+          Wire.string("too many authentication failures"),
+          Wire.string("")
+        ])
+
+      {:stop, state}
+    else
+      {:ok, state} =
+        send_encrypted_payload(socket, state, [
+          <<51>>,
+          Wire.name_list(["publickey", "password"]),
+          Wire.boolean(false)
+        ])
+
+      {:continue, state}
+    end
   end
 
   defp recv_identification(socket), do: recv_identification(socket, "")

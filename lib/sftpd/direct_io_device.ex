@@ -75,26 +75,133 @@ defmodule Sftpd.DirectIODevice do
           {:error, _reason} -> 0
         end
 
-      handle = new_handle()
+      case seed_existing_read_write_content(
+             backend,
+             backend_state,
+             reader_handle,
+             writer_handle,
+             temp_fd,
+             size
+           ) do
+        {:ok, writer_handle} ->
+          handle = new_handle()
 
-      put_state(handle, %{
-        mode: :read_write,
-        path: path,
-        backend: backend,
-        backend_state: backend_state,
-        session: session,
-        position: 0,
-        size: size,
-        backend_handle: reader_handle,
-        writer_handle: writer_handle,
-        write_strategy: :direct,
-        stream_offset: 0,
-        dirty?: false,
-        temp_path: temp_path,
-        temp_fd: temp_fd
-      })
+          put_state(handle, %{
+            mode: :read_write,
+            path: path,
+            backend: backend,
+            backend_state: backend_state,
+            session: session,
+            position: 0,
+            size: size,
+            backend_handle: reader_handle,
+            writer_handle: writer_handle,
+            write_strategy: :direct,
+            stream_offset: size,
+            dirty?: false,
+            temp_path: temp_path,
+            temp_fd: temp_fd
+          })
 
-      {:ok, handle}
+          {:ok, handle}
+
+        {:error, reason} ->
+          cleanup_unfinished_write(%{
+            backend: backend,
+            backend_state: backend_state,
+            writer_handle: writer_handle,
+            write_strategy: :direct,
+            temp_path: temp_path,
+            temp_fd: temp_fd
+          })
+
+          {:error, reason}
+      end
+    end
+  end
+
+  defp seed_existing_read_write_content(
+         _backend,
+         _backend_state,
+         nil,
+         writer_handle,
+         _temp_fd,
+         0
+       ) do
+    {:ok, writer_handle}
+  end
+
+  defp seed_existing_read_write_content(
+         _backend,
+         _backend_state,
+         nil,
+         _writer_handle,
+         _temp_fd,
+         _size
+       ),
+       do: {:error, :eio}
+
+  defp seed_existing_read_write_content(_backend, _backend_state, _reader, writer_handle, _fd, 0),
+    do: {:ok, writer_handle}
+
+  defp seed_existing_read_write_content(
+         backend,
+         backend_state,
+         reader_handle,
+         writer_handle,
+         temp_fd,
+         size
+       ) do
+    seed_existing_read_write_content(
+      backend,
+      backend_state,
+      reader_handle,
+      writer_handle,
+      temp_fd,
+      size,
+      0
+    )
+  end
+
+  defp seed_existing_read_write_content(
+         _backend,
+         _backend_state,
+         _reader_handle,
+         writer_handle,
+         _temp_fd,
+         size,
+         offset
+       )
+       when offset >= size do
+    {:ok, writer_handle}
+  end
+
+  defp seed_existing_read_write_content(
+         backend,
+         backend_state,
+         reader_handle,
+         writer_handle,
+         temp_fd,
+         size,
+         offset
+       ) do
+    len = min(@replay_chunk_size, size - offset)
+
+    with {:ok, data} <- backend.read_at(reader_handle, offset, len, backend_state),
+         :ok <- persist_to_tempfile(temp_fd, offset, data),
+         {:ok, writer_handle} <- backend.write_at(writer_handle, offset, data, backend_state) do
+      seed_existing_read_write_content(
+        backend,
+        backend_state,
+        reader_handle,
+        writer_handle,
+        temp_fd,
+        size,
+        offset + byte_size(data)
+      )
+    else
+      :eof -> {:error, :eof}
+      {:error, reason} -> {:error, reason}
     end
   end
 

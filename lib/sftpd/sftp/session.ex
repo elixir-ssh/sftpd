@@ -77,18 +77,18 @@ defmodule Sftpd.SFTP.Session do
                 {:error, _reason} -> nil
               end
 
-            {write_handle, append_offset} =
-              if append_open?(pflags) do
-                seed_append_handle(path, write_handle, state)
-              else
-                {write_handle, nil}
-              end
+            case prepare_read_write_handle(path, pflags, read_handle, write_handle, state) do
+              {:ok, write_handle, append_offset} ->
+                put_handle(
+                  id,
+                  {:file, :read_write, path, read_handle, write_handle, append_offset, false},
+                  state
+                )
 
-            put_handle(
-              id,
-              {:file, :read_write, path, read_handle, write_handle, append_offset, false},
-              state
-            )
+              {:error, reason} ->
+                _ = state.backend.abort_write(write_handle, state.backend_state)
+                {Codec.status(id, reason), state}
+            end
 
           {:error, reason} ->
             {Codec.status(id, reason), state}
@@ -198,7 +198,10 @@ defmodule Sftpd.SFTP.Session do
             {Codec.status(id, :ok), %{state | handles: handles}}
 
           {:error, reason} ->
-            {Codec.status(id, reason), state}
+            _ = state.backend.abort_write(backend_handle, state.backend_state)
+            handles = Map.delete(state.handles, handle)
+
+            {Codec.status(id, reason), %{state | handles: handles}}
         end
 
       {:file, :read_write, path, read_handle, write_handle, append_offset, _dirty?} ->
@@ -218,7 +221,10 @@ defmodule Sftpd.SFTP.Session do
             {Codec.status(id, :ok), %{state | handles: handles}}
 
           {:error, reason} ->
-            {Codec.status(id, reason), state}
+            _ = state.backend.abort_write(write_handle, state.backend_state)
+            handles = Map.delete(state.handles, handle)
+
+            {Codec.status(id, reason), %{state | handles: handles}}
         end
 
       _ ->
@@ -348,11 +354,26 @@ defmodule Sftpd.SFTP.Session do
 
   defp read_open?(pflags), do: (pflags &&& @open_read) != 0
   defp append_open?(pflags), do: (pflags &&& @open_append) != 0
+  defp truncate_open?(pflags), do: (pflags &&& @open_truncate) != 0
 
   defp append_offset(path, state) do
     case state.backend.file_attrs(path, state.session, state.backend_state) do
       {:ok, attrs} -> Map.get(attrs, :size, 0)
       {:error, _reason} -> 0
+    end
+  end
+
+  defp prepare_read_write_handle(path, pflags, read_handle, write_handle, state) do
+    cond do
+      append_open?(pflags) ->
+        {write_handle, append_offset} = seed_append_handle(path, write_handle, state)
+        {:ok, write_handle, append_offset}
+
+      truncate_open?(pflags) ->
+        {:ok, write_handle, nil}
+
+      true ->
+        seed_update_handle(path, read_handle, write_handle, state)
     end
   end
 
@@ -367,6 +388,47 @@ defmodule Sftpd.SFTP.Session do
       {backend_handle, IO.iodata_length(existing)}
     else
       _ -> {backend_handle, size}
+    end
+  end
+
+  defp seed_update_handle(path, nil, backend_handle, state) do
+    case append_offset(path, state) do
+      0 -> {:ok, backend_handle, nil}
+      _size -> {:error, :eio}
+    end
+  end
+
+  defp seed_update_handle(path, read_handle, backend_handle, state) do
+    size = append_offset(path, state)
+
+    with true <- size > 0 do
+      case seed_update_handle(read_handle, backend_handle, state, size, 0) do
+        {:ok, backend_handle} -> {:ok, backend_handle, nil}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      _ -> {:ok, backend_handle, nil}
+    end
+  end
+
+  defp seed_update_handle(_read_handle, backend_handle, _state, size, offset)
+       when offset >= size do
+    {:ok, backend_handle}
+  end
+
+  defp seed_update_handle(read_handle, backend_handle, state, size, offset) do
+    len = min(1024 * 1024, size - offset)
+
+    with {:ok, data} <- state.backend.read_at(read_handle, offset, len, state.backend_state),
+         {:ok, backend_handle} <-
+           state.backend.write_at(backend_handle, offset, data, state.backend_state) do
+      seed_update_handle(
+        read_handle,
+        backend_handle,
+        state,
+        size,
+        offset + IO.iodata_length(data)
+      )
     end
   end
 
