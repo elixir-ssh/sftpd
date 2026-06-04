@@ -7,8 +7,15 @@ defmodule Sftpd.SSH.KexTest do
     {server_public, server_private} = Kex.generate_keypair()
     {client_public, client_private} = Kex.generate_keypair()
 
-    assert Kex.shared_secret(client_public, server_private) ==
-             Kex.shared_secret(server_public, client_private)
+    assert {:ok, shared_secret} = Kex.shared_secret(client_public, server_private)
+    assert {:ok, ^shared_secret} = Kex.shared_secret(server_public, client_private)
+  end
+
+  test "curve25519 shared secret rejects invalid peer keys" do
+    {_server_public, server_private} = Kex.generate_keypair()
+
+    assert {:error, :key_exchange_failed} = Kex.shared_secret(<<1, 2, 3>>, server_private)
+    assert {:error, :key_exchange_failed} = Kex.shared_secret(<<0::256>>, server_private)
   end
 
   test "exchange hash is deterministic for identical transcript" do

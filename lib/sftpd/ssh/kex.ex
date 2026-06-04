@@ -19,10 +19,22 @@ defmodule Sftpd.SSH.Kex do
     :crypto.generate_key(:eddh, :x25519)
   end
 
-  @spec shared_secret(binary(), binary()) :: binary()
-  def shared_secret(client_public, server_private) do
-    :crypto.compute_key(:eddh, client_public, server_private, :x25519)
+  @spec shared_secret(binary(), binary()) :: {:ok, binary()} | {:error, :key_exchange_failed}
+  def shared_secret(client_public, server_private) when byte_size(client_public) == 32 do
+    try do
+      secret = :crypto.compute_key(:eddh, client_public, server_private, :x25519)
+
+      if secret == <<0::256>> do
+        {:error, :key_exchange_failed}
+      else
+        {:ok, secret}
+      end
+    catch
+      _kind, _reason -> {:error, :key_exchange_failed}
+    end
   end
+
+  def shared_secret(_client_public, _server_private), do: {:error, :key_exchange_failed}
 
   @spec exchange_hash(context()) :: binary()
   def exchange_hash(context) do

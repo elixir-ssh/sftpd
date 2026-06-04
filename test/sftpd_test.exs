@@ -326,7 +326,7 @@ defmodule SftpdTest do
       assert byte_size(signature) == 64
       assert {:ok, <<21>>, _rest} = recv_clear_packet(socket, rest)
 
-      shared_secret = Sftpd.SSH.Kex.shared_secret(server_public, client_private)
+      {:ok, shared_secret} = Sftpd.SSH.Kex.shared_secret(server_public, client_private)
 
       exchange_hash =
         Sftpd.SSH.Kex.exchange_hash(%{
@@ -1293,7 +1293,7 @@ defmodule SftpdTest do
     assert {:ok, _signature_blob, ""} = Sftpd.SSH.Wire.take_string(reply)
     assert {:ok, <<21>>, _rest} = recv_clear_packet(socket, rest)
 
-    shared_secret = Sftpd.SSH.Kex.shared_secret(server_public, client_private)
+    {:ok, shared_secret} = Sftpd.SSH.Kex.shared_secret(server_public, client_private)
 
     exchange_hash =
       Sftpd.SSH.Kex.exchange_hash(%{

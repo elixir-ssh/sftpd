@@ -195,10 +195,8 @@ defmodule Sftpd.SSH.Server do
            maybe_skip_wrong_kex_guess(socket, buffer, client_algorithms, negotiated),
          {:ok, <<30, rest::binary>>, buffer} <- recv_clear_packet(socket, buffer),
          {:ok, client_public, ""} <- Wire.take_string(rest),
-         :ok <- validate_curve25519_public_key(client_public) do
-      {server_public, server_private} = Kex.generate_keypair()
-      shared_secret = Kex.shared_secret(client_public, server_private)
-
+         :ok <- validate_curve25519_public_key(client_public),
+         {:ok, server_public, shared_secret} <- curve25519_shared_secret(client_public) do
       exchange_hash =
         Kex.exchange_hash(%{
           client_version: client_version,
@@ -280,6 +278,14 @@ defmodule Sftpd.SSH.Server do
 
   defp validate_curve25519_public_key(public_key) when byte_size(public_key) == 32, do: :ok
   defp validate_curve25519_public_key(_public_key), do: {:error, :bad_message}
+
+  defp curve25519_shared_secret(client_public) do
+    {server_public, server_private} = Kex.generate_keypair()
+
+    with {:ok, shared_secret} <- Kex.shared_secret(client_public, server_private) do
+      {:ok, server_public, shared_secret}
+    end
+  end
 
   defp serve_encrypted(socket, state) do
     with {:ok, <<21>>, state} <- recv_clear_transport_packet(socket, state) do
