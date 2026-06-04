@@ -111,12 +111,22 @@ defmodule Sftpd.Backends.Benchmark do
   def rename(src, dst, %{agent: agent}) do
     src_key = copied_normalized_path(src)
     dst_key = copied_normalized_path(dst)
+    src_prefix = normalize_prefix(src)
+    dst_prefix = normalize_prefix(dst)
 
     Agent.update(agent, fn files ->
-      case Map.pop(files, src_key) do
-        {nil, files} -> files
-        {data, files} -> Map.put(files, dst_key, data)
-      end
+      Enum.reduce(files, %{}, fn {key, data}, renamed ->
+        cond do
+          key == src_key ->
+            Map.put(renamed, dst_key, data)
+
+          src_prefix != "" and String.starts_with?(key, src_prefix) ->
+            Map.put(renamed, String.replace_prefix(key, src_prefix, dst_prefix), data)
+
+          true ->
+            Map.put(renamed, key, data)
+        end
+      end)
     end)
 
     :ok

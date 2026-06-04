@@ -113,6 +113,15 @@ defmodule Sftpd.Backends.MemoryTest do
       assert :ok = Memory.finish_write(handle, state)
       assert {:ok, "abXYef"} = Memory.read_file("/overlap-fast.bin", state)
     end
+
+    test "preserves write order for out-of-order overlapping chunks", %{state: state} do
+      {:ok, handle} = Memory.open_write("/overlap-reordered.bin", %{}, %{}, state)
+      {:ok, handle} = Memory.write_at(handle, 2, "XY", state)
+      {:ok, handle} = Memory.write_at(handle, 0, "abcd", state)
+
+      assert :ok = Memory.finish_write(handle, state)
+      assert {:ok, "abcd"} = Memory.read_file("/overlap-reordered.bin", state)
+    end
   end
 
   describe "directory operations" do

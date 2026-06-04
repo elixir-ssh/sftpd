@@ -49,9 +49,13 @@ defmodule Sftpd.SFTP.SessionTest do
     def open_read("/read-error", _session, _state),
       do: {:ok, %{path: "/read-error", read_error?: true}}
 
+    def open_read("/empty-read", _session, _state),
+      do: {:ok, %{path: "/empty-read", empty?: true}}
+
     def open_read(path, _session, _state), do: {:ok, %{path: path}}
 
     def read_at(%{read_error?: true}, _offset, _len, _state), do: {:error, :eacces}
+    def read_at(%{empty?: true}, _offset, _len, _state), do: {:ok, ""}
     def read_at(_handle, _offset, _len, _state), do: {:ok, "ok"}
 
     def write_at(%{write_error?: true}, _offset, _data, _state), do: {:error, :eacces}
@@ -86,9 +90,62 @@ defmodule Sftpd.SFTP.SessionTest do
     def rename(_oldpath, _newpath, _session, _state), do: :ok
   end
 
+  defmodule AbortBackend do
+    @moduledoc false
+
+    def open_write(path, _attrs, _session, test_pid), do: {:ok, %{path: path, test_pid: test_pid}}
+    def write_at(handle, _offset, _data, _state), do: {:ok, handle}
+    def finish_write(_handle, _state), do: :ok
+
+    def abort_write(%{path: path, test_pid: test_pid}, _state) do
+      send(test_pid, {:aborted, path})
+      :ok
+    end
+
+    def open_read(_path, _session, _state), do: {:error, :enoent}
+    def read_at(_handle, _offset, _len, _state), do: :eof
+    def open_dir(_path, _session, _state), do: {:error, :enoent}
+    def read_dir(_handle, _state), do: :eof
+    def close_dir(_handle, _state), do: :ok
+    def file_attrs(_path, _session, _state), do: {:ok, %{type: :regular, size: 0}}
+    def make_dir(_path, _attrs, _session, _state), do: :ok
+    def del_dir(_path, _session, _state), do: :ok
+    def delete(_path, _session, _state), do: :ok
+    def rename(_oldpath, _newpath, _session, _state), do: :ok
+  end
+
   setup do
     {:ok, backend_state} = Memory.init([])
-    %{session: Session.new(Memory, backend_state, %{username: "test"})}
+
+    session =
+      Memory
+      |> Session.new(backend_state, %{username: "test"})
+      |> Map.put(:initialized?, true)
+
+    %{session: session}
+  end
+
+  test "rejects non-init packets before version negotiation" do
+    {:ok, backend_state} = Memory.init([])
+    session = Session.new(Memory, backend_state, %{username: "test"})
+
+    {response, session} = handle(open(1, "/hello.txt", 0x0000_0001), session)
+    assert {:status, 1, 5} = decode_response(response)
+    refute session.initialized?
+
+    {response, session} = handle(init(), session)
+    assert {:version, 3} = decode_response(response)
+    assert session.initialized?
+  end
+
+  test "malformed packets before version negotiation return bad message" do
+    {:ok, backend_state} = Memory.init([])
+    session = Session.new(Memory, backend_state)
+
+    {response, session} = Session.handle_packet(<<255>>, session)
+
+    assert {:status, 0, 5} = decode_response(response)
+    refute session.initialized?
   end
 
   test "writes and reads a file through opaque session handles", %{session: session} do
@@ -127,6 +184,36 @@ defmodule Sftpd.SFTP.SessionTest do
 
     {response, _session} = handle(read(6, read_handle, 0, 8), session)
     assert {:data, 6, "headtail"} = decode_response(response)
+  end
+
+  test "append opens write at the current end of file", %{session: session} do
+    {response, session} = handle(open(1, "/append.txt", 0x0000_000A), session)
+    {:handle, 1, handle} = decode_response(response)
+    {_response, session} = handle(write(2, handle, 0, "base"), session)
+    {_response, session} = handle(close(3, handle), session)
+
+    {response, session} = handle(open(4, "/append.txt", 0x0000_000E), session)
+    {:handle, 4, append_handle} = decode_response(response)
+    {_response, session} = handle(write(5, append_handle, 0, "tail"), session)
+    {_response, session} = handle(close(6, append_handle), session)
+
+    {response, session} = handle(open(7, "/append.txt", 0x0000_0001), session)
+    {:handle, 7, read_handle} = decode_response(response)
+    {response, _session} = handle(read(8, read_handle, 0, 16), session)
+    assert {:data, 8, "basetail"} = decode_response(response)
+  end
+
+  test "abort_open_writes aborts pending write handles" do
+    session =
+      AbortBackend |> Session.new(self(), %{username: "test"}) |> Map.put(:initialized?, true)
+
+    {response, session} = handle(open(1, "/pending.txt", 0x0000_000A), session)
+    {:handle, 1, _handle} = decode_response(response)
+
+    session = Session.abort_open_writes(session)
+
+    assert session.handles == %{}
+    assert_receive {:aborted, "/pending.txt"}
   end
 
   test "directory handles return one listing and then eof", %{session: session} do
@@ -219,8 +306,63 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:status, 0, 5} = decode_response(response)
   end
 
+  test "mixed read/write opens keep the write side usable for official clients", %{
+    session: session
+  } do
+    {response, session} = handle(open(1, "/file.txt", 0x0000_000B), session)
+    assert {:handle, 1, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(write(2, mixed_handle, 0, "mixed"), session)
+    assert {:status, 2, 0} = decode_response(response)
+
+    {response, session} = handle(close(3, mixed_handle), session)
+    assert {:status, 3, 0} = decode_response(response)
+
+    {response, session} = handle(open(4, "/file.txt", 0x0000_0001), session)
+    assert {:handle, 4, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(5, read_handle, 0, 16), session)
+    assert {:data, 5, "mixed"} = decode_response(response)
+  end
+
+  test "mixed read/write opens can read existing content", %{session: session} do
+    {response, session} = handle(open(1, "/file.txt", 0x0000_000A), session)
+    {:handle, 1, write_handle} = decode_response(response)
+    {_response, session} = handle(write(2, write_handle, 0, "old"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(open(4, "/file.txt", 0x0000_0003), session)
+    assert {:handle, 4, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(read(5, mixed_handle, 0, 16), session)
+    assert {:data, 5, "old"} = decode_response(response)
+
+    {response, _session} = handle(handle_packet(@ssh_fxp_fstat, 6, mixed_handle), session)
+    assert {:attrs, 6, %{size: 3}} = decode_response(response)
+  end
+
+  test "mixed append opens missing files without crashing", %{session: session} do
+    {response, session} = handle(open(1, "/missing-append.txt", 0x0000_000E), session)
+    assert {:handle, 1, append_handle} = decode_response(response)
+
+    {response, session} = handle(write(2, append_handle, 0, "new"), session)
+    assert {:status, 2, 0} = decode_response(response)
+
+    {response, _session} = handle(close(3, append_handle), session)
+    assert {:status, 3, 0} = decode_response(response)
+  end
+
+  test "fstat works for write handles before close", %{session: session} do
+    {response, session} = handle(open(1, "/open-write.txt", 0x0000_000A), session)
+    {:handle, 1, write_handle} = decode_response(response)
+
+    {response, _session} = handle(handle_packet(@ssh_fxp_fstat, 2, write_handle), session)
+    assert {:status, 2, 2} = decode_response(response)
+  end
+
   test "backend open and file operation errors are returned as SFTP statuses" do
-    session = Session.new(ErrorBackend, %{}, %{username: "test"})
+    session =
+      ErrorBackend |> Session.new(%{}, %{username: "test"}) |> Map.put(:initialized?, true)
 
     {response, session} = handle(open(1, "/open-write-error", 0x0000_000A), session)
     assert {:status, 1, 3} = decode_response(response)
@@ -233,10 +375,30 @@ defmodule Sftpd.SFTP.SessionTest do
     {response, session} = handle(close(4, finish_handle), session)
     assert {:status, 4, 4} = decode_response(response)
 
+    {response, session} = handle(open(13, "/finish-error", 0x0000_0003), session)
+    {:handle, 13, mixed_finish_handle} = decode_response(response)
+    {response, session} = handle(close(14, mixed_finish_handle), session)
+    assert {:status, 14, 4} = decode_response(response)
+
     {response, session} = handle(open(5, "/read-error", 0x0000_0001), session)
     {:handle, 5, read_handle} = decode_response(response)
     {response, session} = handle(read(6, read_handle, 0, 1), session)
     assert {:status, 6, 3} = decode_response(response)
+
+    {response, session} = handle(open(15, "/read-error", 0x0000_0003), session)
+    {:handle, 15, mixed_read_handle} = decode_response(response)
+    {response, session} = handle(read(16, mixed_read_handle, 0, 1), session)
+    assert {:status, 16, 3} = decode_response(response)
+
+    {response, session} = handle(open(17, "/open-read-error", 0x0000_0003), session)
+    {:handle, 17, nil_read_handle} = decode_response(response)
+    {response, session} = handle(read(18, nil_read_handle, 0, 1), session)
+    assert {:status, 18, 4} = decode_response(response)
+
+    {response, session} = handle(open(11, "/empty-read", 0x0000_0001), session)
+    {:handle, 11, empty_handle} = decode_response(response)
+    {response, session} = handle(read(12, empty_handle, 0, 1), session)
+    assert {:status, 12, 1} = decode_response(response)
 
     {response, session} = handle(open(7, "/write-error", 0x0000_000A), session)
     {:handle, 7, write_handle} = decode_response(response)
@@ -250,7 +412,8 @@ defmodule Sftpd.SFTP.SessionTest do
   end
 
   test "backend directory and mutation errors are returned as SFTP statuses" do
-    session = Session.new(ErrorBackend, %{}, %{username: "test"})
+    session =
+      ErrorBackend |> Session.new(%{}, %{username: "test"}) |> Map.put(:initialized?, true)
 
     {response, session} = handle(opendir(1, "/open-dir-error"), session)
     assert {:status, 1, 2} = decode_response(response)
@@ -293,6 +456,8 @@ defmodule Sftpd.SFTP.SessionTest do
   defp open(id, path, pflags),
     do: packet([<<@ssh_fxp_open, id::32>>, string(path), <<pflags::32, 0::32>>])
 
+  defp init, do: packet(<<1, 3::32>>)
+
   defp close(id, handle), do: packet([<<@ssh_fxp_close, id::32>>, string(handle)])
 
   defp read(id, handle, offset, len),
@@ -326,6 +491,9 @@ defmodule Sftpd.SFTP.SessionTest do
     case response do
       <<@ssh_fxp_status, id::32, code::32, _rest::binary>> ->
         {:status, id, code}
+
+      <<2, version::32, _rest::binary>> ->
+        {:version, version}
 
       <<@ssh_fxp_handle, id::32, rest::binary>> ->
         {:ok, handle, <<>>} = take_string(rest)

@@ -33,8 +33,8 @@ defmodule Sftpd.BackendTest do
                size: 12,
                type: :regular,
                permissions: 33188,
-               uid: 0,
-               gid: 0,
+               uid: 1,
+               gid: 1,
                atime: 1_704_067_200,
                mtime: 1_704_067_200
              } = Backend.attrs_from_file_info(info)
@@ -79,8 +79,21 @@ defmodule Sftpd.BackendTest do
         {:file_info, 3, :device, :read, :bad_time, :bad_time, :bad_time, 0o100600, 1, 2, 3, 4, 5,
          6}
 
-      assert %{size: 3, type: :regular, permissions: 0o100600, uid: 2, gid: 3} =
+      assert %{size: 3, type: :regular, permissions: 0o100600, uid: 5, gid: 6} =
                Backend.attrs_from_file_info(info)
+    end
+
+    test "maps file_info access and modification times from their own tuple slots" do
+      atime = {{2024, 1, 2}, {3, 4, 5}}
+      mtime = {{2024, 1, 3}, {3, 4, 5}}
+      info = {:file_info, 1, :regular, :read, atime, mtime, mtime, 0o100600, 1, 2, 3, 4, 5, 6}
+
+      assert %{
+               atime: 1_704_164_645,
+               mtime: 1_704_251_045,
+               uid: 5,
+               gid: 6
+             } = Backend.attrs_from_file_info(info)
     end
   end
 

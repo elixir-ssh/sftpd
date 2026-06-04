@@ -128,6 +128,19 @@ defmodule SftpdPerfBench do
       delay_ms: Keyword.get(opts, :delay_ms, 0),
       full?: Keyword.get(opts, :full, false)
     ]
+    |> validate_positive_args!([:size, :chunk, :requests])
+  end
+
+  defp validate_positive_args!(opts, keys) do
+    Enum.each(keys, fn key ->
+      value = Keyword.fetch!(opts, key)
+
+      if value <= 0 do
+        raise ArgumentError, "#{key} must be > 0"
+      end
+    end)
+
+    opts
   end
 
   defp write_sparse_payload(path, 0), do: File.write!(path, <<>>)

@@ -35,6 +35,7 @@ defmodule Sftpd.SSH.PacketTest do
   test "clear packet decoder rejects invalid lengths and padding" do
     assert {:error, :bad_packet} = Packet.decode_clear(<<4::32, 0, 0, 0, 0>>)
     assert {:error, :bad_packet} = Packet.decode_clear(<<5::32, 6, 0, 0, 0, 0>>)
+    assert {:error, :bad_packet} = Packet.decode_clear(<<1_048_577::32>>)
     assert :more = Packet.decode_clear(<<0, 0, 0>>)
   end
 

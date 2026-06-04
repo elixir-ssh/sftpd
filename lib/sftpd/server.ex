@@ -14,15 +14,18 @@ defmodule Sftpd.Server do
     Process.flag(:trap_exit, true)
 
     case Sftpd.start_server(opts) do
-      {:ok, ref} -> {:ok, %{ref: ref, monitor_ref: monitor_daemon(ref), daemon_down?: false}}
-      {:error, reason} -> {:stop, reason}
+      {:ok, ref} ->
+        {:ok, %{ref: ref, monitor_ref: monitor_daemon(ref), daemon_down?: false}}
+
+      {:error, reason} ->
+        {:stop, reason}
     end
   end
 
   @impl true
   def handle_info(
-        {:DOWN, monitor_ref, :process, ref, reason},
-        %{monitor_ref: monitor_ref, ref: ref} = state
+        {:DOWN, monitor_ref, :process, _pid, reason},
+        %{monitor_ref: monitor_ref} = state
       ) do
     {:stop, daemon_down_reason(reason), %{state | daemon_down?: true}}
   end
@@ -41,5 +44,6 @@ defmodule Sftpd.Server do
   defp daemon_down_reason(:shutdown), do: :shutdown
   defp daemon_down_reason(reason), do: {:ssh_daemon_down, reason}
 
+  defp monitor_daemon({:elixir, pid}) when is_pid(pid), do: Process.monitor(pid)
   defp monitor_daemon(ref), do: Process.monitor(ref)
 end

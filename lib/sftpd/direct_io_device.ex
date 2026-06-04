@@ -47,6 +47,43 @@ defmodule Sftpd.DirectIODevice do
     end
   end
 
+  def start(
+        %{path: path, mode: :read_write, backend: backend, backend_state: backend_state} = opts
+      ) do
+    session = Map.get(opts, :session, %{})
+    path = to_string(path)
+
+    with {:ok, writer_handle} <- backend.open_write(path, %{}, session, backend_state) do
+      reader_handle =
+        case backend.open_read(path, session, backend_state) do
+          {:ok, reader_handle} -> reader_handle
+          {:error, _reason} -> nil
+        end
+
+      size =
+        case backend.file_attrs(path, session, backend_state) do
+          {:ok, attrs} -> Map.get(attrs, :size, 0)
+          {:error, _reason} -> 0
+        end
+
+      handle = new_handle()
+
+      put_state(handle, %{
+        mode: :read_write,
+        path: path,
+        backend: backend,
+        backend_state: backend_state,
+        session: session,
+        position: 0,
+        size: size,
+        backend_handle: reader_handle,
+        writer_handle: writer_handle
+      })
+
+      {:ok, handle}
+    end
+  end
+
   @spec handle?(term()) :: boolean()
   def handle?({:sftpd_direct_io, ref}) when is_reference(ref), do: true
   def handle?(_handle), do: false
@@ -64,19 +101,24 @@ defmodule Sftpd.DirectIODevice do
   @spec read(handle(), non_neg_integer()) :: {:ok, binary()} | :eof | {:error, atom()}
   def read(handle, len) do
     update_state(handle, fn
-      %{mode: :read, position: position, size: size} = state when position >= size ->
+      %{mode: mode, position: position, size: size} = state
+      when mode in [:read, :read_write] and position >= size ->
         {:eof, state}
 
-      %{mode: :read} = state ->
+      %{mode: mode, backend_handle: backend_handle} = state
+      when mode in [:read, :read_write] and not is_nil(backend_handle) ->
         result =
           state.backend.read_at(state.backend_handle, state.position, len, state.backend_state)
 
         case result do
-          {:ok, data} when byte_size(data) > 0 ->
-            {{:ok, data}, %{state | position: state.position + byte_size(data)}}
+          {:ok, data} ->
+            data = IO.iodata_to_binary(data)
 
-          {:ok, <<>>} ->
-            {:eof, state}
+            if byte_size(data) > 0 do
+              {{:ok, data}, %{state | position: state.position + byte_size(data)}}
+            else
+              {:eof, state}
+            end
 
           :eof ->
             {:eof, state}
@@ -85,6 +127,9 @@ defmodule Sftpd.DirectIODevice do
             {{:error, reason}, state}
         end
 
+      %{mode: :read_write} = state ->
+        {{:error, :einval}, state}
+
       state ->
         {{:error, :einval}, state}
     end)
@@ -92,8 +137,11 @@ defmodule Sftpd.DirectIODevice do
 
   @spec write(handle(), iodata(), non_neg_integer()) :: :ok | {:error, atom()}
   def write(handle, data, bytes) do
-    update_state(handle, fn
-      %{mode: :write} = state ->
+    case Process.get(key(handle)) do
+      nil ->
+        {:error, :einval}
+
+      %{mode: mode} = state when mode in [:write, :read_write] ->
         result =
           state.backend.write_at(state.writer_handle, state.position, data, state.backend_state)
 
@@ -101,21 +149,25 @@ defmodule Sftpd.DirectIODevice do
           {:ok, writer_handle} ->
             position = state.position + bytes
 
-            {:ok,
-             %{
-               state
-               | writer_handle: writer_handle,
-                 position: position,
-                 size: max(state.size, position)
-             }}
+            put_state(handle, %{
+              state
+              | writer_handle: writer_handle,
+                position: position,
+                size: max(state.size, position)
+            })
+
+            :ok
 
           {:error, reason} ->
-            {{:error, reason}, state}
+            _ = state.backend.abort_write(state.writer_handle, state.backend_state)
+            _ = pop_state(handle)
+            {:error, reason}
         end
 
       state ->
-        {{:error, :einval}, state}
-    end)
+        put_state(handle, state)
+        {:error, :einval}
+    end
   end
 
   @spec close(handle()) :: :ok | {:error, atom()}
@@ -125,6 +177,9 @@ defmodule Sftpd.DirectIODevice do
         :ok
 
       %{mode: :write} = state ->
+        state.backend.finish_write(state.writer_handle, state.backend_state)
+
+      %{mode: :read_write} = state ->
         state.backend.finish_write(state.writer_handle, state.backend_state)
 
       %{mode: :read} ->

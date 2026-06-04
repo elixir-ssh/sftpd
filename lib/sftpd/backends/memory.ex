@@ -322,7 +322,10 @@ defmodule Sftpd.Backends.Memory do
     sorted_chunks = Enum.sort_by(chunks, fn {offset, _data} -> offset end)
 
     if overlapping_chunks?(sorted_chunks) do
-      %{content: materialize_overlapping_chunks(sorted_chunks), mtime: NaiveDateTime.utc_now()}
+      %{
+        content: materialize_overlapping_chunks(Enum.reverse(chunks)),
+        mtime: NaiveDateTime.utc_now()
+      }
     else
       offsets = Enum.map(sorted_chunks, fn {offset, _data} -> offset end)
       chunks = Map.new(sorted_chunks)

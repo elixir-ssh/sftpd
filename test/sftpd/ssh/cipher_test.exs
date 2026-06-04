@@ -104,6 +104,17 @@ defmodule Sftpd.SSH.CipherTest do
     assert {:error, :bad_packet} = Cipher.decrypt_packet_payload(state, packet_length, "short")
   end
 
+  test "rejects unreasonable encrypted packet lengths" do
+    state = state(:server_to_client)
+    oversized = <<2_097_153::32>>
+
+    assert {:error, :invalid_packet_length} = Cipher.decrypt_packet(state, oversized)
+    assert {:error, :invalid_packet_length} = Cipher.decrypt_packet_payload(state, oversized)
+
+    assert {:error, :invalid_packet_length} =
+             Cipher.decrypt_packet_payload(state, 2_097_153, "")
+  end
+
   test "wraps sequence numbers at the SSH uint32 boundary" do
     state = state(:server_to_client) |> Cipher.set_sequence(0xFFFF_FFFF)
     {_encrypted, state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))

@@ -9,6 +9,7 @@ defmodule Sftpd.SSH.Packet do
   end
 
   @type aead_packet :: %AEADPacket{packet_length: non_neg_integer(), plaintext: iodata()}
+  @max_packet_length 1_048_576
 
   @spec encode_clear(iodata(), pos_integer()) :: iodata()
   def encode_clear(payload, block_size \\ 8) do
@@ -41,6 +42,9 @@ defmodule Sftpd.SSH.Packet do
   @spec decode_clear(binary()) :: {:ok, binary(), binary()} | :more | {:error, :bad_packet}
   def decode_clear(<<packet_len::32, rest::binary>>) do
     cond do
+      packet_len > @max_packet_length ->
+        {:error, :bad_packet}
+
       packet_len < 5 ->
         {:error, :bad_packet}
 

@@ -121,8 +121,7 @@ defmodule Sftpd.FileHandler do
     instrument_path_call(:list_dir, path, state, fn ->
       result =
         with {:ok, handle} <- backend.open_dir(to_string(path), session(state), backend_state),
-             {:ok, entries, handle} <- backend.read_dir(handle, backend_state) do
-          backend.close_dir(handle, backend_state)
+             {:ok, entries} <- drain_dir_entries(handle, backend, backend_state, []) do
           {:ok, Enum.map(entries, &to_charlist(&1.name))}
         end
 
@@ -186,14 +185,17 @@ defmodule Sftpd.FileHandler do
       state,
       %{path: to_string(path), requested_modes: modes},
       fn ->
-        mode =
+        result =
           cond do
-            :write in modes -> :write
-            :read in modes -> :read
-            true -> :read
-          end
+            :read in modes and :write in modes ->
+              open_device(path, :read_write, backend, backend_state, state)
 
-        result = open_device(path, mode, backend, backend_state, state)
+            :write in modes ->
+              open_device(path, :write, backend, backend_state, state)
+
+            true ->
+              open_device(path, :read, backend, backend_state, state)
+          end
 
         {result, state}
       end,
@@ -313,6 +315,21 @@ defmodule Sftpd.FileHandler do
       backend_state: backend_state,
       session: session(state)
     })
+  end
+
+  defp drain_dir_entries(handle, backend, backend_state, entries) do
+    case backend.read_dir(handle, backend_state) do
+      {:ok, page, handle} ->
+        drain_dir_entries(handle, backend, backend_state, [page | entries])
+
+      :eof ->
+        :ok = backend.close_dir(handle, backend_state)
+        {:ok, entries |> Enum.reverse() |> List.flatten()}
+
+      {:error, reason} ->
+        _ = backend.close_dir(handle, backend_state)
+        {:error, reason}
+    end
   end
 
   defp read_file_info_result(path, _state)

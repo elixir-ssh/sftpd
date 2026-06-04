@@ -31,6 +31,37 @@ defmodule Sftpd.FileHandlerTest do
     def open_dir("/items", _session, _state) do
       {:ok,
        %{
+         pages: [
+           [
+             %{name: ".", attrs: %{type: :directory, size: 0}},
+             %{name: "..", attrs: %{type: :directory, size: 0}},
+             %{name: "entry", attrs: %{type: :regular, size: 0}}
+           ]
+         ]
+       }}
+    end
+
+    def open_dir("/paged", _session, _state) do
+      {:ok,
+       %{
+         pages: [
+           [
+             %{name: ".", attrs: %{type: :directory, size: 0}},
+             %{name: "..", attrs: %{type: :directory, size: 0}}
+           ],
+           [
+             %{name: "one", attrs: %{type: :regular, size: 0}},
+             %{name: "two", attrs: %{type: :regular, size: 0}}
+           ]
+         ]
+       }}
+    end
+
+    def open_dir("/read-dir-error", _session, _state), do: {:ok, %{pages: :error}}
+
+    def open_dir("/legacy-items", _session, _state) do
+      {:ok,
+       %{
          entries: [
            %{name: ".", attrs: %{type: :directory, size: 0}},
            %{name: "..", attrs: %{type: :directory, size: 0}},
@@ -39,7 +70,15 @@ defmodule Sftpd.FileHandlerTest do
        }}
     end
 
-    def read_dir(%{entries: entries} = handle, _state), do: {:ok, entries, handle}
+    def read_dir(%{pages: []}, _state), do: :eof
+    def read_dir(%{pages: :error}, _state), do: {:error, :eio}
+
+    def read_dir(%{pages: [entries | pages]} = handle, _state),
+      do: {:ok, entries, %{handle | pages: pages}}
+
+    def read_dir(%{entries: entries} = handle, _state),
+      do: {:ok, entries, Map.delete(handle, :entries)}
+
     def close_dir(_handle, _state), do: :ok
 
     def make_dir(_path, _attrs, _session, _state), do: :ok
@@ -117,6 +156,18 @@ defmodule Sftpd.FileHandlerTest do
       assert {{:error, :enoent}, ^state} = FileHandler.open(~c"/missing.txt", [:read], state)
     end
 
+    test "supports mixed read/write opens without returning a write-only handle" do
+      state = %{backend: MockBackend, backend_state: %{}}
+
+      assert {{:ok, handle}, ^state} = FileHandler.open(~c"/file.txt", [:read, :write], state)
+      assert DirectIODevice.handle?(handle)
+      assert {{:ok, "content"}, ^state} = FileHandler.read(handle, 16, state)
+
+      assert {{:ok, 0}, ^state} = FileHandler.position(handle, {:bof, 0}, state)
+      assert {:ok, ^state} = FileHandler.write(handle, "updated", state)
+      assert {:ok, ^state} = FileHandler.close(handle, state)
+    end
+
     test "uses direct handles for memory backend reads and writes" do
       {:ok, backend_state} = Memory.init([])
       :ok = Memory.write_file(~c"/file.txt", "content", backend_state)
@@ -149,6 +200,20 @@ defmodule Sftpd.FileHandlerTest do
       assert metadata.backend == MockBackend
 
       assert {:ok, _state} = FileHandler.close(handle, state)
+    end
+  end
+
+  describe "list_dir/2" do
+    test "drains paged backend directory handles" do
+      state = %{backend: MockBackend, backend_state: %{}}
+
+      assert {{:ok, [~c".", ~c"..", ~c"one", ~c"two"]}, ^state} =
+               FileHandler.list_dir(~c"/paged", state)
+    end
+
+    test "closes backend directory handles after read errors" do
+      state = %{backend: MockBackend, backend_state: %{}}
+      assert {{:error, :eio}, ^state} = FileHandler.list_dir(~c"/read-dir-error", state)
     end
   end
 

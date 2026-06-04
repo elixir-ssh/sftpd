@@ -231,6 +231,24 @@ defmodule SftpdTest do
                )
     end
 
+    test "start_server rejects invalid backend and transport options" do
+      assert {:error, {:invalid_option, {:backend, "not_a_backend"}}} =
+               Sftpd.start_server(
+                 backend: "not_a_backend",
+                 system_dir: "/tmp",
+                 auth: {:passwords, []}
+               )
+
+      assert {:error, {:invalid_option, {:transport, :bogus}}} =
+               Sftpd.start_server(
+                 transport: :bogus,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: "/tmp",
+                 auth: {:passwords, []}
+               )
+    end
+
     test "emits telemetry for start errors" do
       handler_id =
         TelemetryHelper.attach(self(), [
@@ -458,20 +476,27 @@ defmodule SftpdTest do
       {packet, c2s} = encrypt_client_channel_data(c2s, server_channel, read_packet)
       assert :ok = :gen_tcp.send(socket, packet)
 
-      assert {:ok, <<93, ^client_channel::32, _bytes::32>>, s2c, ""} =
+      assert {:ok, <<93, ^client_channel::32, _bytes::32>>, s2c, buffer} =
                recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
 
-      assert {:error, :timeout} = :gen_tcp.recv(socket, 0, 100)
+      assert {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, buffer} =
+               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
 
-      window_bytes = read_len + 64
+      assert {:ok, partial_response, ""} = Sftpd.SSH.Wire.take_string(rest)
+      assert byte_size(partial_response) > 0
+      assert byte_size(partial_response) < read_len + 13
+      assert partial_response != content
+
+      window_bytes = read_len + 64 - byte_size(partial_response)
       {packet, _c2s} = encrypt_client_packet(c2s, <<93, server_channel::32, window_bytes::32>>)
 
       assert :ok = :gen_tcp.send(socket, packet)
 
       assert {:ok, <<94, ^client_channel::32, rest::binary>>, _s2c, _buffer} =
-               recv_encrypted_server_packet_with_rest(socket, s2c, "")
+               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
 
-      assert {:ok, sftp_response, ""} = Sftpd.SSH.Wire.take_string(rest)
+      assert {:ok, response_tail, ""} = Sftpd.SSH.Wire.take_string(rest)
+      sftp_response = partial_response <> response_tail
       assert <<_len::32, 103, 2::32, size::32, data::binary-size(size)>> = sftp_response
       assert data == content
     end
@@ -703,6 +728,93 @@ defmodule SftpdTest do
                recv_encrypted_server_packet(socket, s2c)
 
       :gen_tcp.close(socket)
+    end
+
+    test "rejects global requests that ask for a reply" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{socket: socket, c2s: c2s, s2c: s2c} = open_raw_authenticated_session(port)
+
+      {packet, _c2s} =
+        encrypt_client_packet(c2s, [
+          <<80>>,
+          Sftpd.SSH.Wire.string("keepalive@openssh.com"),
+          Sftpd.SSH.Wire.boolean(true)
+        ])
+
+      assert :ok = :gen_tcp.send(socket, packet)
+      assert {:ok, <<82>>, _s2c} = recv_encrypted_server_packet(socket, s2c)
+
+      :gen_tcp.close(socket)
+    end
+
+    test "notifies the profile owner when pure transport accepts a connection" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert Process.whereis(:sftpd_profile_owner) == nil
+      Process.register(self(), :sftpd_profile_owner)
+
+      on_exit(fn ->
+        if Process.whereis(:sftpd_profile_owner) == self() do
+          Process.unregister(:sftpd_profile_owner)
+        end
+      end)
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{socket: socket} = open_raw_authenticated_session(port)
+
+      assert_receive {:sftpd_connection, pid}
+      assert is_pid(pid)
+
+      :gen_tcp.close(socket)
+    end
+
+    test "refuses new clients when max_sessions is exhausted" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]},
+                 max_sessions: 0
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      assert {:ok, socket} =
+               :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false, packet: :raw])
+
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
     end
 
     test "rejects modules that do not implement the backend contract" do
@@ -940,12 +1052,38 @@ defmodule SftpdTest do
       assert :ok = Sftpd.Server.terminate(:shutdown, %{daemon_down?: true})
     end
 
+    test "server callback can monitor pure Elixir transport refs" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, pid} =
+               Sftpd.Server.start_link(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      assert Process.alive?(pid)
+      assert :ok = GenServer.stop(pid)
+    end
+
     test "stop_server treats already-shutting-down Elixir transports as stopped" do
       {:ok, pid} = ShutdownOnStopServer.start(self())
 
       assert :ok = Sftpd.stop_server({:elixir, pid})
       assert_receive :terminating
       refute Process.alive?(pid)
+    end
+
+    test "stop_server treats already-exited Elixir transports as stopped" do
+      pid = spawn(fn -> :ok end)
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+
+      assert :ok = Sftpd.stop_server({:elixir, pid})
     end
   end
 

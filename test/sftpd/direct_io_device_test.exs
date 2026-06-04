@@ -12,9 +12,11 @@ defmodule Sftpd.DirectIODeviceTest do
 
     def open_read("/open-read-error", _session, _state), do: {:error, :eacces}
     def open_read("/read-error", _session, _state), do: {:ok, :read_error}
+    def open_read("/iodata", _session, _state), do: {:ok, :iodata}
     def open_read(_path, _session, _state), do: {:ok, :reader}
 
     def read_at(:read_error, _offset, _len, _state), do: {:error, :eio}
+    def read_at(:iodata, _offset, _len, _state), do: {:ok, ["io", "data"]}
     def read_at(_handle, _offset, 0, _state), do: {:ok, ""}
     def read_at(_handle, _offset, len, _state), do: {:ok, binary_part("data", 0, min(len, 4))}
 
@@ -28,6 +30,9 @@ defmodule Sftpd.DirectIODeviceTest do
 
     def finish_write(:finish_error, _state), do: {:error, :eio}
     def finish_write(_handle, _state), do: :ok
+
+    def abort_write(:write_error, %{test_pid: test_pid}), do: send(test_pid, :aborted)
+    def abort_write(_handle, _state), do: :ok
   end
 
   setup do
@@ -56,6 +61,18 @@ defmodule Sftpd.DirectIODeviceTest do
     assert {:ok, "j"} = DirectIODevice.read(handle, 4)
     assert :eof = DirectIODevice.read(handle, 4)
     assert :ok = DirectIODevice.close(handle)
+  end
+
+  test "normalizes backend iodata reads to binaries" do
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: "/iodata",
+               mode: :read,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert {:ok, "iodata"} = DirectIODevice.read(handle, 6)
   end
 
   test "writes iodata and finalizes on close", %{backend_state: backend_state} do
@@ -165,10 +182,12 @@ defmodule Sftpd.DirectIODeviceTest do
                path: "/write-error",
                mode: :write,
                backend: ErrorBackend,
-               backend_state: %{}
+               backend_state: %{test_pid: self()}
              })
 
     assert {:error, :eio} = DirectIODevice.write(write_handle, "x", 1)
+    assert_receive :aborted
+    assert :ok = DirectIODevice.close(write_handle)
 
     assert {:ok, close_handle} =
              DirectIODevice.start(%{

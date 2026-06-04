@@ -98,8 +98,8 @@ defmodule Sftpd.Backend do
   Convert an Erlang `:file_info` tuple to backend attribute maps.
   """
   def attrs_from_file_info(
-        {:file_info, size, type, _access, _atime, mtime, _ctime, mode, _links, uid, gid, _major,
-         _minor, _inode}
+        {:file_info, size, type, _access, atime, mtime, _ctime, mode, _links, _major, _minor,
+         _inode, uid, gid}
       ) do
     file_type =
       case type do
@@ -114,7 +114,7 @@ defmodule Sftpd.Backend do
       permissions: mode,
       uid: uid,
       gid: gid,
-      atime: unix_time(mtime),
+      atime: unix_time(atime),
       mtime: unix_time(mtime)
     }
   end

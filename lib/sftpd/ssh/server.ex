@@ -15,10 +15,12 @@ defmodule Sftpd.SSH.Server do
   @channel_window_size 64 * 1024 * 1024
   @channel_max_packet_size 1_048_576
   @aead_tag_size 16
+  @max_encrypted_packet_length 2 * 1024 * 1024
+  @max_sftp_packet_length @channel_window_size
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts)
+    GenServer.start(__MODULE__, opts)
   end
 
   @impl true
@@ -44,10 +46,14 @@ defmodule Sftpd.SSH.Server do
         backend_state: backend_state,
         host_key: host_key,
         auth: Keyword.fetch!(opts, :auth),
-        acceptor: nil
+        max_sessions: Keyword.fetch!(opts, :max_sessions),
+        acceptor: nil,
+        connections: %{}
       }
 
       {:ok, state, {:continue, :accept}}
+    else
+      {:error, reason} -> {:stop, reason}
     end
   end
 
@@ -58,7 +64,16 @@ defmodule Sftpd.SSH.Server do
 
   @impl true
   def handle_info({:accepted, acceptor, client}, %{acceptor: acceptor} = state) do
-    start_connection(client, state)
+    state =
+      if map_size(state.connections) >= state.max_sessions do
+        :gen_tcp.close(client)
+        state
+      else
+        pid = start_connection(client, state)
+        ref = Process.monitor(pid)
+        %{state | connections: Map.put(state.connections, ref, pid)}
+      end
+
     {:noreply, %{state | acceptor: start_acceptor(state)}}
   end
 
@@ -66,11 +81,16 @@ defmodule Sftpd.SSH.Server do
     {:noreply, %{state | acceptor: start_acceptor(state)}}
   end
 
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    {:noreply, %{state | connections: Map.delete(state.connections, ref)}}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, %{socket: socket}) do
+  def terminate(_reason, %{socket: socket, connections: connections}) do
     :gen_tcp.close(socket)
+    Enum.each(connections, fn {_ref, pid} -> Process.exit(pid, :shutdown) end)
     :ok
   end
 
@@ -139,6 +159,7 @@ defmodule Sftpd.SSH.Server do
     :ok = :gen_tcp.controlling_process(socket, pid)
     notify_profile_owner(pid)
     send(pid, {:serve, socket, connection_state})
+    pid
   end
 
   defp notify_profile_owner(pid) do
@@ -170,8 +191,11 @@ defmodule Sftpd.SSH.Server do
          {:ok, client_algorithms} <- Algorithms.decode_kexinit(client_kexinit),
          {:ok, server_algorithms} <- Algorithms.decode_kexinit(server_kexinit),
          {:ok, negotiated} <- Algorithms.negotiate(client_algorithms, server_algorithms),
+         {:ok, buffer} <-
+           maybe_skip_wrong_kex_guess(socket, buffer, client_algorithms, negotiated),
          {:ok, <<30, rest::binary>>, buffer} <- recv_clear_packet(socket, buffer),
-         {:ok, client_public, ""} <- Wire.take_string(rest) do
+         {:ok, client_public, ""} <- Wire.take_string(rest),
+         :ok <- validate_curve25519_public_key(client_public) do
       {server_public, server_private} = Kex.generate_keypair()
       shared_secret = Kex.shared_secret(client_public, server_private)
 
@@ -221,6 +245,42 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
+  defp maybe_skip_wrong_kex_guess(
+         socket,
+         buffer,
+         %{first_kex_packet_follows: true} = client_algorithms,
+         negotiated
+       ) do
+    if kex_guess_matches?(client_algorithms, negotiated) do
+      {:ok, buffer}
+    else
+      case recv_clear_packet(socket, buffer) do
+        {:ok, _ignored_payload, buffer} -> {:ok, buffer}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp maybe_skip_wrong_kex_guess(_socket, buffer, _client_algorithms, _negotiated),
+    do: {:ok, buffer}
+
+  defp kex_guess_matches?(client_algorithms, negotiated) do
+    first(client_algorithms.kex_algorithms) == negotiated.kex and
+      first(client_algorithms.server_host_key_algorithms) == negotiated.server_host_key and
+      first(client_algorithms.encryption_algorithms_client_to_server) == negotiated.cipher_c2s and
+      first(client_algorithms.encryption_algorithms_server_to_client) == negotiated.cipher_s2c and
+      first(client_algorithms.compression_algorithms_client_to_server) ==
+        negotiated.compression_c2s and
+      first(client_algorithms.compression_algorithms_server_to_client) ==
+        negotiated.compression_s2c
+  end
+
+  defp first([value | _rest]), do: value
+  defp first([]), do: nil
+
+  defp validate_curve25519_public_key(public_key) when byte_size(public_key) == 32, do: :ok
+  defp validate_curve25519_public_key(_public_key), do: {:error, :bad_message}
+
   defp serve_encrypted(socket, state) do
     with {:ok, <<21>>, state} <- recv_clear_transport_packet(socket, state) do
       state
@@ -239,7 +299,8 @@ defmodule Sftpd.SSH.Server do
           {:stop, state} -> state
         end
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.debug("pure ssh encrypted receive failed: #{inspect(reason)}")
         state
     end
   end
@@ -256,8 +317,35 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
+  defp handle_encrypted_payload(<<80, rest::binary>>, state, socket) do
+    with {:ok, _request_name, rest} <- Wire.take_string(rest),
+         {:ok, true, _rest} <- Wire.take_boolean(rest),
+         {:ok, state} <- send_encrypted_payload(socket, state, <<82>>) do
+      {:continue, state}
+    else
+      _ -> {:continue, state}
+    end
+  end
+
+  defp handle_encrypted_payload(<<1, code::32, rest::binary>>, state, _socket) do
+    {description, language} =
+      with {:ok, description, rest} <- Wire.take_string(rest),
+           {:ok, language, ""} <- Wire.take_string(rest) do
+        {description, language}
+      else
+        _ -> {"", ""}
+      end
+
+    Logger.debug(
+      "pure ssh received disconnect code=#{code} description=#{inspect(description)} language=#{inspect(language)}"
+    )
+
+    {:stop, state}
+  end
+
   defp handle_encrypted_payload(<<50, rest::binary>>, state, socket) do
     Logger.debug("pure ssh received userauth request")
+    userauth_payload = rest
 
     with {:ok, username, rest} <- Wire.take_string(rest),
          {:ok, "ssh-connection", rest} <- Wire.take_string(rest),
@@ -268,8 +356,11 @@ defmodule Sftpd.SSH.Server do
          {:ok, state} <- send_encrypted_payload(socket, state, <<52>>) do
       {:continue, %{state | auth_session: session}}
     else
+      :disconnect ->
+        {:stop, state}
+
       _ ->
-        handle_public_key_userauth(rest, state, socket)
+        handle_public_key_userauth(userauth_payload, state, socket)
     end
   end
 
@@ -296,6 +387,7 @@ defmodule Sftpd.SSH.Server do
         sftp?: false,
         sftp_session: sftp_session,
         sftp_buffer: "",
+        eof_received?: false,
         pending_responses: []
       }
 
@@ -374,8 +466,12 @@ defmodule Sftpd.SSH.Server do
       state = put_channel(state, channel)
 
       case flush_sftp_responses(socket, state, channel, bytes_read) do
-        {:ok, state} -> {:continue, state}
-        {:error, _reason, state} -> {:stop, state}
+        {:ok, state} ->
+          {:continue, state}
+
+        {:error, reason, state} ->
+          Logger.debug("pure ssh failed to flush sftp responses: #{inspect(reason)}")
+          {:stop, state}
       end
     else
       _ -> {:continue, state}
@@ -398,15 +494,30 @@ defmodule Sftpd.SSH.Server do
 
   defp handle_encrypted_payload(<<96, recipient::32, _rest::binary>>, state, socket) do
     with {:ok, channel} <- fetch_channel(state, recipient),
-         {:ok, state} <- send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>) do
-      {:continue, %{state | channels: Map.delete(state.channels, recipient)}}
+         {:ok, state} <- flush_sftp_responses(socket, state, channel, 0),
+         {:ok, channel} <- fetch_channel(state, recipient) do
+      channel = %{channel | eof_received?: true}
+
+      if channel.pending_responses == [] and channel.sftp_buffer == "" do
+        _ = SFTP.Session.abort_open_writes(channel.sftp_session)
+        {:ok, state} = send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>)
+        {:continue, %{state | channels: Map.delete(state.channels, recipient)}}
+      else
+        {:continue, put_channel(state, channel)}
+      end
     else
       _ -> {:stop, state}
     end
   end
 
-  defp handle_encrypted_payload(<<97, _recipient::32, _rest::binary>>, state, _socket) do
-    {:stop, state}
+  defp handle_encrypted_payload(<<97, recipient::32, _rest::binary>>, state, socket) do
+    with {:ok, channel} <- fetch_channel(state, recipient),
+         {:ok, state} <- send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>) do
+      _ = SFTP.Session.abort_open_writes(channel.sftp_session)
+      {:continue, %{state | channels: Map.delete(state.channels, recipient)}}
+    else
+      _ -> {:continue, state}
+    end
   end
 
   defp handle_encrypted_payload(payload, state, _socket) do
@@ -630,6 +741,7 @@ defmodule Sftpd.SSH.Server do
 
   defp recv_encrypted_packet(socket, "", timeout) do
     with {:ok, <<packet_length::32>>} <- :gen_tcp.recv(socket, 4, timeout),
+         :ok <- validate_encrypted_packet_length(packet_length),
          {:ok, encrypted_body} <-
            :gen_tcp.recv(socket, packet_length + @aead_tag_size, timeout) do
       {:ok, packet_length, encrypted_body, ""}
@@ -646,14 +758,26 @@ defmodule Sftpd.SSH.Server do
           {:ok, data} -> recv_encrypted_packet(socket, buffer <> data, timeout)
           {:error, reason} -> {:error, reason}
         end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   defp encrypted_packet_missing_bytes(<<packet_length::32, _rest::binary>> = buffer) do
-    max(4 + packet_length + @aead_tag_size - byte_size(buffer), 0)
+    case validate_encrypted_packet_length(packet_length) do
+      :ok -> max(4 + packet_length + @aead_tag_size - byte_size(buffer), 0)
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp encrypted_packet_missing_bytes(buffer), do: 4 - byte_size(buffer)
+
+  defp validate_encrypted_packet_length(packet_length)
+       when packet_length > 0 and packet_length <= @max_encrypted_packet_length,
+       do: :ok
+
+  defp validate_encrypted_packet_length(_packet_length), do: {:error, :invalid_packet_length}
 
   defp send_encrypted_payload(socket, %{s2c_cipher: cipher} = state, payload) do
     {encrypted, cipher} =
@@ -740,14 +864,76 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp split_responses_for_window([response | rest] = responses, window, ready, bytes) do
-    {response_size, _response_data} = sftp_response_iodata(response)
+    {response_size, response_data} = sftp_response_iodata(response)
+    remaining_window = window - bytes
 
-    if bytes + response_size <= window do
-      split_responses_for_window(rest, window, [response | ready], bytes + response_size)
-    else
-      {Enum.reverse(ready), responses, bytes}
+    cond do
+      remaining_window <= 0 ->
+        {Enum.reverse(ready), responses, bytes}
+
+      response_size <= remaining_window ->
+        split_responses_for_window(rest, window, [response | ready], bytes + response_size)
+
+      true ->
+        {prefix, suffix} = split_iodata(response_data, remaining_window)
+
+        ready = [SerializedPacket.iodata(prefix, remaining_window) | ready]
+        pending = [SerializedPacket.iodata(suffix, response_size - remaining_window) | rest]
+
+        {Enum.reverse(ready), pending, window}
     end
   end
+
+  defp split_iodata(iodata, bytes) when bytes <= 0, do: {"", iodata}
+
+  defp split_iodata(iodata, bytes) do
+    split_iodata(iodata, bytes, [])
+  end
+
+  defp split_iodata(iodata, 0, prefix), do: {Enum.reverse(prefix), iodata}
+
+  defp split_iodata([], _bytes, prefix), do: {Enum.reverse(prefix), []}
+
+  defp split_iodata([part | rest], bytes, prefix) do
+    part_size = iodata_size(part)
+
+    cond do
+      part_size < bytes ->
+        split_iodata(rest, bytes - part_size, [part | prefix])
+
+      part_size == bytes ->
+        {Enum.reverse([part | prefix]), rest}
+
+      true ->
+        {part_prefix, part_suffix} = split_iodata(part, bytes)
+        {Enum.reverse([part_prefix | prefix]), [part_suffix | rest]}
+    end
+  end
+
+  defp split_iodata(data, bytes, prefix) when is_binary(data) do
+    size = byte_size(data)
+
+    cond do
+      bytes >= size ->
+        {Enum.reverse([data | prefix]), ""}
+
+      true ->
+        {head, tail} = :erlang.split_binary(data, bytes)
+        {Enum.reverse([head | prefix]), tail}
+    end
+  end
+
+  defp split_iodata(byte, bytes, prefix) when is_integer(byte) do
+    if bytes >= 1 do
+      {Enum.reverse([byte | prefix]), []}
+    else
+      {Enum.reverse(prefix), byte}
+    end
+  end
+
+  defp iodata_size(data) when is_binary(data), do: byte_size(data)
+  defp iodata_size(data) when is_list(data), do: IO.iodata_length(data)
+  defp iodata_size(data) when is_integer(data), do: 1
 
   defp sftp_responses_near_window?(_channel, []), do: false
 
@@ -883,6 +1069,7 @@ defmodule Sftpd.SSH.Server do
 
     case Sftpd.Auth.Adapter.authenticate_password(auth, username, password, peer) do
       {:ok, session} when is_map(session) -> {:ok, session}
+      :disconnect -> :disconnect
       _ -> :error
     end
   end
@@ -916,15 +1103,28 @@ defmodule Sftpd.SSH.Server do
 
   defp handle_sftp_data(data, channel) do
     buffer = channel.sftp_buffer <> data
-    {packets, rest} = SFTP.Codec.split_packets(buffer)
 
-    {responses, sftp_session} =
-      Enum.map_reduce(packets, channel.sftp_session, fn packet, session ->
-        SFTP.Session.handle_packet(packet, session)
-      end)
+    case validate_sftp_buffer(buffer) do
+      :ok ->
+        {packets, rest} = SFTP.Codec.split_packets(buffer)
 
-    {responses, %{channel | sftp_buffer: rest, sftp_session: sftp_session}}
+        {responses, sftp_session} =
+          Enum.map_reduce(packets, channel.sftp_session, fn packet, session ->
+            SFTP.Session.handle_packet(packet, session)
+          end)
+
+        {responses, %{channel | sftp_buffer: rest, sftp_session: sftp_session}}
+
+      {:error, reason} ->
+        {[SFTP.Codec.status(0, reason)], %{channel | sftp_buffer: ""}}
+    end
   end
+
+  defp validate_sftp_buffer(<<packet_length::32, _rest::binary>>)
+       when packet_length > @max_sftp_packet_length,
+       do: {:error, :bad_message}
+
+  defp validate_sftp_buffer(_buffer), do: :ok
 
   defp parse_want_reply(rest) do
     with {:ok, _request, rest} <- Wire.take_string(rest),
