@@ -33,8 +33,9 @@ defmodule Sftpd.Backends.S3 do
           upload_id: String.t() | nil,
           next_offset: non_neg_integer(),
           next_part_number: pos_integer(),
-          pending_chunks: :queue.queue(binary()),
+          pending_chunks: :queue.queue({non_neg_integer(), binary()}),
           pending_size: non_neg_integer(),
+          uploaded_size: non_neg_integer(),
           uploaded_parts: [{pos_integer(), binary()}]
         }
 
@@ -268,29 +269,29 @@ defmodule Sftpd.Backends.S3 do
        next_part_number: 1,
        pending_chunks: :queue.new(),
        pending_size: 0,
+       uploaded_size: 0,
        uploaded_parts: []
      }}
   end
 
   @spec write_chunk(writer_handle(), non_neg_integer(), iodata(), state()) ::
           {:ok, writer_handle()} | {:error, atom()}
-  def write_chunk(%{next_offset: expected_offset}, offset, _chunk, _state)
-      when offset != expected_offset do
-    {:error, :einval}
-  end
-
   def write_chunk(writer, offset, chunk, state) do
-    chunk = IO.iodata_to_binary(chunk)
-    chunk_size = byte_size(chunk)
+    if offset < Map.get(writer, :uploaded_size, 0) do
+      {:error, :einval}
+    else
+      chunk = IO.iodata_to_binary(chunk)
+      chunk_size = byte_size(chunk)
 
-    writer = %{
-      writer
-      | pending_chunks: :queue.in(chunk, writer.pending_chunks),
-        pending_size: writer.pending_size + chunk_size,
-        next_offset: offset + chunk_size
-    }
+      writer = %{
+        writer
+        | pending_chunks: :queue.in({offset, chunk}, writer.pending_chunks),
+          pending_size: writer.pending_size + chunk_size,
+          next_offset: max(writer.next_offset, offset + chunk_size)
+      }
 
-    flush_full_parts(writer, state)
+      flush_full_parts(writer, state)
+    end
   end
 
   @spec finish_write(writer_handle(), state()) :: :ok | {:error, atom()}
@@ -334,7 +335,7 @@ defmodule Sftpd.Backends.S3 do
     with {:ok, names} <- list_dir(path, session, state) do
       entries =
         Enum.map(names, fn name ->
-          %{name: to_string(name), attrs: listed_entry_attrs(name)}
+          %{name: to_string(name), attrs: listed_entry_attrs(path, name, session, state)}
         end)
 
       {:ok, %{entries: entries, read?: false}}
@@ -362,10 +363,15 @@ defmodule Sftpd.Backends.S3 do
   @impl true
   def make_dir(path, _attrs, session, state), do: make_dir(path, session, state)
 
-  defp listed_entry_attrs(name) when name in [~c".", ~c"..", ".", ".."],
+  defp listed_entry_attrs(_path, name, _session, _state) when name in [~c".", ~c"..", ".", ".."],
     do: %{type: :directory, size: 0, permissions: 0o040755}
 
-  defp listed_entry_attrs(_name), do: %{type: :regular, size: 0, permissions: 0o100644}
+  defp listed_entry_attrs(path, name, session, state) do
+    case path |> child_path(name) |> file_info(session, state) do
+      {:ok, info} -> Backend.attrs_from_file_info(info)
+      {:error, _reason} -> %{type: :regular, size: 0, permissions: 0o100644}
+    end
+  end
 
   defp ensure_multipart_started(%{upload_id: nil} = writer, state) do
     case aws_request(state, s3_op(:initiate_multipart_upload, [writer.bucket, writer.key])) do
@@ -379,19 +385,29 @@ defmodule Sftpd.Backends.S3 do
 
   defp ensure_multipart_started(writer, _state), do: {:ok, writer}
 
-  defp flush_full_parts(%{pending_size: size} = writer, _state)
-       when size < @multipart_part_size do
-    {:ok, writer}
+  defp flush_full_parts(writer, state) do
+    uploaded_size = Map.get(writer, :uploaded_size, 0)
+
+    if writer.next_offset - uploaded_size < @multipart_part_size or
+         not range_covered?(writer.pending_chunks, uploaded_size, @multipart_part_size) do
+      {:ok, writer}
+    else
+      flush_full_part(writer, state)
+    end
   end
 
-  defp flush_full_parts(writer, state) do
+  defp flush_full_part(writer, state) do
     with {:ok, writer} <- ensure_multipart_started(writer, state) do
-      {part, pending_chunks} = take_pending_bytes(writer.pending_chunks, @multipart_part_size)
+      uploaded_size = Map.get(writer, :uploaded_size, 0)
+      part = pending_body(writer.pending_chunks, uploaded_size, @multipart_part_size)
+
+      {pending_chunks, pending_size} =
+        discard_pending_before(writer.pending_chunks, uploaded_size + @multipart_part_size)
 
       writer = %{
         writer
         | pending_chunks: pending_chunks,
-          pending_size: writer.pending_size - @multipart_part_size
+          pending_size: pending_size
       }
 
       case upload_part(writer, part, state) do
@@ -405,13 +421,18 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  defp maybe_upload_final_part(%{pending_size: 0} = writer, _state), do: {:ok, writer}
-
   defp maybe_upload_final_part(writer, state) do
-    {part, pending_chunks} = take_pending_bytes(writer.pending_chunks, writer.pending_size)
+    uploaded_size = Map.get(writer, :uploaded_size, 0)
 
-    writer = %{writer | pending_chunks: pending_chunks, pending_size: 0}
-    upload_part(writer, part, state)
+    if writer.next_offset == uploaded_size do
+      {:ok, writer}
+    else
+      part =
+        pending_body(writer.pending_chunks, uploaded_size, writer.next_offset - uploaded_size)
+
+      writer = %{writer | pending_chunks: :queue.new(), pending_size: 0}
+      upload_part(writer, part, state)
+    end
   end
 
   defp upload_part(writer, chunk, state) do
@@ -428,11 +449,10 @@ defmodule Sftpd.Backends.S3 do
       {:ok, %{headers: headers}} ->
         with {:ok, etag} <- extract_etag(headers) do
           {:ok,
-           %{
-             writer
-             | next_part_number: writer.next_part_number + 1,
-               uploaded_parts: [{writer.next_part_number, etag} | writer.uploaded_parts]
-           }}
+           writer
+           |> Map.put(:next_part_number, writer.next_part_number + 1)
+           |> Map.put(:uploaded_size, Map.get(writer, :uploaded_size, 0) + byte_size(chunk))
+           |> Map.put(:uploaded_parts, [{writer.next_part_number, etag} | writer.uploaded_parts])}
         end
 
       {:error, reason} ->
@@ -459,35 +479,114 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  defp pending_body(%{pending_chunks: pending_chunks}) do
-    pending_chunks |> :queue.to_list() |> IO.iodata_to_binary()
+  defp pending_body(%{pending_chunks: pending_chunks, next_offset: next_offset}) do
+    pending_body(pending_chunks, 0, next_offset)
   end
 
-  defp take_pending_bytes(pending_chunks, bytes_to_take) do
-    take_pending_bytes(pending_chunks, bytes_to_take, [])
+  defp pending_body(pending_chunks, start_offset, len) do
+    pending_chunks
+    |> :queue.to_list()
+    |> Enum.map(&normalize_pending_chunk/1)
+    |> Enum.sort_by(fn {offset, _chunk} -> offset end)
+    |> materialize_range(start_offset, len, [])
+    |> IO.iodata_to_binary()
   end
 
-  defp take_pending_bytes(pending_chunks, 0, acc) do
-    {acc |> Enum.reverse() |> IO.iodata_to_binary(), pending_chunks}
+  defp materialize_range(_chunks, _offset, 0, acc), do: Enum.reverse(acc)
+  defp materialize_range([], _offset, len, acc), do: Enum.reverse([zeroes(len) | acc])
+
+  defp materialize_range([{chunk_offset, chunk} | chunks], offset, len, acc) do
+    chunk_size = byte_size(chunk)
+    chunk_end = chunk_offset + chunk_size
+
+    cond do
+      chunk_end <= offset ->
+        materialize_range(chunks, offset, len, acc)
+
+      chunk_offset > offset ->
+        gap = min(chunk_offset - offset, len)
+
+        materialize_range([{chunk_offset, chunk} | chunks], offset + gap, len - gap, [
+          zeroes(gap) | acc
+        ])
+
+      true ->
+        start = offset - chunk_offset
+        take = min(chunk_size - start, len)
+        part = binary_part(chunk, start, take)
+        materialize_range(chunks, offset + take, len - take, [part | acc])
+    end
   end
 
-  defp take_pending_bytes(pending_chunks, bytes_to_take, acc) do
-    case :queue.out(pending_chunks) do
-      {{:value, chunk}, pending_chunks} ->
-        chunk_size = byte_size(chunk)
+  defp discard_pending_before(pending_chunks, cutoff) do
+    pending_chunks
+    |> :queue.to_list()
+    |> Enum.map(&normalize_pending_chunk/1)
+    |> Enum.reduce(:queue.new(), fn {offset, chunk}, queue ->
+      chunk_size = byte_size(chunk)
+      chunk_end = offset + chunk_size
 
-        cond do
-          chunk_size <= bytes_to_take ->
-            take_pending_bytes(pending_chunks, bytes_to_take - chunk_size, [chunk | acc])
+      cond do
+        chunk_end <= cutoff ->
+          queue
 
-          true ->
-            {part, rest} = :erlang.split_binary(chunk, bytes_to_take)
-            pending_chunks = :queue.in_r(rest, pending_chunks)
-            {IO.iodata_to_binary(Enum.reverse([part | acc])), pending_chunks}
-        end
+        offset < cutoff ->
+          keep_offset = cutoff - offset
+          rest = binary_part(chunk, keep_offset, chunk_size - keep_offset)
+          :queue.in({cutoff, rest}, queue)
 
-      {:empty, _pending_chunks} ->
-        {acc |> Enum.reverse() |> IO.iodata_to_binary(), :queue.new()}
+        true ->
+          :queue.in({offset, chunk}, queue)
+      end
+    end)
+    |> then(fn queue -> {queue, pending_queue_size(queue)} end)
+  end
+
+  defp normalize_pending_chunk({offset, chunk}), do: {offset, chunk}
+  defp normalize_pending_chunk(chunk) when is_binary(chunk), do: {0, chunk}
+
+  defp range_covered?(pending_chunks, start_offset, len) do
+    target = start_offset + len
+
+    pending_chunks
+    |> :queue.to_list()
+    |> Enum.map(&normalize_pending_chunk/1)
+    |> Enum.sort_by(fn {offset, _chunk} -> offset end)
+    |> Enum.reduce_while(start_offset, fn {offset, chunk}, covered_until ->
+      chunk_end = offset + byte_size(chunk)
+
+      cond do
+        covered_until >= target ->
+          {:halt, covered_until}
+
+        chunk_end <= covered_until ->
+          {:cont, covered_until}
+
+        offset <= covered_until ->
+          {:cont, chunk_end}
+
+        true ->
+          {:halt, covered_until}
+      end
+    end)
+    |> Kernel.>=(target)
+  end
+
+  defp pending_queue_size(queue) do
+    queue
+    |> :queue.to_list()
+    |> Enum.reduce(0, fn {_offset, chunk}, size -> size + byte_size(chunk) end)
+  end
+
+  defp zeroes(0), do: ""
+  defp zeroes(size), do: :binary.copy(<<0>>, size)
+
+  defp child_path(path, name) do
+    name = to_string(name)
+
+    cond do
+      Backend.root_path?(path) -> "/" <> name
+      true -> "/" <> Backend.normalize_path(path) <> "/" <> name
     end
   end
 

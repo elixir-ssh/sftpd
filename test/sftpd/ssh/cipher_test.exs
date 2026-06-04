@@ -116,13 +116,13 @@ defmodule Sftpd.SSH.CipherTest do
     {first, state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("one"))
     {second, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("two"))
 
-    decrypt_state = state(:server_to_client)
+    decrypt_state0 = state(:server_to_client)
 
-    assert {:ok, first_clear, rest, decrypt_state} =
-             Cipher.decrypt_packet(decrypt_state, IO.iodata_to_binary([first, second]))
+    assert {:ok, first_clear, rest, decrypt_state1} =
+             Cipher.decrypt_packet(decrypt_state0, IO.iodata_to_binary([first, second]))
 
     assert {:ok, "one", ""} = Packet.decode_clear(first_clear)
-    assert {:ok, second_clear, "", _decrypt_state} = Cipher.decrypt_packet(decrypt_state, rest)
+    assert {:ok, second_clear, "", _decrypt_state} = Cipher.decrypt_packet(decrypt_state1, rest)
     assert {:ok, "two", ""} = Packet.decode_clear(second_clear)
   end
 

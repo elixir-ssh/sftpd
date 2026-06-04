@@ -26,7 +26,7 @@ defmodule Sftpd.SFTP.CodecTest do
     assert {:ok, %{type: :init, version: 3, extensions: %{"a" => "b"}}} =
              Codec.decode(<<1, 3::32, string("a")::binary, string("b")::binary>>)
 
-    assert {:ok, %{extensions: %{}}} = Codec.decode(<<1, 3::32, 0, 0, 0, 9, "bad">>)
+    assert {:error, :bad_message} = Codec.decode(<<1, 3::32, 0, 0, 0, 9, "bad">>)
   end
 
   test "decodes file open, read, write, and close requests" do
@@ -100,18 +100,18 @@ defmodule Sftpd.SFTP.CodecTest do
 
   test "encodes response packets" do
     assert <<2, 3::32, rest::binary>> = unwrap(Codec.version(3, %{"x" => "y"}))
-    assert {:ok, "x", rest} = take_string(rest)
-    assert {:ok, "y", ""} = take_string(rest)
+    assert {:ok, "x", rest2} = take_string(rest)
+    assert {:ok, "y", ""} = take_string(rest2)
 
     assert <<101, 1::32, 0::32, rest::binary>> = unwrap(Codec.status(1, :ok))
-    assert {:ok, "Ok", rest} = take_string(rest)
-    assert {:ok, "en-US", ""} = take_string(rest)
+    assert {:ok, "Ok", rest2} = take_string(rest)
+    assert {:ok, "en-US", ""} = take_string(rest2)
 
     assert <<101, 2::32, 3::32, rest::binary>> =
              unwrap(Codec.status(2, :permission_denied, "no"))
 
-    assert {:ok, "no", rest} = take_string(rest)
-    assert {:ok, "en-US", ""} = take_string(rest)
+    assert {:ok, "no", rest2} = take_string(rest)
+    assert {:ok, "en-US", ""} = take_string(rest2)
 
     assert <<102, 3::32, rest::binary>> = unwrap(Codec.handle(3, "handle"))
     assert {:ok, "handle", ""} = take_string(rest)
@@ -124,8 +124,8 @@ defmodule Sftpd.SFTP.CodecTest do
                ])
              )
 
-    assert {:ok, "dir", rest} = take_string(rest)
-    assert {:ok, "dir", <<flags::32, attrs::binary>>} = take_string(rest)
+    assert {:ok, "dir", rest2} = take_string(rest)
+    assert {:ok, "dir", <<flags::32, attrs::binary>>} = take_string(rest2)
     assert (flags &&& @attr_permissions) != 0
     assert (flags &&& @attr_acmodtime) != 0
     assert <<0o40755::32, 9::32, 9::32>> = attrs

@@ -61,7 +61,9 @@ defmodule Sftpd.SFTP.Codec do
 
   @spec decode(binary()) :: {:ok, request()} | {:error, :bad_message}
   def decode(<<@ssh_fxp_init, version::32, extensions::binary>>) do
-    {:ok, %{type: :init, version: version, extensions: decode_extensions(extensions)}}
+    with {:ok, extensions} <- decode_extensions(extensions) do
+      {:ok, %{type: :init, version: version, extensions: extensions}}
+    end
   end
 
   def decode(<<@ssh_fxp_open, id::32, rest::binary>>) do
@@ -172,10 +174,12 @@ defmodule Sftpd.SFTP.Codec do
     packet(payload)
   end
 
+  @spec status(non_neg_integer(), atom() | non_neg_integer()) :: SerializedPacket.t()
+  def status(id, status), do: status(id, status, status_message(status_code(status)))
+
   @spec status(non_neg_integer(), atom() | non_neg_integer(), iodata()) :: SerializedPacket.t()
-  def status(id, status, message \\ nil) do
+  def status(id, status, message) do
     code = status_code(status)
-    message = message || status_message(code)
     packet([<<@ssh_fxp_status, id::32, code::32>>, string(message), string("en-US")])
   end
 
@@ -248,14 +252,16 @@ defmodule Sftpd.SFTP.Codec do
 
   defp take_string(_), do: {:error, :bad_message}
 
-  defp decode_extensions(<<>>), do: %{}
+  defp decode_extensions(data), do: decode_extensions(data, %{})
 
-  defp decode_extensions(data) do
+  defp decode_extensions(<<>>, extensions), do: {:ok, extensions}
+
+  defp decode_extensions(data, extensions) do
     with {:ok, name, rest} <- take_string(data),
          {:ok, value, rest} <- take_string(rest) do
-      Map.put(decode_extensions(rest), name, value)
+      decode_extensions(rest, Map.put(extensions, name, value))
     else
-      _ -> %{}
+      _ -> {:error, :bad_message}
     end
   end
 

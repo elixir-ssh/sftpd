@@ -36,7 +36,7 @@ defmodule Sftpd.SSH.Keys do
         data,
         sig
       ) do
-    public_key = {:ECPrivateKey, 1, <<>>, curve, public, :asn1_NOVALUE}
+    public_key = {{:ECPoint, public}, curve}
     :public_key.verify(data, :none, sig, public_key)
   end
 end

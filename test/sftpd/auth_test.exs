@@ -155,7 +155,7 @@ defmodule Sftpd.AuthTest do
                Sftpd.Auth.Adapter.authenticate_password(
                  {PasswordOnlyAuth, []},
                  "module-user",
-                 :secret,
+                 "secret",
                  :peer
                )
 

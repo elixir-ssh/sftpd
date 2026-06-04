@@ -8,9 +8,9 @@ defmodule Sftpd do
   experimental pure-Elixir SSH/SFTP transport.
 
   OTP 29 no longer enables the SFTP subsystem implicitly when starting an SSH
-  daemon. `Sftpd.start_server/1` passes an explicit
-  `:ssh_sftpd.subsystem_spec/1` to `:ssh.daemon/2`, so callers do not need to
-  configure the OTP daemon subsystem list themselves.
+  daemon. `Sftpd.start_server/1` passes an explicit SFTP subsystem wrapper to
+  `:ssh.daemon/2`, so callers do not need to configure the OTP daemon
+  subsystem list themselves.
 
   OTP 29 also disables shell and exec services by default. `Sftpd` is
   SFTP-only and does not enable remote shell or exec channels.
