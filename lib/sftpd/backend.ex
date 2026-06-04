@@ -94,7 +94,9 @@ defmodule Sftpd.Backend do
 
   def unix_time(_), do: System.os_time(:second)
 
-  @doc false
+  @doc """
+  Convert an Erlang `:file_info` tuple to backend attribute maps.
+  """
   def attrs_from_file_info(
         {:file_info, size, type, _access, _atime, mtime, _ctime, mode, _links, uid, gid, _major,
          _minor, _inode}
