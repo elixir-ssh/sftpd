@@ -1,248 +1,38 @@
 # Backends
 
-`Sftpd` separates the SFTP server runtime from storage through the
-`Sftpd.Backend` behaviour. A backend is responsible for the filesystem-like
-operations that SFTP clients expect: listing directories, reading files,
-writing files, and reporting metadata.
-
-## Choosing a Backend Style
-
-You can plug in storage in two ways:
-
-- module-based backends
-- process-based backends
-
-Module-based backends are the simplest fit for stateless adapters and are what
-the built-in backends use. Process-based backends are useful when the storage
-layer already has a long-lived process, mutable state, or its own lifecycle.
-
-| Need | Use |
-| --- | --- |
-| Tests, demos, and local development | `Sftpd.Backends.Memory` |
-| Amazon S3, MinIO, or another S3-compatible store | `Sftpd.Backends.S3` |
-| A local disk folder | A custom folder backend |
-| A shared process, cache, queue, or connection pool | `{:genserver, name_or_pid}` |
-| Async ingestion after upload | Store synchronously in the backend, then enqueue a Broadway job |
+`Sftpd.Backend` is a handle-first storage contract. Backends own open file and
+directory state, and transports call them with normalized binary paths plus
+explicit read/write offsets.
 
 ## Built-In Backends
 
 ### `Sftpd.Backends.Memory`
 
-The memory backend stores files in an `Agent` and is intended for:
+The memory backend stores files in an `Agent` and implements the full
+handle-first backend contract. It is intended for development, tests, and
+benchmarking the SSH/SFTP hot path without external storage.
 
-- development
-- tests
-- backend experimentation
+### `Sftpd.Backends.Benchmark`
 
-Properties:
-
-- no external dependencies
-- immediate startup
-- supports the core `Sftpd.Backend` callbacks
-- does not implement the optional streaming callbacks
-
-Example:
-
-```elixir
-{:ok, ref} =
-  Sftpd.start_server(
-    port: 2222,
-    backend: Sftpd.Backends.Memory,
-    backend_opts: [],
-    auth: {:passwords, [{"dev", "dev"}]},
-    system_dir: "ssh_keys"
-  )
-```
-
-See `Sftpd.Backends.Memory` for API details.
+The benchmark backend records uploaded file sizes and returns zero-filled
+download ranges. It avoids allocating full file contents so benchmarks focus on
+SSH/SFTP framing and transport overhead.
 
 ### `Sftpd.Backends.S3`
 
-The S3 backend maps SFTP operations onto object storage and is intended for:
+The S3 backend is still present as legacy storage code, but it is not migrated
+to the handle-first contract in this milestone. Use the memory backend for the
+pure-Elixir transport until S3 is rewritten around backend-owned handles.
 
-- Amazon S3
-- MinIO
-- S3-compatible providers
+## Callback Shape
 
-S3 support is optional. Applications that use this backend must also depend on:
+Backends implement:
 
-- `:ex_aws`
-- `:ex_aws_s3`
-- `:hackney`
-- `:sweet_xml`
-- `:jason`
-- `:configparser_ex`
+- `init/1`
+- `open_read/3` and `read_at/4`
+- `open_write/4`, `write_at/4`, `finish_write/2`, and `abort_write/2`
+- `open_dir/3`, `read_dir/2`, and `close_dir/2`
+- `file_attrs/3`
+- `make_dir/4`, `del_dir/3`, `delete/3`, and `rename/4`
 
-If those dependencies are not available, `Sftpd.Backends.S3.init/1` returns
-`{:error, :missing_s3_dependency}` instead of failing during compilation.
-
-Properties:
-
-- supports range reads through `read_file_range/4`
-- supports multipart streaming writes through the optional streaming callbacks
-- uses delimiter-based paginated listings for directory traversal
-- models directories with `.keep` marker objects
-
-Example:
-
-```elixir
-{:ok, ref} =
-  Sftpd.start_server(
-    port: 2222,
-    backend: Sftpd.Backends.S3,
-    backend_opts: [bucket: "my-bucket", prefix: "tenant-a/"],
-    auth: {:passwords, [{"user", "pass"}]},
-    system_dir: "ssh_keys"
-  )
-```
-
-The S3 `:prefix` option can be a static string or `{:session, key}`. Session
-prefixes read from the authenticated session map returned by `Sftpd.Auth`
-callbacks, which is useful for tenant-scoped object keys:
-
-```elixir
-backend_opts: [bucket: "uploads", prefix: {:session, :sftp_prefix}]
-```
-
-See `Sftpd.Backends.S3` for configuration details and caveats. The Getting
-Started guide has the same dependency list in the context of a full server
-setup.
-
-## Module-Based Backends
-
-A module backend implements the `Sftpd.Backend` callbacks directly and returns
-its own backend state from `init/1`.
-
-Minimal shape:
-
-```elixir
-defmodule MyApp.CustomBackend do
-  @behaviour Sftpd.Backend
-
-  @impl true
-  def init(opts) do
-    {:ok, %{root: Keyword.fetch!(opts, :root)}}
-  end
-
-  @impl true
-  def list_dir(_path, _state), do: {:ok, [~c".", ~c".."]}
-
-  @impl true
-  def file_info(_path, _state), do: {:error, :enoent}
-
-  @impl true
-  def make_dir(_path, _state), do: :ok
-
-  @impl true
-  def del_dir(_path, _state), do: :ok
-
-  @impl true
-  def delete(_path, _state), do: :ok
-
-  @impl true
-  def rename(_src, _dst, _state), do: :ok
-
-  @impl true
-  def read_file(_path, _state), do: {:error, :enoent}
-
-  @impl true
-  def write_file(_path, _content, _state), do: :ok
-end
-```
-
-Use it with:
-
-```elixir
-Sftpd.start_server(
-  backend: MyApp.CustomBackend,
-  backend_opts: [root: "/data"],
-  auth: {:passwords, [{"user", "pass"}]},
-  system_dir: "ssh_keys"
-)
-```
-
-## Process-Based Backends
-
-You can also pass a running GenServer as `{:genserver, server}`. In that mode,
-`Sftpd` skips `init/1` and forwards backend operations as legacy
-`handle_call/3` messages so existing process backends keep working.
-
-Calls follow this shape:
-
-- `{:list_dir, path}`
-- `{:file_info, path}`
-- `{:make_dir, path}`
-- `{:del_dir, path}`
-- `{:delete, path}`
-- `{:rename, src, dst}`
-- `{:read_file, path}`
-- `{:write_file, path, content}`
-
-If a process backend needs authenticated session context, opt in with
-`{:genserver, server, session: true}`. Session-aware calls follow this shape:
-
-- `{:list_dir, path, session}`
-- `{:file_info, path, session}`
-- `{:make_dir, path, session}`
-- `{:del_dir, path, session}`
-- `{:delete, path, session}`
-- `{:rename, src, dst, session}`
-- `{:read_file, path, session}`
-- `{:write_file, path, content, session}`
-
-The reply format must match the `Sftpd.Backend` callback contracts.
-
-## Streaming Support
-
-For large files, module backends can optionally implement:
-
-- `read_file_range/4`
-- `begin_write/2`
-- `write_chunk/4`
-- `finish_write/2`
-- `abort_write/2`
-
-Session-aware variants are also supported by adding the authenticated session
-map immediately before backend state, for example `list_dir(path, session,
-state)` or `write_file(path, content, session, state)`. When both variants are
-available, `Sftpd` calls the session-aware function.
-
-When present:
-
-- reads avoid preloading the entire file into memory
-- sequential writes can stream directly to the backend
-- large S3 uploads can use multipart upload instead of a full-buffer rewrite
-
-If those callbacks are not implemented, `Sftpd` falls back to whole-file
-buffering semantics using the required callbacks.
-
-## Metadata and Directory Semantics
-
-Backends are expected to expose filesystem-like results even when the
-underlying storage is not a filesystem.
-
-Important conventions:
-
-- `list_dir/2` must include `.` and `..`
-- `file_info/2` should distinguish `:regular` from `:directory`
-- `root_path?/1` and `normalize_path/1` in `Sftpd.Backend` help normalize SFTP
-  paths consistently
-- `directory_info/0` and `file_info/3` build compatible Erlang-style metadata
-
-## Error Mapping
-
-Backend functions should return POSIX-style atoms such as:
-
-- `:enoent`
-- `:eacces`
-- `:einval`
-- `:eio`
-
-That keeps behavior predictable across storage implementations and maps cleanly
-onto what SFTP clients expect.
-
-## Next Steps
-
-- Read [Custom Backends](CUSTOM_BACKENDS.md) for implementation guidance
-- See `Sftpd.Backend` for the authoritative callback contracts
-- See [Telemetry](TELEMETRY.md) for the emitted telemetry events around backend operations
+See `Sftpd.Backend` for exact types and helper functions.

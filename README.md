@@ -26,7 +26,7 @@ is pinned in `.tool-versions`.
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.1"}
+    {:sftpd, "~> 0.2.0"}
   ]
 end
 ```
@@ -115,7 +115,7 @@ Applications that use `Sftpd.Backends.S3` must add the S3 dependency set:
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.1"},
+    {:sftpd, "~> 0.2.0"},
     {:ex_aws, "~> 2.0"},
     {:ex_aws_s3, "~> 2.0"},
     {:hackney, "~> 1.9"},
@@ -184,31 +184,32 @@ config :ex_aws, :s3,
   port: 9000
 ```
 
-### Optional Streaming Backend Callbacks
+### Handle-First Backend Callbacks
 
-Custom module backends can implement optional callbacks for efficient large-file
+Custom module backends implement handle-first callbacks for efficient large-file
 transfers:
 
 ```elixir
-# read_file_range(path, offset, len, state) -> {:ok, binary} | :eof | {:error, reason}
-# begin_write(path, state) -> {:ok, writer_handle} | {:error, reason}
-# write_chunk(writer_handle, offset, chunk, state) -> {:ok, writer_handle} | {:error, reason}
+# open_read(path, session, state) -> {:ok, read_handle} | {:error, reason}
+# read_at(read_handle, offset, len, state) -> {:ok, iodata} | :eof | {:error, reason}
+# open_write(path, attrs, session, state) -> {:ok, writer_handle} | {:error, reason}
+# write_at(writer_handle, offset, chunk, state) -> {:ok, writer_handle} | {:error, reason}
 # finish_write(writer_handle, state) -> :ok | {:error, reason}
 # abort_write(writer_handle, state) -> :ok
 ```
 
-These callbacks let `Sftpd.IODevice` avoid loading whole files into memory on
-open and reduce write-side buffering. See `Sftpd.Backend` for the exact
-callback contracts.
+These callbacks let the OTP file-handler adapter and the pure-Elixir transport
+operate on backend-owned handles without loading whole files into memory on open
+or routing hot-path file IO through per-file processes. See `Sftpd.Backend` for
+the exact callback contracts.
 
 Note that OTP's built-in `:ssh_sftpd` implementation always reports success for
 close operations, even if final close-time flushing fails. Write errors are
 therefore surfaced during active writes whenever possible, while close-only
 failures are logged server-side.
 
-If you need to bound how long file opens or close-time finalization can block a
-session, pass `open_timeout: timeout_in_ms` or `close_timeout: timeout_in_ms` to
-`Sftpd.start_server/1`. Both default to `30_000`.
+Backend open and close work now runs through backend-owned handles. Long-running
+backend operations should enforce their own timeouts.
 
 ## Telemetry
 

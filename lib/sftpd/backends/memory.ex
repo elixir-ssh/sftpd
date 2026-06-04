@@ -47,7 +47,7 @@ defmodule Sftpd.Backends.Memory do
 
   @behaviour Sftpd.Backend
 
-  alias Sftpd.{Backend, FastBackend}
+  alias Sftpd.Backend
 
   # Marker file used to represent empty directories (matching S3 convention)
   @keep_marker ".keep"
@@ -64,8 +64,6 @@ defmodule Sftpd.Backends.Memory do
               size: non_neg_integer(),
               mtime: NaiveDateTime.t()
             }
-
-  @impl true
   @spec init(keyword()) :: {:ok, state()}
   def init(opts) do
     initial_files = Keyword.get(opts, :files, %{})
@@ -73,7 +71,6 @@ defmodule Sftpd.Backends.Memory do
     {:ok, %{agent: agent}}
   end
 
-  @impl true
   @spec list_dir(Backend.path(), state()) :: {:ok, [charlist()]}
   def list_dir(path, %{agent: agent}) do
     prefix = normalize_prefix(path)
@@ -103,8 +100,6 @@ defmodule Sftpd.Backends.Memory do
 
   defp trim_prefix(str, ""), do: str
   defp trim_prefix(str, prefix), do: String.replace_prefix(str, prefix, "")
-
-  @impl true
   @spec file_info(Backend.path(), state()) :: {:ok, Backend.file_info()} | {:error, atom()}
   def file_info(path, %{agent: agent}) do
     if Backend.root_path?(path) do
@@ -130,7 +125,6 @@ defmodule Sftpd.Backends.Memory do
     end
   end
 
-  @impl true
   @spec make_dir(Backend.path(), state()) :: :ok
   def make_dir(path, %{agent: agent}) do
     key = normalize_prefix(path) <> @keep_marker
@@ -142,7 +136,6 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
-  @impl true
   @spec del_dir(Backend.path(), state()) :: :ok | {:error, :eexist}
   def del_dir(path, %{agent: agent}) do
     prefix = normalize_prefix(path)
@@ -157,7 +150,6 @@ defmodule Sftpd.Backends.Memory do
     end)
   end
 
-  @impl true
   @spec delete(Backend.path(), state()) :: :ok
   def delete(path, %{agent: agent}) do
     key = copied_normalized_path(path)
@@ -169,7 +161,6 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
-  @impl true
   @spec rename(Backend.path(), Backend.path(), state()) :: :ok
   def rename(src, dst, %{agent: agent}) do
     src_key = Backend.normalize_path(src)
@@ -185,7 +176,6 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
-  @impl true
   @spec read_file(Backend.path(), state()) :: {:ok, binary()} | {:error, :enoent}
   def read_file(path, %{agent: agent}) do
     key = Backend.normalize_path(path)
@@ -198,7 +188,6 @@ defmodule Sftpd.Backends.Memory do
     end)
   end
 
-  @impl true
   @spec write_file(Backend.path(), binary(), state()) :: :ok
   def write_file(path, content, %{agent: agent}) do
     key = copied_normalized_path(path)
@@ -230,7 +219,6 @@ defmodule Sftpd.Backends.Memory do
     read_content_at(content, offset, len)
   end
 
-  @impl true
   def read_file_range(path, offset, len, state) do
     with {:ok, handle} <- open_read(path, %{}, state) do
       read_at(handle, offset, len, state)
@@ -256,13 +244,9 @@ defmodule Sftpd.Backends.Memory do
     {:ok, %{handle | chunks: [{offset, IO.iodata_to_binary(data)} | chunks]}}
   end
 
-  @impl true
   def begin_write(path, state), do: open_write(path, %{}, %{}, state)
-
-  @impl true
   def write_chunk(handle, offset, data, state), do: write_at(handle, offset, data, state)
 
-  @impl true
   def finish_write(%{path: path, chunks: chunks}, %{agent: agent}) do
     file_data = chunks_to_file_data(chunks)
 
@@ -273,7 +257,6 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
-  @impl true
   def abort_write(_handle, _state), do: :ok
 
   def open_dir(path, _session, state) do
@@ -291,20 +274,14 @@ defmodule Sftpd.Backends.Memory do
 
   def file_attrs(path, _session, state) do
     case file_info(path, state) do
-      {:ok, info} -> {:ok, FastBackend.attrs_from_file_info(info)}
+      {:ok, info} -> {:ok, Backend.attrs_from_file_info(info)}
       {:error, reason} -> {:error, reason}
     end
   end
 
   def make_dir(path, _attrs, _session, state), do: make_dir(path, state)
-
-  @impl true
   def del_dir(path, _session, state), do: del_dir(path, state)
-
-  @impl true
   def delete(path, _session, state), do: delete(path, state)
-
-  @impl true
   def rename(src, dst, _session, state), do: rename(src, dst, state)
 
   # Helpers

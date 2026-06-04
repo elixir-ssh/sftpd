@@ -14,8 +14,6 @@ defmodule Sftpd.Backends.S3 do
   `Telemetry` for the event reference emitted around S3-backed operations.
   """
 
-  @behaviour Sftpd.Backend
-
   require Logger
 
   alias Sftpd.Backend
@@ -49,7 +47,6 @@ defmodule Sftpd.Backends.S3 do
   which lets core-only applications compile and handle accidental S3
   configuration without adding ExAws.
   """
-  @impl true
   @spec init(keyword()) :: {:ok, state()} | {:error, atom()}
   def init(opts) do
     with {:ok, bucket} <- Keyword.fetch(opts, :bucket),
@@ -63,11 +60,9 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec list_dir(Backend.path(), state()) :: {:ok, [charlist()]} | {:error, atom()}
   def list_dir(path, state), do: list_dir(path, %{}, state)
 
-  @impl true
   @spec list_dir(Backend.path(), Backend.session(), state()) ::
           {:ok, [charlist()]} | {:error, atom()}
   def list_dir(path, session, %{bucket: bucket} = state) do
@@ -83,11 +78,9 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec file_info(Backend.path(), state()) :: {:ok, Backend.file_info()} | {:error, atom()}
   def file_info(path, state), do: file_info(path, %{}, state)
 
-  @impl true
   @spec file_info(Backend.path(), Backend.session(), state()) ::
           {:ok, Backend.file_info()} | {:error, atom()}
   def file_info(path, session, state) do
@@ -109,11 +102,8 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec make_dir(Backend.path(), state()) :: :ok | {:error, atom()}
   def make_dir(path, state), do: make_dir(path, %{}, state)
-
-  @impl true
   @spec make_dir(Backend.path(), Backend.session(), state()) :: :ok | {:error, atom()}
   def make_dir(path, session, %{bucket: bucket} = state) do
     key = object_key(path, resolved_prefix(state, session)) <> "/" <> @keep_marker
@@ -124,11 +114,8 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec del_dir(Backend.path(), state()) :: :ok | {:error, atom()}
   def del_dir(path, state), do: del_dir(path, %{}, state)
-
-  @impl true
   @spec del_dir(Backend.path(), Backend.session(), state()) :: :ok | {:error, atom()}
   def del_dir(path, session, %{bucket: bucket} = state) do
     key = object_key(path, resolved_prefix(state, session)) <> "/" <> @keep_marker
@@ -139,11 +126,8 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec delete(Backend.path(), state()) :: :ok | {:error, atom()}
   def delete(path, state), do: delete(path, %{}, state)
-
-  @impl true
   @spec delete(Backend.path(), Backend.session(), state()) :: :ok | {:error, atom()}
   def delete(path, session, %{bucket: bucket} = state) do
     key = object_key(path, resolved_prefix(state, session))
@@ -154,11 +138,9 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec rename(Backend.path(), Backend.path(), state()) :: :ok | {:error, atom()}
   def rename(src, dst, state), do: rename(src, dst, %{}, state)
 
-  @impl true
   @spec rename(Backend.path(), Backend.path(), Backend.session(), state()) ::
           :ok | {:error, atom()}
   def rename(src, dst, session, %{bucket: bucket} = state) do
@@ -186,11 +168,9 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec read_file(Backend.path(), state()) :: {:ok, binary()} | {:error, atom()}
   def read_file(path, state), do: read_file(path, %{}, state)
 
-  @impl true
   @spec read_file(Backend.path(), Backend.session(), state()) ::
           {:ok, binary()} | {:error, atom()}
   def read_file(path, session, %{bucket: bucket} = state) do
@@ -202,11 +182,8 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec write_file(Backend.path(), binary(), state()) :: :ok | {:error, atom()}
   def write_file(path, content, state), do: write_file(path, content, %{}, state)
-
-  @impl true
   @spec write_file(Backend.path(), binary(), Backend.session(), state()) :: :ok | {:error, atom()}
   def write_file(path, content, session, %{bucket: bucket} = state) do
     key = object_key(path, resolved_prefix(state, session))
@@ -217,13 +194,11 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec read_file_range(Backend.path(), non_neg_integer(), pos_integer(), state()) ::
           {:ok, binary()} | :eof | {:error, atom()}
   def read_file_range(path, offset, len, state),
     do: read_file_range(path, offset, len, %{}, state)
 
-  @impl true
   @spec read_file_range(
           Backend.path(),
           non_neg_integer(),
@@ -248,11 +223,9 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec begin_write(Backend.path(), state()) :: {:ok, writer_handle()} | {:error, atom()}
   def begin_write(path, state), do: begin_write(path, %{}, state)
 
-  @impl true
   @spec begin_write(Backend.path(), Backend.session(), state()) ::
           {:ok, writer_handle()} | {:error, atom()}
   def begin_write(path, session, state) do
@@ -271,7 +244,6 @@ defmodule Sftpd.Backends.S3 do
      }}
   end
 
-  @impl true
   @spec write_chunk(writer_handle(), non_neg_integer(), iodata(), state()) ::
           {:ok, writer_handle()} | {:error, atom()}
   def write_chunk(%{next_offset: expected_offset}, offset, _chunk, _state)
@@ -293,7 +265,6 @@ defmodule Sftpd.Backends.S3 do
     flush_full_parts(writer, state)
   end
 
-  @impl true
   @spec finish_write(writer_handle(), state()) :: :ok | {:error, atom()}
   def finish_write(%{upload_id: nil, uploaded_parts: []} = writer, state) do
     put_small_object(writer, state)
@@ -313,7 +284,6 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
-  @impl true
   @spec abort_write(writer_handle(), state()) :: :ok
   def abort_write(writer, state) do
     case abort_multipart(writer, state) do

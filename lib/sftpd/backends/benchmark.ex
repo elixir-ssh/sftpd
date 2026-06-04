@@ -9,14 +9,12 @@ defmodule Sftpd.Backends.Benchmark do
 
   @behaviour Sftpd.Backend
 
-  alias Sftpd.{Backend, FastBackend}
+  alias Sftpd.Backend
 
   @keep_marker ".keep"
   @zero_slab :binary.copy(<<0>>, 1024 * 1024)
 
   @type state :: %{agent: pid()}
-
-  @impl true
   def init(opts) do
     files =
       opts
@@ -28,7 +26,6 @@ defmodule Sftpd.Backends.Benchmark do
     {:ok, %{agent: agent}}
   end
 
-  @impl true
   def list_dir(path, %{agent: agent}) do
     prefix = normalize_prefix(path)
 
@@ -55,7 +52,6 @@ defmodule Sftpd.Backends.Benchmark do
     {:ok, [~c".", ~c".." | entries]}
   end
 
-  @impl true
   def file_info(path, %{agent: agent}) do
     if Backend.root_path?(path) do
       {:ok, Backend.directory_info()}
@@ -79,7 +75,6 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
-  @impl true
   def make_dir(path, %{agent: agent}) do
     key = normalize_prefix(path) <> @keep_marker
 
@@ -90,7 +85,6 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
-  @impl true
   def del_dir(path, %{agent: agent}) do
     prefix = normalize_prefix(path)
     keep_marker_key = prefix <> @keep_marker
@@ -104,7 +98,6 @@ defmodule Sftpd.Backends.Benchmark do
     end)
   end
 
-  @impl true
   def delete(path, %{agent: agent}) do
     key = copied_normalized_path(path)
 
@@ -115,7 +108,6 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
-  @impl true
   def rename(src, dst, %{agent: agent}) do
     src_key = copied_normalized_path(src)
     dst_key = copied_normalized_path(dst)
@@ -130,7 +122,6 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
-  @impl true
   def read_file(path, state) do
     case file_info(path, state) do
       {:ok, {:file_info, size, :regular, _, _, _, _, _, _, _, _, _, _, _}} ->
@@ -144,7 +135,6 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
-  @impl true
   def write_file(path, content, %{agent: agent}) do
     key = copied_normalized_path(path)
     size = IO.iodata_length(content)
@@ -156,20 +146,15 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
-  @impl true
   def read_file_range(path, offset, len, state) do
     with {:ok, handle} <- open_read(path, %{}, state) do
       read_at(handle, offset, len, state)
     end
   end
 
-  @impl true
   def begin_write(path, state), do: open_write(path, %{}, %{}, state)
-
-  @impl true
   def write_chunk(handle, offset, data, state), do: write_at(handle, offset, data, state)
 
-  @impl true
   def finish_write(%{path: path, size: size}, %{agent: agent}) do
     Agent.update(agent, fn files ->
       Map.put(files, path, %{size: size, mtime: NaiveDateTime.utc_now()})
@@ -178,7 +163,6 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
-  @impl true
   def abort_write(_handle, _state), do: :ok
 
   def open_read(path, _session, %{agent: agent}) do
@@ -239,20 +223,14 @@ defmodule Sftpd.Backends.Benchmark do
 
   def file_attrs(path, _session, state) do
     case file_info(path, state) do
-      {:ok, info} -> {:ok, FastBackend.attrs_from_file_info(info)}
+      {:ok, info} -> {:ok, Backend.attrs_from_file_info(info)}
       {:error, reason} -> {:error, reason}
     end
   end
 
   def make_dir(path, _attrs, _session, state), do: make_dir(path, state)
-
-  @impl true
   def del_dir(path, _session, state), do: del_dir(path, state)
-
-  @impl true
   def delete(path, _session, state), do: delete(path, state)
-
-  @impl true
   def rename(src, dst, _session, state), do: rename(src, dst, state)
 
   defp normalize_file(%{size: size, mtime: mtime}) do

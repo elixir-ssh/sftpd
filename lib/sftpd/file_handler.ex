@@ -17,25 +17,14 @@ defmodule Sftpd.FileHandler do
 
   @behaviour :ssh_sftpd_file_api
 
-  require Logger
+  alias Sftpd.{Backend, DirectIODevice}
 
-  alias Sftpd.{Backend, DirectIODevice, IODevice}
-
-  @default_close_timeout 30_000
-  @default_close_shutdown_grace 1_000
-  @default_open_timeout 30_000
   @event_prefix [:sftpd, :sftp]
 
   @typedoc "File handler state containing backend module and its state"
   @type state :: %{
-          required(:backend) =>
-            module()
-            | {:genserver, GenServer.server()}
-            | {:genserver, GenServer.server(), keyword()},
+          required(:backend) => module(),
           required(:backend_state) => term(),
-          optional(:close_timeout) => timeout(),
-          optional(:close_shutdown_grace) => non_neg_integer(),
-          optional(:open_timeout) => timeout(),
           optional(:session) => map(),
           optional(:cwd) => charlist()
         }
@@ -55,89 +44,16 @@ defmodule Sftpd.FileHandler do
           if DirectIODevice.handle?(io_device) do
             DirectIODevice.close(io_device)
           else
-            timeout = Map.get(state, :close_timeout, @default_close_timeout)
-            shutdown_grace = Map.get(state, :close_shutdown_grace, @default_close_shutdown_grace)
-
-            close_via_task(io_device, timeout, shutdown_grace)
+            {:error, :einval}
           end
 
         {result, state}
       end,
       fn {result, _state}, duration ->
         {result_measurements(result, duration),
-         %{
-           result: result_status(result),
-           reason: result_reason(result),
-           close_timeout: Map.get(state, :close_timeout, @default_close_timeout),
-           close_shutdown_grace:
-             Map.get(
-               state,
-               :close_shutdown_grace,
-               @default_close_shutdown_grace
-             )
-         }}
+         %{result: result_status(result), reason: result_reason(result)}}
       end
     )
-  end
-
-  defp close_via_task(io_device, timeout, shutdown_grace) do
-    caller = self()
-    ref = make_ref()
-
-    pid =
-      spawn(fn ->
-        send(caller, {ref, self(), call_close(io_device)})
-      end)
-
-    receive do
-      {^ref, ^pid, {:ok, result}} ->
-        result
-
-      {^ref, ^pid, {:exit, reason}} ->
-        Logger.error("IODevice close failed for #{inspect(io_device)}: #{inspect(reason)}")
-        {:error, :eio}
-    after
-      timeout ->
-        Logger.error(
-          "Timed out waiting #{timeout}ms for #{inspect(io_device)} to close; waiting for cleanup before terminating IODevice"
-        )
-
-        Process.exit(pid, :kill)
-        terminate_timed_out_device(io_device, shutdown_grace)
-        {:error, :timeout}
-    end
-  end
-
-  defp call_close(io_device) do
-    try do
-      {:ok, GenServer.call(io_device, :close, :infinity)}
-    catch
-      :exit, reason -> {:exit, reason}
-    end
-  end
-
-  defp terminate_timed_out_device(io_device, shutdown_grace) do
-    ref = Process.monitor(io_device)
-
-    receive do
-      {:DOWN, ^ref, :process, ^io_device, _reason} ->
-        :ok
-    after
-      shutdown_grace ->
-        if Process.alive?(io_device) do
-          Logger.error(
-            "IODevice #{inspect(io_device)} did not close within #{shutdown_grace}ms cleanup grace; killing it"
-          )
-
-          Process.exit(io_device, :kill)
-        end
-
-        receive do
-          {:DOWN, ^ref, :process, ^io_device, _reason} -> :ok
-        after
-          0 -> Process.demonitor(ref, [:flush])
-        end
-    end
   end
 
   @impl true
@@ -146,7 +62,7 @@ defmodule Sftpd.FileHandler do
     state = ensure_session(state)
 
     instrument_path_call(:delete, path, state, fn ->
-      {Backend.call(backend, :delete, [path, backend_state], session(state)), state}
+      {backend.delete(to_string(path), session(state), backend_state), state}
     end)
   end
 
@@ -156,7 +72,7 @@ defmodule Sftpd.FileHandler do
     state = ensure_session(state)
 
     instrument_path_call(:del_dir, path, state, fn ->
-      {Backend.call(backend, :del_dir, [path, backend_state], session(state)), state}
+      {backend.del_dir(to_string(path), session(state), backend_state), state}
     end)
   end
 
@@ -180,11 +96,11 @@ defmodule Sftpd.FileHandler do
       state,
       %{path: to_string(path)},
       fn ->
-        case Backend.call(backend, :file_info, [path, backend_state], session(state)) do
-          {:ok, {:file_info, _, :directory, _, _, _, _, _, _, _, _, _, _, _}} ->
+        case backend.file_attrs(to_string(path), session(state), backend_state) do
+          {:ok, %{type: :directory}} ->
             {true, state}
 
-          {:ok, {:file_info, _, :regular, _, _, _, _, _, _, _, _, _, _, _}} ->
+          {:ok, _attrs} ->
             {false, state}
 
           {:error, _} ->
@@ -203,7 +119,14 @@ defmodule Sftpd.FileHandler do
     state = ensure_session(state)
 
     instrument_path_call(:list_dir, path, state, fn ->
-      {Backend.call(backend, :list_dir, [path, backend_state], session(state)), state}
+      result =
+        with {:ok, handle} <- backend.open_dir(to_string(path), session(state), backend_state),
+             {:ok, entries, handle} <- backend.read_dir(handle, backend_state) do
+          backend.close_dir(handle, backend_state)
+          {:ok, Enum.map(entries, &to_charlist(&1.name))}
+        end
+
+      {result, state}
     end)
   end
 
@@ -213,7 +136,7 @@ defmodule Sftpd.FileHandler do
     state = ensure_session(state)
 
     instrument_path_call(:make_dir, path, state, fn ->
-      {Backend.call(backend, :make_dir, [path, backend_state], session(state)), state}
+      {backend.make_dir(to_string(path), %{}, session(state), backend_state), state}
     end)
   end
 
@@ -279,8 +202,7 @@ defmodule Sftpd.FileHandler do
          %{
            result: result_status(result),
            reason: result_reason(result),
-           mode: mode_from_modes(modes),
-           open_timeout: Map.get(state, :open_timeout, @default_open_timeout)
+           mode: mode_from_modes(modes)
          }}
       end
     )
@@ -294,7 +216,7 @@ defmodule Sftpd.FileHandler do
         if DirectIODevice.handle?(io_device) do
           DirectIODevice.position(io_device, offset)
         else
-          GenServer.call(io_device, {:position, offset})
+          {:error, :einval}
         end
 
       {result, state}
@@ -314,7 +236,7 @@ defmodule Sftpd.FileHandler do
           if DirectIODevice.handle?(io_device) do
             DirectIODevice.read(io_device, len)
           else
-            GenServer.call(io_device, {:read, len})
+            {:error, :einval}
           end
 
         {result, state}
@@ -349,7 +271,7 @@ defmodule Sftpd.FileHandler do
     state = ensure_session(state)
 
     instrument(:rename, state, %{src_path: to_string(src), dst_path: to_string(dst)}, fn ->
-      {Backend.call(backend, :rename, [src, dst, backend_state], session(state)), state}
+      {backend.rename(to_string(src), to_string(dst), session(state), backend_state), state}
     end)
   end
 
@@ -367,7 +289,7 @@ defmodule Sftpd.FileHandler do
           if DirectIODevice.handle?(io_device) do
             DirectIODevice.write(io_device, data, bytes)
           else
-            GenServer.call(io_device, {:write, data, bytes})
+            {:error, :einval}
           end
 
         {result, state}
@@ -383,25 +305,13 @@ defmodule Sftpd.FileHandler do
     instrument(operation, state, %{path: to_string(path)}, fun)
   end
 
-  defp open_device(path, mode, backend, backend_state, state)
-       when backend in [Sftpd.Backends.Memory, Sftpd.Backends.Benchmark] do
+  defp open_device(path, mode, backend, backend_state, state) do
     DirectIODevice.start(%{
       path: path,
       mode: mode,
       backend: backend,
       backend_state: backend_state,
       session: session(state)
-    })
-  end
-
-  defp open_device(path, mode, backend, backend_state, state) do
-    IODevice.start(%{
-      path: path,
-      mode: mode,
-      backend: backend,
-      backend_state: backend_state,
-      session: session(state),
-      open_timeout: Map.get(state, :open_timeout, @default_open_timeout)
     })
   end
 
@@ -416,7 +326,10 @@ defmodule Sftpd.FileHandler do
     if String.ends_with?(path_str, "/.") or String.ends_with?(path_str, "/..") do
       {:ok, Backend.directory_info()}
     else
-      Backend.call(backend, :file_info, [path, backend_state], Map.get(state, :session, %{}))
+      with {:ok, attrs} <-
+             backend.file_attrs(to_string(path), Map.get(state, :session, %{}), backend_state) do
+        {:ok, Backend.file_info_from_attrs(attrs)}
+      end
     end
   end
 
@@ -487,11 +400,7 @@ defmodule Sftpd.FileHandler do
     end
   end
 
-  defp backend_kind({:genserver, _server}), do: :genserver
-  defp backend_kind({:genserver, _server, _opts}), do: :genserver
   defp backend_kind(module) when is_atom(module), do: :module
 
-  defp backend_name({:genserver, server}), do: inspect(server)
-  defp backend_name({:genserver, server, _opts}), do: inspect(server)
   defp backend_name(module) when is_atom(module), do: module
 end

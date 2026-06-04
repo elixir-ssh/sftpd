@@ -13,86 +13,6 @@ defmodule SftpdTest do
   @pure_ssh_channel_window_size 64 * 1024 * 1024
   @pure_ssh_channel_max_packet_size 1_048_576
 
-  # GenServer backend that wraps Memory for testing {:genserver, pid} dispatch
-  defmodule GenServerBackend do
-    use GenServer
-    alias Sftpd.Backends.Memory
-
-    def start_link, do: GenServer.start_link(__MODULE__, [])
-
-    def init(_), do: Memory.init([])
-
-    def handle_call({:list_dir, path}, _from, mem_state),
-      do: {:reply, Memory.list_dir(path, mem_state), mem_state}
-
-    def handle_call({:file_info, path}, _from, mem_state),
-      do: {:reply, Memory.file_info(path, mem_state), mem_state}
-
-    def handle_call({:make_dir, path}, _from, mem_state) do
-      :ok = Memory.make_dir(path, mem_state)
-      {:reply, :ok, mem_state}
-    end
-
-    def handle_call({:del_dir, path}, _from, mem_state),
-      do: {:reply, Memory.del_dir(path, mem_state), mem_state}
-
-    def handle_call({:delete, path}, _from, mem_state),
-      do: {:reply, Memory.delete(path, mem_state), mem_state}
-
-    def handle_call({:rename, src, dst}, _from, mem_state),
-      do: {:reply, Memory.rename(src, dst, mem_state), mem_state}
-
-    def handle_call({:read_file, path}, _from, mem_state),
-      do: {:reply, Memory.read_file(path, mem_state), mem_state}
-
-    def handle_call({:write_file, path, content}, _from, mem_state) do
-      :ok = Memory.write_file(path, content, mem_state)
-      {:reply, :ok, mem_state}
-    end
-  end
-
-  defmodule SessionGenServerBackend do
-    use GenServer
-    alias Sftpd.Backends.Memory
-
-    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
-
-    def init(test_pid) do
-      {:ok, mem_state} = Memory.init([])
-      {:ok, %{test_pid: test_pid, mem_state: mem_state}}
-    end
-
-    def handle_call({:list_dir, path, session}, _from, state) do
-      send(state.test_pid, {:session_backend_call, session})
-      {:reply, Memory.list_dir(path, state.mem_state), state}
-    end
-
-    def handle_call({:file_info, path, _session}, _from, state),
-      do: {:reply, Memory.file_info(path, state.mem_state), state}
-
-    def handle_call({:make_dir, path, _session}, _from, state) do
-      :ok = Memory.make_dir(path, state.mem_state)
-      {:reply, :ok, state}
-    end
-
-    def handle_call({:del_dir, path, _session}, _from, state),
-      do: {:reply, Memory.del_dir(path, state.mem_state), state}
-
-    def handle_call({:delete, path, _session}, _from, state),
-      do: {:reply, Memory.delete(path, state.mem_state), state}
-
-    def handle_call({:rename, src, dst, _session}, _from, state),
-      do: {:reply, Memory.rename(src, dst, state.mem_state), state}
-
-    def handle_call({:read_file, path, _session}, _from, state),
-      do: {:reply, Memory.read_file(path, state.mem_state), state}
-
-    def handle_call({:write_file, path, content, _session}, _from, state) do
-      :ok = Memory.write_file(path, content, state.mem_state)
-      {:reply, :ok, state}
-    end
-  end
-
   defmodule CustomAuth do
     @behaviour Sftpd.Auth
 
@@ -121,14 +41,54 @@ defmodule SftpdTest do
   end
 
   defmodule SessionBackend do
-    def init(opts), do: {:ok, %{test_pid: Keyword.fetch!(opts, :test_pid)}}
-
-    def list_dir(_path, session, %{test_pid: test_pid}) do
-      send(test_pid, {:backend_session, session})
-      {:ok, [~c".", ~c".."]}
+    def init(opts) do
+      {:ok, mem_state} = Sftpd.Backends.Memory.init([])
+      {:ok, %{test_pid: Keyword.fetch!(opts, :test_pid), mem_state: mem_state}}
     end
 
-    def file_info(_path, _state), do: {:ok, Sftpd.Backend.directory_info()}
+    def open_dir(path, session, %{test_pid: test_pid, mem_state: mem_state}) do
+      send(test_pid, {:backend_session, session})
+      Sftpd.Backends.Memory.open_dir(path, session, mem_state)
+    end
+
+    def read_dir(handle, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.read_dir(handle, mem_state)
+
+    def close_dir(handle, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.close_dir(handle, mem_state)
+
+    def file_attrs(path, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.file_attrs(path, session, mem_state)
+
+    def open_read(path, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.open_read(path, session, mem_state)
+
+    def read_at(handle, offset, len, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.read_at(handle, offset, len, mem_state)
+
+    def open_write(path, attrs, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.open_write(path, attrs, session, mem_state)
+
+    def write_at(handle, offset, data, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.write_at(handle, offset, data, mem_state)
+
+    def finish_write(handle, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.finish_write(handle, mem_state)
+
+    def abort_write(handle, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.abort_write(handle, mem_state)
+
+    def make_dir(path, attrs, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.make_dir(path, attrs, session, mem_state)
+
+    def del_dir(path, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.del_dir(path, session, mem_state)
+
+    def delete(path, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.delete(path, session, mem_state)
+
+    def rename(src, dst, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.rename(src, dst, session, mem_state)
   end
 
   setup do
@@ -992,17 +952,16 @@ defmodule SftpdTest do
     end
   end
 
-  describe "genserver backend" do
+  describe "fast module backend" do
     setup do
       port = 10_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
 
-      {:ok, server_pid} = GenServerBackend.start_link()
-
       {:ok, ref} =
         Sftpd.start_server(
           port: port,
-          backend: {:genserver, server_pid},
+          backend: Sftpd.Backends.Memory,
+          backend_opts: [],
           auth: {:passwords, [{"testuser", "testpass"}]},
           system_dir: system_dir
         )
@@ -1043,16 +1002,15 @@ defmodule SftpdTest do
       assert :ok = :ssh_sftp.close(ch, handle)
     end
 
-    test "session-aware genserver backend receives authenticated session" do
+    test "backend receives authenticated session" do
       port = 10_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
-
-      {:ok, server_pid} = SessionGenServerBackend.start_link(self())
 
       {:ok, ref} =
         Sftpd.start_server(
           port: port,
-          backend: {:genserver, server_pid, session: true},
+          backend: SessionBackend,
+          backend_opts: [test_pid: self()],
           auth: {CustomAuth, tenant_id: "tenant-123"},
           system_dir: system_dir
         )
@@ -1073,7 +1031,7 @@ defmodule SftpdTest do
 
       assert {:ok, listing} = :ssh_sftp.list_dir(channel, ~c"/")
       assert ~c"." in listing
-      assert_receive {:session_backend_call, %{tenant_id: "tenant-123"}}, 1_000
+      assert_receive {:backend_session, %{tenant_id: "tenant-123"}}, 1_000
     end
   end
 

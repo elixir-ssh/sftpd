@@ -9,7 +9,7 @@ handlers without adding another dependency.
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.1"}
+    {:sftpd, "~> 0.2.0"}
   ]
 end
 ```
@@ -68,13 +68,7 @@ All `[:sftpd, :sftp, operation]` events include:
 - `:result`
 - `:reason` when an error reason is available
 
-`backend_kind` is one of:
-
-- `:module`
-- `:genserver`
-
-For `{:genserver, server}` backends, `:backend` is `inspect(server)` rather
-than a module name.
+`backend_kind` is `:module` for module backends.
 
 ### Result Values
 
@@ -97,7 +91,6 @@ Special cases:
 - `:path`
 - `:requested_modes`
 - `:mode`
-- `:open_timeout`
 
 `requested_modes` contains the raw mode list passed into the SFTP file handler.
 `mode` is the resolved value `:read` or `:write` after `Sftpd` normalizes it.
@@ -105,8 +98,6 @@ Special cases:
 `[:sftpd, :sftp, :close]`
 
 - `:io_device`
-- `:close_timeout`
-- `:close_shutdown_grace`
 
 `[:sftpd, :sftp, :read]`
 

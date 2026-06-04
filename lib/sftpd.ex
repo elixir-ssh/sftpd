@@ -50,25 +50,12 @@ defmodule Sftpd do
   ## Options
 
   - `:port` - Port to listen on (default: 22)
-  - `:backend` - Backend module, `{:genserver, pid_or_name}`, or
-    `{:genserver, pid_or_name, session: true}` (required)
+  - `:backend` - Backend module implementing `Sftpd.Backend` (required)
   - `:backend_opts` - Options passed to `backend.init/1` for module backends (default: [])
     The built-in S3 backend accepts `:bucket`, `:prefix`, and `:aws_client`.
   - `:auth` - Authentication config, either `{:passwords, list}` or `{Module, opts}` (required)
   - `:system_dir` - Directory containing SSH host keys (required)
   - `:max_sessions` - Maximum concurrent sessions (default: 10)
-  - `:open_timeout` - Timeout in milliseconds for opening files (default: 30000)
-  - `:close_timeout` - Timeout in milliseconds for finalizing file closes (default: 30000)
-
-  ## Process-Based Backends
-
-  Instead of a module, you can use a running GenServer:
-
-      {:ok, backend_pid} = MyBackendServer.start_link()
-      Sftpd.start_server(backend: {:genserver, backend_pid}, ...)
-
-  See `Sftpd.Backend` for the messages your GenServer must handle.
-
   ## Telemetry
 
   See `Sftpd.Telemetry` and the `Telemetry` extra in HexDocs for the event
@@ -130,8 +117,6 @@ defmodule Sftpd do
     system_dir = Keyword.fetch!(opts, :system_dir)
     transport = Keyword.get(opts, :transport, :otp)
     max_sessions = Keyword.get(opts, :max_sessions, @default_max_sessions)
-    open_timeout = Keyword.get(opts, :open_timeout, 30_000)
-    close_timeout = Keyword.get(opts, :close_timeout, 30_000)
 
     metadata = %{
       port: port,
@@ -153,9 +138,7 @@ defmodule Sftpd do
             auth: auth,
             system_dir: system_dir,
             backend: backend,
-            backend_state: backend_state,
-            open_timeout: open_timeout,
-            close_timeout: close_timeout
+            backend_state: backend_state
           )
         end
       end,
@@ -178,9 +161,7 @@ defmodule Sftpd do
              Sftpd.FileHandler,
              %{
                backend: Keyword.fetch!(opts, :backend),
-               backend_state: Keyword.fetch!(opts, :backend_state),
-               open_timeout: Keyword.fetch!(opts, :open_timeout),
-               close_timeout: Keyword.fetch!(opts, :close_timeout)
+               backend_state: Keyword.fetch!(opts, :backend_state)
              }
            }
          )
@@ -222,23 +203,14 @@ defmodule Sftpd do
     }
   end
 
-  defp init_backend({:genserver, server}, _opts) do
-    # Process-based backend - no init needed, process manages own state
-    {:ok, {{:genserver, server}, nil}}
-  end
-
-  defp init_backend({:genserver, server, opts}, _opts) when is_list(opts) do
-    # Process-based backend - no init needed, process manages own state
-    {:ok, {{:genserver, server, opts}, nil}}
-  end
-
   defp init_backend(module, opts) when is_atom(module) do
-    # Module-based backend - call init/1
     case module.init(opts) do
       {:ok, state} -> {:ok, {module, state}}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp init_backend(backend, _opts), do: {:error, {:invalid_option, {:backend, backend}}}
 
   defp validate_auth(auth) do
     if Sftpd.Auth.Adapter.valid_config?(auth) do
@@ -287,11 +259,9 @@ defmodule Sftpd do
   defp stop_finalize({:error, reason}, duration),
     do: {%{duration: duration}, %{result: :error, reason: reason}}
 
-  defp backend_kind({:genserver, _server}), do: :genserver
-  defp backend_kind({:genserver, _server, _opts}), do: :genserver
   defp backend_kind(module) when is_atom(module), do: :module
+  defp backend_kind(_backend), do: :unknown
 
-  defp backend_name({:genserver, server}), do: inspect(server)
-  defp backend_name({:genserver, server, _opts}), do: inspect(server)
   defp backend_name(module) when is_atom(module), do: module
+  defp backend_name(backend), do: inspect(backend)
 end

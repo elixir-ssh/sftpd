@@ -1,25 +1,25 @@
 defmodule Sftpd.DirectIODevice do
   @moduledoc false
 
-  alias Sftpd.Backend
-
   @type handle :: {:sftpd_direct_io, reference()}
 
   @spec start(map()) :: {:ok, handle()} | {:error, atom()}
   def start(%{path: path, mode: :read, backend: backend, backend_state: backend_state} = opts) do
     session = Map.get(opts, :session, %{})
 
-    with {:ok, info} <- Backend.call(backend, :file_info, [path, backend_state], session) do
+    with {:ok, attrs} <- backend.file_attrs(to_string(path), session, backend_state),
+         {:ok, backend_handle} <- backend.open_read(to_string(path), session, backend_state) do
       handle = new_handle()
 
       put_state(handle, %{
         mode: :read,
         path: path,
         backend: backend,
+        backend_handle: backend_handle,
         backend_state: backend_state,
         session: session,
         position: 0,
-        size: extract_file_size(info)
+        size: Map.get(attrs, :size, 0)
       })
 
       {:ok, handle}
@@ -29,8 +29,7 @@ defmodule Sftpd.DirectIODevice do
   def start(%{path: path, mode: :write, backend: backend, backend_state: backend_state} = opts) do
     session = Map.get(opts, :session, %{})
 
-    with {:ok, writer_handle} <-
-           Backend.call(backend, :begin_write, [path, backend_state], session) do
+    with {:ok, writer_handle} <- backend.open_write(to_string(path), %{}, session, backend_state) do
       handle = new_handle()
 
       put_state(handle, %{
@@ -70,12 +69,7 @@ defmodule Sftpd.DirectIODevice do
 
       %{mode: :read} = state ->
         result =
-          Backend.call(
-            state.backend,
-            :read_file_range,
-            [state.path, state.position, len, state.backend_state],
-            state.session
-          )
+          state.backend.read_at(state.backend_handle, state.position, len, state.backend_state)
 
         case result do
           {:ok, data} when byte_size(data) > 0 ->
@@ -101,12 +95,7 @@ defmodule Sftpd.DirectIODevice do
     update_state(handle, fn
       %{mode: :write} = state ->
         result =
-          Backend.call(
-            state.backend,
-            :write_chunk,
-            [state.writer_handle, state.position, data, state.backend_state],
-            state.session
-          )
+          state.backend.write_at(state.writer_handle, state.position, data, state.backend_state)
 
         case result do
           {:ok, writer_handle} ->
@@ -136,12 +125,7 @@ defmodule Sftpd.DirectIODevice do
         :ok
 
       %{mode: :write} = state ->
-        Backend.call(
-          state.backend,
-          :finish_write,
-          [state.writer_handle, state.backend_state],
-          state.session
-        )
+        state.backend.finish_write(state.writer_handle, state.backend_state)
 
       %{mode: :read} ->
         :ok
@@ -189,10 +173,4 @@ defmodule Sftpd.DirectIODevice do
 
   defp validate_position(position) when position >= 0, do: {:ok, position}
   defp validate_position(_position), do: {:error, :einval}
-
-  defp extract_file_size(
-         {:file_info, size, _type, _access, _atime, _mtime, _ctime, _mode, _links, _major, _minor,
-          _inode, _uid, _gid}
-       ),
-       do: size
 end

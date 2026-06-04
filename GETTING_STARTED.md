@@ -16,7 +16,7 @@ The current verified minimum is Elixir 1.14.5 on OTP 26.
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.1"}
+    {:sftpd, "~> 0.2.0"}
   ]
 end
 ```
@@ -66,8 +66,6 @@ Important options:
   local development, or `{MyApp.SftpAuth, opts}` for application callbacks
 - `:system_dir` points at the SSH host key directory
 - `:max_sessions` limits concurrent client sessions
-- `:open_timeout` bounds file open setup time
-- `:close_timeout` bounds close-time finalization time
 
 OTP 29 no longer enables the SFTP subsystem implicitly for SSH daemons.
 `Sftpd.start_server/1` supplies the required `:subsystems` option internally,
@@ -106,13 +104,13 @@ Because the memory backend is ephemeral, data disappears when the server stops.
 To persist files in S3-compatible storage, use `Sftpd.Backends.S3`:
 
 The S3 backend is optional. The memory backend and custom backends work with
-only `{:sftpd, "~> 0.1.1"}`. Add the S3 dependencies before using
+only `{:sftpd, "~> 0.2.0"}`. Add the S3 dependencies before using
 `Sftpd.Backends.S3`:
 
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.1"},
+    {:sftpd, "~> 0.2.0"},
     {:ex_aws, "~> 2.0"},
     {:ex_aws_s3, "~> 2.0"},
     {:hackney, "~> 1.9"},
