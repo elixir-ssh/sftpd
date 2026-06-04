@@ -170,11 +170,11 @@ defmodule Sftpd.BackendTest do
     end
 
     property "root_path? recognizes only documented root forms among generated paths" do
-      root_forms = [~c"/", ~c"/.", ~c"/..", ~c"..", ~c".", ~c""]
+      root_forms = ["/", "/.", "/..", "..", ".", ""]
 
       check all(path <- path_string()) do
-        char_path = String.to_charlist(path)
-        assert Backend.root_path?(char_path) == char_path in root_forms
+        assert Backend.root_path?(path) == path in root_forms
+        assert Backend.root_path?(String.to_charlist(path)) == path in root_forms
       end
     end
   end

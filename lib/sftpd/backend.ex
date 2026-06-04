@@ -317,8 +317,8 @@ defmodule Sftpd.Backend do
       iex> Sftpd.Backend.root_path?(~c"/nested")
       false
   """
-  @spec root_path?(path()) :: boolean()
-  def root_path?(path), do: path in [~c"/", ~c"/.", ~c"/..", ~c"..", ~c".", ~c""]
+  @spec root_path?(path() | String.t()) :: boolean()
+  def root_path?(path), do: to_string(path) in ["/", "/.", "/..", "..", ".", ""]
 
   @doc """
   Normalize an SFTP path to a string without leading slash.
