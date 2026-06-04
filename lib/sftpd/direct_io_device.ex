@@ -3,6 +3,8 @@ defmodule Sftpd.DirectIODevice do
 
   @type handle :: {:sftpd_direct_io, reference()}
 
+  @replay_chunk_size 5 * 1024 * 1024
+
   @spec start(map()) :: {:ok, handle()} | {:error, atom()}
   def start(%{path: path, mode: :read, backend: backend, backend_state: backend_state} = opts) do
     session = Map.get(opts, :session, %{})
@@ -29,7 +31,8 @@ defmodule Sftpd.DirectIODevice do
   def start(%{path: path, mode: :write, backend: backend, backend_state: backend_state} = opts) do
     session = Map.get(opts, :session, %{})
 
-    with {:ok, writer_handle} <- backend.open_write(to_string(path), %{}, session, backend_state) do
+    with {:ok, writer_handle} <- backend.open_write(to_string(path), %{}, session, backend_state),
+         {:ok, temp_path, temp_fd} <- open_temp_file(backend, writer_handle, backend_state) do
       handle = new_handle()
 
       put_state(handle, %{
@@ -40,7 +43,11 @@ defmodule Sftpd.DirectIODevice do
         session: session,
         position: 0,
         size: 0,
-        writer_handle: writer_handle
+        writer_handle: writer_handle,
+        write_strategy: :direct,
+        stream_offset: 0,
+        temp_path: temp_path,
+        temp_fd: temp_fd
       })
 
       {:ok, handle}
@@ -53,7 +60,8 @@ defmodule Sftpd.DirectIODevice do
     session = Map.get(opts, :session, %{})
     path = to_string(path)
 
-    with {:ok, writer_handle} <- backend.open_write(path, %{}, session, backend_state) do
+    with {:ok, writer_handle} <- backend.open_write(path, %{}, session, backend_state),
+         {:ok, temp_path, temp_fd} <- open_temp_file(backend, writer_handle, backend_state) do
       reader_handle =
         case backend.open_read(path, session, backend_state) do
           {:ok, reader_handle} -> reader_handle
@@ -77,7 +85,11 @@ defmodule Sftpd.DirectIODevice do
         position: 0,
         size: size,
         backend_handle: reader_handle,
-        writer_handle: writer_handle
+        writer_handle: writer_handle,
+        write_strategy: :direct,
+        stream_offset: 0,
+        temp_path: temp_path,
+        temp_fd: temp_fd
       })
 
       {:ok, handle}
@@ -142,24 +154,24 @@ defmodule Sftpd.DirectIODevice do
         {:error, :einval}
 
       %{mode: mode} = state when mode in [:write, :read_write] ->
-        result =
-          state.backend.write_at(state.writer_handle, state.position, data, state.backend_state)
-
-        case result do
-          {:ok, writer_handle} ->
+        case persist_to_tempfile(state.temp_fd, state.position, data) do
+          :ok ->
             position = state.position + bytes
+            size = max(state.size, position)
 
-            put_state(handle, %{
-              state
-              | writer_handle: writer_handle,
-                position: position,
-                size: max(state.size, position)
-            })
+            case maybe_direct_write(state, data, bytes) do
+              {:ok, state} ->
+                put_state(handle, %{state | position: position, size: size})
+                :ok
 
-            :ok
+              {:error, reason} ->
+                cleanup_unfinished_write(state)
+                _ = pop_state(handle)
+                {:error, reason}
+            end
 
           {:error, reason} ->
-            _ = state.backend.abort_write(state.writer_handle, state.backend_state)
+            cleanup_unfinished_write(state)
             _ = pop_state(handle)
             {:error, reason}
         end
@@ -177,10 +189,10 @@ defmodule Sftpd.DirectIODevice do
         :ok
 
       %{mode: :write} = state ->
-        state.backend.finish_write(state.writer_handle, state.backend_state)
+        finalize_write(state)
 
       %{mode: :read_write} = state ->
-        state.backend.finish_write(state.writer_handle, state.backend_state)
+        finalize_write(state)
 
       %{mode: :read} ->
         :ok
@@ -228,4 +240,164 @@ defmodule Sftpd.DirectIODevice do
 
   defp validate_position(position) when position >= 0, do: {:ok, position}
   defp validate_position(_position), do: {:error, :einval}
+
+  defp maybe_direct_write(%{write_strategy: :replay} = state, _data, _bytes), do: {:ok, state}
+
+  defp maybe_direct_write(%{position: offset, stream_offset: offset} = state, data, bytes) do
+    case state.backend.write_at(state.writer_handle, offset, data, state.backend_state) do
+      {:ok, writer_handle} ->
+        {:ok, %{state | writer_handle: writer_handle, stream_offset: offset + bytes}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_direct_write(%{write_strategy: :direct} = state, _data, _bytes) do
+    _ = state.backend.abort_write(state.writer_handle, state.backend_state)
+
+    {:ok,
+     state
+     |> Map.put(:write_strategy, :replay)
+     |> Map.delete(:writer_handle)
+     |> Map.delete(:stream_offset)}
+  end
+
+  defp finalize_write(%{write_strategy: :direct} = state) do
+    result = state.backend.finish_write(state.writer_handle, state.backend_state)
+    cleanup_tempfile(state)
+    result
+  end
+
+  defp finalize_write(%{write_strategy: :replay} = state) do
+    result = replay_tempfile(state)
+    cleanup_tempfile(state)
+    result
+  end
+
+  defp replay_tempfile(%{
+         backend: backend,
+         backend_state: backend_state,
+         session: session,
+         path: path,
+         temp_fd: temp_fd,
+         size: size
+       }) do
+    with {:ok, writer_handle} <- backend.open_write(to_string(path), %{}, session, backend_state),
+         {:ok, writer_handle} <-
+           replay_tempfile_chunks(temp_fd, size, writer_handle, backend, backend_state, 0) do
+      case backend.finish_write(writer_handle, backend_state) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          _ = backend.abort_write(writer_handle, backend_state)
+          {:error, reason}
+      end
+    else
+      {:stream_error, writer_handle, reason} ->
+        _ = backend.abort_write(writer_handle, backend_state)
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replay_tempfile_chunks(_temp_fd, size, writer_handle, _backend, _backend_state, offset)
+       when offset >= size do
+    {:ok, writer_handle}
+  end
+
+  defp replay_tempfile_chunks(temp_fd, size, writer_handle, backend, backend_state, offset) do
+    bytes_to_read = min(@replay_chunk_size, size - offset)
+
+    with {:ok, data} <- read_temp_chunk(temp_fd, offset, bytes_to_read),
+         {:ok, writer_handle} <- backend.write_at(writer_handle, offset, data, backend_state) do
+      replay_tempfile_chunks(
+        temp_fd,
+        size,
+        writer_handle,
+        backend,
+        backend_state,
+        offset + byte_size(data)
+      )
+    else
+      {:error, reason} -> {:stream_error, writer_handle, reason}
+    end
+  end
+
+  defp cleanup_unfinished_write(%{write_strategy: :direct} = state) do
+    _ = state.backend.abort_write(state.writer_handle, state.backend_state)
+    cleanup_tempfile(state)
+  end
+
+  defp cleanup_unfinished_write(state), do: cleanup_tempfile(state)
+
+  defp open_temp_file(backend, writer_handle, backend_state) do
+    case open_temp_file(System.tmp_dir!()) do
+      {:ok, _temp_path, _temp_fd} = ok ->
+        ok
+
+      {:error, reason} ->
+        _ = backend.abort_write(writer_handle, backend_state)
+        {:error, reason}
+    end
+  end
+
+  defp open_temp_file(tmp_dir) do
+    temp_path = Path.join(tmp_dir, "sftpd-#{random_temp_suffix()}.tmp")
+
+    case :file.open(String.to_charlist(temp_path), [:binary, :raw, :read, :write, :exclusive]) do
+      {:ok, fd} ->
+        case :file.change_mode(String.to_charlist(temp_path), 0o600) do
+          :ok ->
+            {:ok, temp_path, fd}
+
+          {:error, reason} ->
+            close_fd(fd)
+            File.rm(temp_path)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp random_temp_suffix do
+    16
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp persist_to_tempfile(temp_fd, position, data) do
+    case :file.pwrite(temp_fd, position, data) do
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp read_temp_chunk(temp_fd, offset, length) do
+    case :file.pread(temp_fd, offset, length) do
+      {:ok, data} -> {:ok, data}
+      :eof -> {:error, :eof}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp cleanup_tempfile(state) do
+    close_fd(state.temp_fd)
+    remove_temp_file(state.temp_path)
+  end
+
+  defp remove_temp_file(temp_path) do
+    _ = File.rm(temp_path)
+    :ok
+  end
+
+  defp close_fd(fd) do
+    _ = :file.close(fd)
+    :ok
+  end
 end

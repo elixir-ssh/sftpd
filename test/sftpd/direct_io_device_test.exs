@@ -35,6 +35,54 @@ defmodule Sftpd.DirectIODeviceTest do
     def abort_write(_handle, _state), do: :ok
   end
 
+  defmodule SequentialBackend do
+    @moduledoc false
+
+    def file_attrs("/sized.bin", _session, _state), do: {:ok, %{size: 4}}
+    def file_attrs(_path, _session, _state), do: {:ok, %{size: 0}}
+    def open_read(_path, _session, _state), do: {:error, :enoent}
+    def read_at(_handle, _offset, _len, _state), do: :eof
+
+    def open_write(_path, _attrs, _session, state) do
+      open_index =
+        Agent.get_and_update(state, fn data ->
+          open_index = Map.get(data, :opens, 0) + 1
+          {open_index, Map.put(data, :opens, open_index)}
+        end)
+
+      {:ok, %{offset: 0, chunks: [], open_index: open_index}}
+    end
+
+    def write_at(%{offset: offset} = handle, offset, data, _state) do
+      data = IO.iodata_to_binary(data)
+
+      {:ok,
+       %{handle | offset: offset + byte_size(data), chunks: [{offset, data} | handle.chunks]}}
+    end
+
+    def write_at(_handle, _offset, _data, _state), do: {:error, :einval}
+
+    def finish_write(%{open_index: open_index} = handle, state) do
+      if Agent.get(state, &Map.get(&1, :finish_error_on_open)) == open_index do
+        {:error, :eio}
+      else
+        content =
+          handle.chunks
+          |> Enum.reverse()
+          |> Enum.map(fn {_offset, data} -> data end)
+          |> IO.iodata_to_binary()
+
+        Agent.update(state, &Map.put(&1, :content, content))
+      end
+    end
+
+    def abort_write(_handle, state) do
+      Agent.update(state, fn data ->
+        Map.update(data, :aborts, 1, fn aborts -> aborts + 1 end)
+      end)
+    end
+  end
+
   setup do
     {:ok, state} = Memory.init([])
     %{backend_state: state}
@@ -93,6 +141,64 @@ defmodule Sftpd.DirectIODeviceTest do
     assert {:ok, "abXYef"} = Memory.read_file(~c"/out.bin", backend_state)
   end
 
+  test "replays random writes sequentially when backend rejects positioned writes" do
+    {:ok, state} = Agent.start_link(fn -> %{} end)
+
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: ~c"/sized.bin",
+               mode: :write,
+               backend: SequentialBackend,
+               backend_state: state,
+               session: %{}
+             })
+
+    assert :ok = DirectIODevice.write(handle, "abcdef", 6)
+    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
+    assert :ok = DirectIODevice.write(handle, "XY", 2)
+    assert {:ok, 4} = DirectIODevice.position(handle, 4)
+    assert :ok = DirectIODevice.write(handle, "Z", 1)
+    assert :ok = DirectIODevice.close(handle)
+
+    assert Agent.get(state, & &1) == %{aborts: 1, content: "abXYZf", opens: 2}
+  end
+
+  test "returns read errors for read/write handles without a readable backend side" do
+    {:ok, state} = Agent.start_link(fn -> %{} end)
+
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: ~c"/sized.bin",
+               mode: :read_write,
+               backend: SequentialBackend,
+               backend_state: state,
+               session: %{}
+             })
+
+    assert {:error, :einval} = DirectIODevice.read(handle, 1)
+    assert :ok = DirectIODevice.close(handle)
+  end
+
+  test "aborts replay writer when replay finalize fails" do
+    {:ok, state} = Agent.start_link(fn -> %{finish_error_on_open: 2} end)
+
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: ~c"/out.bin",
+               mode: :write,
+               backend: SequentialBackend,
+               backend_state: state,
+               session: %{}
+             })
+
+    assert :ok = DirectIODevice.write(handle, "abcdef", 6)
+    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
+    assert :ok = DirectIODevice.write(handle, "XY", 2)
+    assert {:error, :eio} = DirectIODevice.close(handle)
+
+    assert Agent.get(state, &Map.take(&1, [:aborts, :opens])) == %{aborts: 2, opens: 2}
+  end
+
   test "returns einval for stale handles" do
     handle = {:sftpd_direct_io, make_ref()}
 
@@ -118,6 +224,7 @@ defmodule Sftpd.DirectIODeviceTest do
     assert {:error, :einval} = DirectIODevice.position(read_handle, {:bof, -1})
     assert {:error, :einval} = DirectIODevice.position(read_handle, {:cur, -1})
     assert {:error, :einval} = DirectIODevice.position(read_handle, {:eof, -5})
+    assert {:ok, 0} = DirectIODevice.position(read_handle, 0)
     assert {:error, :einval} = DirectIODevice.position(read_handle, :bad)
     assert {:error, :einval} = DirectIODevice.write(read_handle, "x", 1)
 
