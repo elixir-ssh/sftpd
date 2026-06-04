@@ -761,6 +761,47 @@ defmodule SftpdTest do
       :gen_tcp.close(socket)
     end
 
+    test "acknowledges channel close and ignores later messages for that channel" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{
+        socket: socket,
+        c2s: c2s,
+        s2c: s2c,
+        client_channel: client_channel,
+        server_channel: server_channel
+      } = open_raw_authenticated_session(port)
+
+      {packet, c2s} = encrypt_client_packet(c2s, <<97, server_channel::32>>)
+      assert :ok = :gen_tcp.send(socket, packet)
+      assert {:ok, <<97, ^client_channel::32>>, _s2c} = recv_encrypted_server_packet(socket, s2c)
+
+      {packet, _c2s} =
+        encrypt_client_packet(c2s, [
+          <<98, server_channel::32>>,
+          Sftpd.SSH.Wire.string("shell"),
+          Sftpd.SSH.Wire.boolean(true)
+        ])
+
+      assert :ok = :gen_tcp.send(socket, packet)
+      assert {:error, :timeout} = :gen_tcp.recv(socket, 0, 100)
+
+      :gen_tcp.close(socket)
+    end
+
     test "notifies the profile owner when pure transport accepts a connection" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()

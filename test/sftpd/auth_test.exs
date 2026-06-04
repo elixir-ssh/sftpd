@@ -51,6 +51,13 @@ defmodule Sftpd.AuthTest do
       assert Sftpd.Auth.fingerprint(public_key) == Sftpd.Auth.fingerprint(public_key, :sha256)
     end
 
+    test "returns OpenSSH-style MD5 fingerprints" do
+      public_key = rsa_public_key()
+
+      assert "MD5:" <> encoded = Sftpd.Auth.fingerprint(public_key, :md5)
+      assert encoded =~ ~r/^[0-9A-F]{2}(:[0-9A-F]{2})+$/
+    end
+
     property "fingerprints are deterministic and base64 digests are unpadded" do
       public_key = rsa_public_key()
 
@@ -97,6 +104,19 @@ defmodule Sftpd.AuthTest do
       line = ~s(command="echo \\"ssh-rsa\\"",environment="A B" ssh-rsa #{blob})
 
       assert {:ok, ^public_key} = Sftpd.Auth.decode_authorized_key(line)
+    end
+
+    test "recognizes OpenSSH ecdsa and security-key prefixes while scanning options" do
+      public_key = rsa_public_key()
+      blob = public_key |> :ssh_message.ssh2_pubkey_encode() |> Base.encode64()
+
+      assert {:ok, ^public_key} =
+               Sftpd.Auth.decode_authorized_key(~s(command="echo" ecdsa-sha2-nistp256 #{blob}))
+
+      assert {:ok, ^public_key} =
+               Sftpd.Auth.decode_authorized_key(
+                 ~s(from="127.0.0.1" sk-ssh-ed25519@openssh.com #{blob})
+               )
     end
 
     test "returns a tagged error for blank lines" do

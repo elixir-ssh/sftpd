@@ -648,6 +648,20 @@ defmodule Sftpd.Backends.S3Test do
       assert :ok = S3.finish_write(writer, state)
     end
 
+    test "finish_write keeps later bytes for partially overlapping small writes", %{state: state} do
+      assert {:ok, writer} = S3.begin_write(~c"/small.bin", state)
+      assert {:ok, writer} = S3.write_chunk(writer, 0, "abcdef", state)
+      assert {:ok, writer} = S3.write_chunk(writer, 2, "XYZ", state)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :put
+        assert op.body == "abXYZf"
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.finish_write(writer, state)
+    end
+
     test "finish_write zero-fills sparse gaps for small out-of-order writes", %{state: state} do
       assert {:ok, writer} = S3.begin_write(~c"/small.bin", state)
       assert {:ok, writer} = S3.write_chunk(writer, 4, "ef", state)

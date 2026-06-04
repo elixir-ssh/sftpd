@@ -12,10 +12,12 @@ defmodule Sftpd.DirectIODeviceTest do
 
     def open_read("/open-read-error", _session, _state), do: {:error, :eacces}
     def open_read("/read-error", _session, _state), do: {:ok, :read_error}
+    def open_read("/backend-eof", _session, _state), do: {:ok, :backend_eof}
     def open_read("/iodata", _session, _state), do: {:ok, :iodata}
     def open_read(_path, _session, _state), do: {:ok, :reader}
 
     def read_at(:read_error, _offset, _len, _state), do: {:error, :eio}
+    def read_at(:backend_eof, _offset, _len, _state), do: :eof
     def read_at(:iodata, _offset, _len, _state), do: {:ok, ["io", "data"]}
     def read_at(_handle, _offset, 0, _state), do: {:ok, ""}
     def read_at(_handle, _offset, len, _state), do: {:ok, binary_part("data", 0, min(len, 4))}
@@ -293,6 +295,16 @@ defmodule Sftpd.DirectIODeviceTest do
 
     assert {:error, :eio} = DirectIODevice.read(read_handle, 1)
 
+    assert {:ok, eof_handle} =
+             DirectIODevice.start(%{
+               path: "/backend-eof",
+               mode: :read,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert :eof = DirectIODevice.read(eof_handle, 1)
+
     assert {:ok, empty_handle} =
              DirectIODevice.start(%{
                path: "/empty-read",
@@ -324,5 +336,18 @@ defmodule Sftpd.DirectIODeviceTest do
              })
 
     assert {:error, :eio} = DirectIODevice.close(close_handle)
+  end
+
+  test "read/write start falls back to zero size when attrs are unavailable" do
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: "/attrs-error",
+               mode: :read_write,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert :eof = DirectIODevice.read(handle, 1)
+    assert :ok = DirectIODevice.close(handle)
   end
 end

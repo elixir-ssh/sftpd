@@ -503,7 +503,9 @@ defmodule Sftpd.Backends.S3 do
       chunk_start = overlap_start - chunk_offset
       take = overlap_end - overlap_start
 
-      <<prefix::binary-size(^body_offset), _old::binary-size(^take), suffix::binary>> = body
+      {prefix, rest} = :erlang.split_binary(body, body_offset)
+      {_old, suffix} = :erlang.split_binary(rest, take)
+
       IO.iodata_to_binary([prefix, binary_part(chunk, chunk_start, take), suffix])
     else
       body
