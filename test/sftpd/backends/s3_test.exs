@@ -448,6 +448,72 @@ defmodule Sftpd.Backends.S3Test do
     end
   end
 
+  describe "handle-first backend callbacks with mock" do
+    setup do
+      {:ok, state} = S3.init(bucket: "test-bucket", aws_client: MockExAws)
+      %{state: state}
+    end
+
+    test "open_read and read_at use object metadata and ranged reads", %{state: state} do
+      expect(MockExAws, :request, fn _op ->
+        {:ok,
+         %{
+           headers: [
+             {"Content-Length", "10"},
+             {"Last-Modified", "Mon, 15 Jan 2024 12:30:45 GMT"}
+           ]
+         }}
+      end)
+
+      assert {:ok, handle} = S3.open_read("/file.txt", %{}, state)
+      assert handle.size == 10
+
+      expect(MockExAws, :request, fn op ->
+        assert op.headers["range"] == "bytes=5-8"
+        {:ok, %{body: "6789", status_code: 206}}
+      end)
+
+      assert {:ok, "6789"} = S3.read_at(handle, 5, 4, state)
+    end
+
+    test "open_write, write_at, and finish_write materialize small objects", %{state: state} do
+      assert {:ok, writer} = S3.open_write("/small.txt", %{}, %{}, state)
+      assert {:ok, writer} = S3.write_at(writer, 0, ["abc", "def"], state)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.path == "small.txt"
+        assert op.body == "abcdef"
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.finish_write(writer, state)
+    end
+
+    test "open_dir returns one-shot entries with attrs", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == ""
+        assert op.params["delimiter"] == "/"
+
+        {:ok,
+         %{
+           body: %{
+             contents: [%{key: "file.txt"}],
+             common_prefixes: [%{prefix: "dir/"}],
+             is_truncated: "false"
+           }
+         }}
+      end)
+
+      assert {:ok, handle} = S3.open_dir("/", %{}, state)
+      assert {:ok, entries, handle} = S3.read_dir(handle, state)
+      assert Enum.map(entries, & &1.name) == [".", "..", "dir", "file.txt"]
+      assert %{type: :directory, size: 0} = Enum.find(entries, &(&1.name == ".")).attrs
+      assert %{type: :regular, size: 0} = Enum.find(entries, &(&1.name == "file.txt")).attrs
+      assert :eof = S3.read_dir(handle, state)
+      assert :ok = S3.close_dir(handle, state)
+    end
+  end
+
   describe "streaming write callbacks" do
     setup do
       {:ok, state} = S3.init(bucket: "test-bucket", aws_client: MockExAws)

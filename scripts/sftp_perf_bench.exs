@@ -511,6 +511,24 @@ defmodule SftpdPerfBench.DelayedBackend do
     end
   end
 
+  def open_read(path, _session, state) do
+    with {:ok, size} <- file_size(path, state) do
+      {:ok, %{path: normalize_path(path), size: size}}
+    end
+  end
+
+  def read_at(%{size: size}, offset, len, state) do
+    delay(state)
+
+    cond do
+      offset >= size ->
+        :eof
+
+      true ->
+        {:ok, zeroes(min(len, size - offset))}
+    end
+  end
+
   def write_file(path, content, %{agent: agent}) do
     Agent.update(
       agent,
@@ -525,11 +543,15 @@ defmodule SftpdPerfBench.DelayedBackend do
 
   def begin_write(path, _state), do: {:ok, %{path: path, size: 0}}
 
+  def open_write(path, _attrs, _session, _state), do: {:ok, %{path: path, size: 0}}
+
   def write_chunk(handle, offset, chunk, state) do
     delay(state)
     size = max(handle.size, offset + IO.iodata_length(chunk))
     {:ok, %{handle | size: size}}
   end
+
+  def write_at(handle, offset, data, state), do: write_chunk(handle, offset, data, state)
 
   def finish_write(%{path: path, size: size}, %{agent: agent}) do
     Agent.update(
@@ -542,6 +564,44 @@ defmodule SftpdPerfBench.DelayedBackend do
 
   def abort_write(_handle, _state), do: :ok
 
+  def open_dir(path, _session, state) do
+    with {:ok, names} <- list_dir(path, state) do
+      entries =
+        Enum.map(names, fn name ->
+          child_path = child_path(path, name)
+
+          attrs =
+            case file_attrs(child_path, %{}, state) do
+              {:ok, attrs} -> attrs
+              {:error, _reason} -> %{type: :directory, size: 0, permissions: 0o040755}
+            end
+
+          %{name: to_string(name), attrs: attrs}
+        end)
+
+      {:ok, %{entries: entries, read?: false}}
+    end
+  end
+
+  def read_dir(%{read?: true}, _state), do: :eof
+
+  def read_dir(%{entries: entries, read?: false} = handle, _state),
+    do: {:ok, entries, %{handle | read?: true}}
+
+  def close_dir(_handle, _state), do: :ok
+
+  def file_attrs(path, _session, state) do
+    case file_info(path, state) do
+      {:ok, info} -> {:ok, Sftpd.Backend.attrs_from_file_info(info)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def make_dir(path, _attrs, _session, state), do: make_dir(path, state)
+  def del_dir(path, _session, state), do: del_dir(path, state)
+  def delete(path, _session, state), do: delete(path, state)
+  def rename(src, dst, _session, state), do: rename(src, dst, state)
+
   defp file_size(path, %{agent: agent}) do
     Agent.get(agent, fn files ->
       case Map.get(files, normalize_path(path)) do
@@ -552,6 +612,19 @@ defmodule SftpdPerfBench.DelayedBackend do
   end
 
   defp zeroes(size), do: :binary.copy(<<0>>, size)
+
+  defp child_path(_path, name) when name in [~c".", ~c".."], do: to_string(name)
+
+  defp child_path(path, name) do
+    path = normalize_path(path)
+    name = to_string(name)
+
+    case path do
+      "" -> name
+      "/" -> name
+      _ -> path <> "/" <> name
+    end
+  end
 
   defp delay(%{delay_ms: delay_ms}) when delay_ms > 0, do: Process.sleep(delay_ms)
   defp delay(_state), do: :ok

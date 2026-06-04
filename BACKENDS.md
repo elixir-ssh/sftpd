@@ -20,9 +20,9 @@ SSH/SFTP framing and transport overhead.
 
 ### `Sftpd.Backends.S3`
 
-The S3 backend is still present as legacy storage code, but it is not migrated
-to the handle-first contract in this milestone. Use the memory backend for the
-pure-Elixir transport until S3 is rewritten around backend-owned handles.
+The S3 backend maps SFTP operations onto Amazon S3 or S3-compatible object
+storage. It implements the handle-first contract with ranged reads and
+multipart writes behind backend-owned handles.
 
 ## Callback Shape
 

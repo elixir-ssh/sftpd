@@ -16,6 +16,8 @@ defmodule Sftpd.Backends.S3 do
 
   require Logger
 
+  @behaviour Sftpd.Backend
+
   alias Sftpd.Backend
 
   @keep_marker ".keep"
@@ -48,6 +50,7 @@ defmodule Sftpd.Backends.S3 do
   configuration without adding ExAws.
   """
   @spec init(keyword()) :: {:ok, state()} | {:error, atom()}
+  @impl true
   def init(opts) do
     with {:ok, bucket} <- Keyword.fetch(opts, :bucket),
          :ok <- ensure_s3_available() do
@@ -117,6 +120,7 @@ defmodule Sftpd.Backends.S3 do
   @spec del_dir(Backend.path(), state()) :: :ok | {:error, atom()}
   def del_dir(path, state), do: del_dir(path, %{}, state)
   @spec del_dir(Backend.path(), Backend.session(), state()) :: :ok | {:error, atom()}
+  @impl true
   def del_dir(path, session, %{bucket: bucket} = state) do
     key = object_key(path, resolved_prefix(state, session)) <> "/" <> @keep_marker
 
@@ -129,6 +133,7 @@ defmodule Sftpd.Backends.S3 do
   @spec delete(Backend.path(), state()) :: :ok | {:error, atom()}
   def delete(path, state), do: delete(path, %{}, state)
   @spec delete(Backend.path(), Backend.session(), state()) :: :ok | {:error, atom()}
+  @impl true
   def delete(path, session, %{bucket: bucket} = state) do
     key = object_key(path, resolved_prefix(state, session))
 
@@ -143,6 +148,7 @@ defmodule Sftpd.Backends.S3 do
 
   @spec rename(Backend.path(), Backend.path(), Backend.session(), state()) ::
           :ok | {:error, atom()}
+  @impl true
   def rename(src, dst, session, %{bucket: bucket} = state) do
     prefix = resolved_prefix(state, session)
     src_key = object_key(src, prefix)
@@ -223,6 +229,28 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
+  @impl true
+  def open_read(path, session, state) do
+    with {:ok, attrs} <- file_attrs(path, session, state) do
+      {:ok, %{path: path, session: session, size: Map.get(attrs, :size, 0)}}
+    end
+  end
+
+  @impl true
+  def read_at(%{path: path, session: session}, offset, len, state) do
+    read_file_range(path, offset, len, session, state)
+  end
+
+  @impl true
+  def open_write(path, _attrs, session, state) do
+    begin_write(path, session, state)
+  end
+
+  @impl true
+  def write_at(writer, offset, data, state) do
+    write_chunk(writer, offset, data, state)
+  end
+
   @spec begin_write(Backend.path(), state()) :: {:ok, writer_handle()} | {:error, atom()}
   def begin_write(path, state), do: begin_write(path, %{}, state)
 
@@ -266,6 +294,7 @@ defmodule Sftpd.Backends.S3 do
   end
 
   @spec finish_write(writer_handle(), state()) :: :ok | {:error, atom()}
+  @impl true
   def finish_write(%{upload_id: nil, uploaded_parts: []} = writer, state) do
     put_small_object(writer, state)
   end
@@ -285,6 +314,7 @@ defmodule Sftpd.Backends.S3 do
   end
 
   @spec abort_write(writer_handle(), state()) :: :ok
+  @impl true
   def abort_write(writer, state) do
     case abort_multipart(writer, state) do
       :ok ->
@@ -298,6 +328,44 @@ defmodule Sftpd.Backends.S3 do
         :ok
     end
   end
+
+  @impl true
+  def open_dir(path, session, state) do
+    with {:ok, names} <- list_dir(path, session, state) do
+      entries =
+        Enum.map(names, fn name ->
+          %{name: to_string(name), attrs: listed_entry_attrs(name)}
+        end)
+
+      {:ok, %{entries: entries, read?: false}}
+    end
+  end
+
+  @impl true
+  def read_dir(%{read?: true}, _state), do: :eof
+
+  def read_dir(%{entries: entries, read?: false} = handle, _state) do
+    {:ok, entries, %{handle | read?: true}}
+  end
+
+  @impl true
+  def close_dir(_handle, _state), do: :ok
+
+  @impl true
+  def file_attrs(path, session, state) do
+    case file_info(path, session, state) do
+      {:ok, info} -> {:ok, Backend.attrs_from_file_info(info)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl true
+  def make_dir(path, _attrs, session, state), do: make_dir(path, session, state)
+
+  defp listed_entry_attrs(name) when name in [~c".", ~c"..", ".", ".."],
+    do: %{type: :directory, size: 0, permissions: 0o040755}
+
+  defp listed_entry_attrs(_name), do: %{type: :regular, size: 0, permissions: 0o100644}
 
   defp ensure_multipart_started(%{upload_id: nil} = writer, state) do
     case aws_request(state, s3_op(:initiate_multipart_upload, [writer.bucket, writer.key])) do

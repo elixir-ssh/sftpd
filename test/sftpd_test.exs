@@ -693,8 +693,8 @@ defmodule SftpdTest do
       :gen_tcp.close(socket)
     end
 
-    test "rejects non-memory backends for the first Elixir transport milestone" do
-      assert {:error, {:unsupported_elixir_transport_backend, NonMemoryBackend}} =
+    test "rejects modules that do not implement the backend contract" do
+      assert {:error, {:unsupported_backend, NonMemoryBackend}} =
                Sftpd.start_server(
                  port: 20_000 + :rand.uniform(10_000),
                  transport: :elixir,

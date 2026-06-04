@@ -74,9 +74,37 @@ defmodule Sftpd.SSH.Server do
     :ok
   end
 
-  defp validate_backend(Sftpd.Backends.Memory), do: :ok
-  defp validate_backend(Sftpd.Backends.Benchmark), do: :ok
-  defp validate_backend(backend), do: {:error, {:unsupported_elixir_transport_backend, backend}}
+  defp validate_backend(backend) when is_atom(backend) do
+    callbacks = [
+      init: 1,
+      open_read: 3,
+      read_at: 4,
+      open_write: 4,
+      write_at: 4,
+      finish_write: 2,
+      abort_write: 2,
+      open_dir: 3,
+      read_dir: 2,
+      close_dir: 2,
+      file_attrs: 3,
+      make_dir: 4,
+      del_dir: 3,
+      delete: 3,
+      rename: 4
+    ]
+
+    with {:module, ^backend} <- Code.ensure_loaded(backend),
+         true <-
+           Enum.all?(callbacks, fn {function, arity} ->
+             function_exported?(backend, function, arity)
+           end) do
+      :ok
+    else
+      _ -> {:error, {:unsupported_backend, backend}}
+    end
+  end
+
+  defp validate_backend(backend), do: {:error, {:unsupported_backend, backend}}
 
   defp start_acceptor(%{socket: socket}) do
     owner = self()
