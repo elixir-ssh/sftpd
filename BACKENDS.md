@@ -24,6 +24,10 @@ The S3 backend maps SFTP operations onto Amazon S3 or S3-compatible object
 storage. It implements the handle-first contract with ranged reads and
 multipart writes behind backend-owned handles.
 
+Directory listings are returned from S3 LIST operations without statting every
+child object. Call `file_attrs/3` for a specific path when exact object metadata
+is needed.
+
 ## Callback Shape
 
 Backends implement:
@@ -36,3 +40,9 @@ Backends implement:
 - `make_dir/4`, `del_dir/3`, `delete/3`, and `rename/4`
 
 See `Sftpd.Backend` for exact types and helper functions.
+
+## Transport Support
+
+Both `transport: :otp` and `transport: :elixir` use this same backend
+contract. The OTP transport adapts the handle API to `:ssh_sftpd_file_api`;
+the pure-Elixir transport calls it from the SFTP v3 dispatcher directly.

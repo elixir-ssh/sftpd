@@ -66,6 +66,8 @@ Important options:
   local development, or `{MyApp.SftpAuth, opts}` for application callbacks
 - `:system_dir` points at the SSH host key directory
 - `:max_sessions` limits concurrent client sessions
+- `:transport` selects the SSH/SFTP transport. The default is `:otp`; use
+  `:elixir` to opt into the experimental pure-Elixir transport.
 
 OTP 29 no longer enables the SFTP subsystem implicitly for SSH daemons.
 `Sftpd.start_server/1` supplies the required `:subsystems` option internally,
@@ -73,6 +75,10 @@ so the setup above works on both OTP 29 and older supported OTP releases.
 
 OTP 29 also disables remote shell and exec services by default. `Sftpd` is an
 SFTP-only wrapper and does not enable those services.
+
+The OTP and pure-Elixir transports use the same `Sftpd.Backend` contract. A
+backend that implements the handle-first callbacks can be used with either
+transport.
 
 ## 4. Connect with an SFTP client
 

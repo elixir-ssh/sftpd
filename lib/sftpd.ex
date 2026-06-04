@@ -2,8 +2,10 @@ defmodule Sftpd do
   @moduledoc """
   A pluggable SFTP server with support for multiple storage backends.
 
-  Sftpd wraps Erlang's `:ssh_sftpd` module and provides a clean API for
-  starting SFTP servers with configurable authentication and storage backends.
+  Sftpd provides a clean API for starting SFTP-only SSH daemons with
+  configurable authentication and storage backends. The default transport wraps
+  Erlang's `:ssh_sftpd` module; `transport: :elixir` opts into the
+  experimental pure-Elixir SSH/SFTP transport.
 
   OTP 29 no longer enables the SFTP subsystem implicitly when starting an SSH
   daemon. `Sftpd.start_server/1` passes an explicit
@@ -56,6 +58,8 @@ defmodule Sftpd do
   - `:auth` - Authentication config, either `{:passwords, list}` or `{Module, opts}` (required)
   - `:system_dir` - Directory containing SSH host keys (required)
   - `:max_sessions` - Maximum concurrent sessions (default: 10)
+  - `:transport` - `:otp` for Erlang SSH/SFTP, or `:elixir` for the
+    experimental pure-Elixir SSH/SFTP transport (default: `:otp`)
   ## Telemetry
 
   See `Sftpd.Telemetry` and the `Telemetry` extra in HexDocs for the event

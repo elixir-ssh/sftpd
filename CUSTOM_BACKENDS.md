@@ -60,6 +60,9 @@ end
 
 Paths are binaries. Use `Sftpd.Backend.normalize_path/1` and
 `Sftpd.Backend.root_path?/1` when adapting SFTP paths to storage keys.
+Backends own the opaque handles returned from `open_read/3`, `open_write/4`,
+and `open_dir/3`; transports pass those handles back to the corresponding
+read, write, finish, abort, and close callbacks.
 
 `file_attrs/3` returns a map. The common keys are:
 
@@ -73,3 +76,15 @@ Paths are binaries. Use `Sftpd.Backend.normalize_path/1` and
 
 Use `Sftpd.Backend.attrs_from_file_info/1` if you already have Erlang
 `file_info` tuples.
+
+## Performance Notes
+
+- Return existing binaries or iodata from `read_at/4`; avoid concatenating large
+  responses just to satisfy the callback.
+- Keep write handles as backend-owned state and flush incrementally from
+  `write_at/4` when the backend can do so.
+- `finish_write/2` is where close-time materialization belongs. The OTP
+  transport cannot reliably report close-time failures to all clients, so
+  surface write errors during `write_at/4` whenever possible.
+- Directory handles may return entries in batches. `read_dir/2` should return
+  `:eof` when the handle is exhausted.

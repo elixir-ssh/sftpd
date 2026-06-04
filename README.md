@@ -3,8 +3,10 @@
 A pluggable SFTP server for Elixir with memory, custom, and optional S3
 backends.
 
-`Sftpd` wraps Erlang's `:ssh_sftpd` subsystem and lets you plug storage behind
-it through a small backend behaviour. It ships with:
+`Sftpd` provides an SFTP-only SSH daemon and lets you plug storage behind it
+through a small backend behaviour. The default transport uses Erlang's
+`:ssh_sftpd` subsystem; `transport: :elixir` opts into the experimental
+pure-Elixir SSH/SFTP transport. It ships with:
 
 - an in-memory backend for development and tests
 - an optional S3 backend with range reads and multipart streaming writes
@@ -72,11 +74,11 @@ end
 | Tests, demos, and local development | `Sftpd.Backends.Memory` |
 | Amazon S3, MinIO, or another S3-compatible store | `Sftpd.Backends.S3` |
 | A local disk folder | A custom folder backend |
-| A shared process, cache, queue, or connection pool | `{:genserver, name_or_pid}` |
+| A shared cache, queue, or connection pool | A custom `Sftpd.Backend` module |
 | Async ingestion after upload | Store synchronously in the backend, then enqueue a Broadway job |
 
 See [Backends](BACKENDS.md) for backend tradeoffs and
-[Custom Backends](CUSTOM_BACKENDS.md) for folder, GenServer, supervision, and
+[Custom Backends](CUSTOM_BACKENDS.md) for folder, supervision, and
 post-write processing examples.
 
 ## Next Steps
@@ -202,6 +204,10 @@ These callbacks let the OTP file-handler adapter and the pure-Elixir transport
 operate on backend-owned handles without loading whole files into memory on open
 or routing hot-path file IO through per-file processes. See `Sftpd.Backend` for
 the exact callback contracts.
+
+The pure-Elixir transport validates the same `Sftpd.Backend` callback set at
+startup. The built-in OTP transport and pure-Elixir transport therefore use the
+same backend modules; only the SSH/SFTP framing layer changes.
 
 Note that OTP's built-in `:ssh_sftpd` implementation always reports success for
 close operations, even if final close-time flushing fails. Write errors are

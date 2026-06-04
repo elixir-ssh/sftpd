@@ -248,7 +248,7 @@ defmodule SftpdTest do
       def init(_opts), do: {:ok, %{}}
     end
 
-    test "starts and stops as an opt-in memory-only transport" do
+    test "starts and stops as an opt-in pure SSH transport" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
 
@@ -703,6 +703,25 @@ defmodule SftpdTest do
                  system_dir: "/tmp",
                  auth: {:passwords, [{"user", "password"}]}
                )
+    end
+
+    test "accepts non-memory modules that implement the backend contract" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, {:elixir, pid} = ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: SessionBackend,
+                 backend_opts: [test_pid: self()],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      assert Process.alive?(pid)
+      assert :ok = Sftpd.stop_server(ref)
+      refute Process.alive?(pid)
     end
   end
 

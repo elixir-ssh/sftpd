@@ -105,8 +105,9 @@ Special cases:
 - `:bytes_requested`
 
 The `:read` event does not include `:path`. If you need path-level context for
-reads, correlate the `:io_device` back to the earlier `[:sftpd, :sftp, :open]`
-event for that handle.
+reads, correlate the `:io_device` value back to the earlier
+`[:sftpd, :sftp, :open]` event for that opaque open-file handle. The handle is
+not guaranteed to be a process id.
 
 `[:sftpd, :sftp, :write]`
 

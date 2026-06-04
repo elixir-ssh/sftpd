@@ -124,16 +124,15 @@ OTP 29 also leaves SSH shell and exec services disabled by default. The tests
 exercise SFTP only and should not assume an interactive Erlang shell or remote
 exec channel is available on the test daemon.
 
-## What Was Fixed
+## Backend Contract Coverage
 
-The following critical issues were resolved:
+The automated tests cover the handle-first `Sftpd.Backend` contract through:
 
-1. **File Upload Support**: Fixed IODevice state initialization to properly handle write operations with S3 multipart upload
-2. **Concurrent Operations**: Removed GenServer name collision to allow multiple simultaneous file operations
-3. **Error Handling**: Added proper error handling in `is_dir/2` and other functions
-4. **Delete Operations**: Implemented S3-based file deletion
-5. **Rename Operations**: Implemented S3-based file renaming (copy + delete)
-6. **Type Conversions**: Fixed charlist/string conversions throughout Operations module
+1. **Memory backend tests**: direct read, write, directory, metadata, and rename callbacks.
+2. **S3 backend tests**: ranged reads, multipart writes, one-shot directory handles, session prefixes, and error normalization.
+3. **OTP file-handler tests**: adaptation from `:ssh_sftpd_file_api` to backend-owned handles.
+4. **Pure-Elixir transport tests**: SSH negotiation, authentication, SFTP v3 operations, OpenSSH `sftp` compatibility, and rejection of shell/exec requests.
+5. **Benchmark backend tests**: size-tracking uploads and zero-filled ranged downloads for transport benchmarking.
 
 ## Expected Behavior
 
@@ -144,3 +143,5 @@ The following critical issues were resolved:
 - ✅ **Delete files**
 - ✅ **Rename files**
 - ✅ **Multiple concurrent operations**
+- ✅ **Backend-owned handles without per-file adapter processes**
+- ✅ **OpenSSH `sftp` compatibility for the pure-Elixir transport**

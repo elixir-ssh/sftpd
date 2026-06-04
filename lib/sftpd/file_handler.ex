@@ -29,8 +29,8 @@ defmodule Sftpd.FileHandler do
           optional(:cwd) => charlist()
         }
 
-  @typedoc "IO device handle (GenServer pid)"
-  @type io_device :: pid()
+  @typedoc "Opaque handle returned to OTP ssh_sftpd for an open file"
+  @type io_device :: term()
 
   @impl true
   @spec close(io_device(), state()) :: {:ok | {:error, term()}, state()}
