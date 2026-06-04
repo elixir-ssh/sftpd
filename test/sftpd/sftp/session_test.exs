@@ -123,6 +123,19 @@ defmodule Sftpd.SFTP.SessionTest do
     def rename(_oldpath, _newpath, _session, _state), do: :ok
   end
 
+  defmodule ReadLenBackend do
+    @moduledoc false
+
+    def open_read(path, _session, test_pid), do: {:ok, %{path: path, test_pid: test_pid}}
+
+    def read_at(%{test_pid: test_pid}, _offset, len, _state) do
+      send(test_pid, {:read_len, len})
+      :eof
+    end
+
+    def file_attrs(_path, _session, _state), do: {:ok, %{type: :regular, size: 8_000_000}}
+  end
+
   setup do
     {:ok, backend_state} = Memory.init([])
 
@@ -334,6 +347,20 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:data, 5, "mixed"} = decode_response(response)
   end
 
+  test "mixed read/write opens read accepted writes before close", %{session: session} do
+    {response, session} = handle(open(1, "/scratch.txt", 0x0000_000B), session)
+    assert {:handle, 1, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(write(2, mixed_handle, 0, "abc"), session)
+    assert {:status, 2, 0} = decode_response(response)
+
+    {response, session} = handle(read(3, mixed_handle, 0, 3), session)
+    assert {:data, 3, "abc"} = decode_response(response)
+
+    {response, _session} = handle(close(4, mixed_handle), session)
+    assert {:status, 4, 0} = decode_response(response)
+  end
+
   test "mixed read/write opens can read existing content", %{session: session} do
     {response, session} = handle(open(1, "/file.txt", 0x0000_000A), session)
     {:handle, 1, write_handle} = decode_response(response)
@@ -386,14 +413,45 @@ defmodule Sftpd.SFTP.SessionTest do
     {response, session} = handle(write(5, mixed_handle, 2, "XY"), session)
     assert {:status, 5, 0} = decode_response(response)
 
-    {response, session} = handle(close(6, mixed_handle), session)
+    {response, session} = handle(read(6, mixed_handle, 0, 16), session)
+    assert {:data, 6, "abXYef"} = decode_response(response)
+
+    {response, session} = handle(close(7, mixed_handle), session)
+    assert {:status, 7, 0} = decode_response(response)
+
+    {response, session} = handle(open(8, "/file.txt", 0x0000_0001), session)
+    assert {:handle, 8, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(9, read_handle, 0, 16), session)
+    assert {:data, 9, "abXYef"} = decode_response(response)
+  end
+
+  test "exclusive create rejects existing files", %{session: session} do
+    {response, session} = handle(open(1, "/exclusive.txt", 0x0000_000A), session)
+    {:handle, 1, write_handle} = decode_response(response)
+    {_response, session} = handle(write(2, write_handle, 0, "old"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(open(4, "/exclusive.txt", 0x0000_002A), session)
+    assert {:status, 4, 4} = decode_response(response)
+
+    {response, session} = handle(open(5, "/new-exclusive.txt", 0x0000_002A), session)
+    assert {:handle, 5, exclusive_handle} = decode_response(response)
+
+    {response, _session} = handle(close(6, exclusive_handle), session)
     assert {:status, 6, 0} = decode_response(response)
+  end
 
-    {response, session} = handle(open(7, "/file.txt", 0x0000_0001), session)
-    assert {:handle, 7, read_handle} = decode_response(response)
+  test "read requests are capped before backend dispatch" do
+    session =
+      ReadLenBackend |> Session.new(self(), %{username: "test"}) |> Map.put(:initialized?, true)
 
-    {response, _session} = handle(read(8, read_handle, 0, 16), session)
-    assert {:data, 8, "abXYef"} = decode_response(response)
+    {response, session} = handle(open(1, "/huge-read.bin", 0x0000_0001), session)
+    assert {:handle, 1, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(2, read_handle, 0, 0xFFFF_FFFF), session)
+    assert {:status, 2, 1} = decode_response(response)
+    assert_receive {:read_len, 1_048_576}
   end
 
   test "mixed append opens missing files without crashing", %{session: session} do

@@ -217,6 +217,45 @@ defmodule Sftpd.DirectIODeviceTest do
     assert {:ok, "abXYef"} = Memory.read_file(~c"/file.bin", backend_state)
   end
 
+  test "read/write handles read accepted writes before close", %{
+    backend_state: backend_state
+  } do
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: ~c"/new.bin",
+               mode: :read_write,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert :ok = DirectIODevice.write(handle, "abc", 3)
+    assert {:ok, 0} = DirectIODevice.position(handle, {:bof, 0})
+    assert {:ok, "abc"} = DirectIODevice.read(handle, 3)
+    assert :ok = DirectIODevice.close(handle)
+  end
+
+  test "read/write handles read partial overwrites before close", %{
+    backend_state: backend_state
+  } do
+    :ok = Memory.write_file(~c"/file.bin", "abcdef", backend_state)
+
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: ~c"/file.bin",
+               mode: :read_write,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
+    assert :ok = DirectIODevice.write(handle, "XY", 2)
+    assert {:ok, 0} = DirectIODevice.position(handle, {:bof, 0})
+    assert {:ok, "abXYef"} = DirectIODevice.read(handle, 6)
+    assert :ok = DirectIODevice.close(handle)
+  end
+
   test "aborts replay writer when replay finalize fails" do
     {:ok, state} = Agent.start_link(fn -> %{finish_error_on_open: 2} end)
 

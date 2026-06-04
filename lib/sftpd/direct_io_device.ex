@@ -226,6 +226,23 @@ defmodule Sftpd.DirectIODevice do
       when mode in [:read, :read_write] and position >= size ->
         {:eof, state}
 
+      %{mode: :read_write, position: position, size: size, temp_fd: temp_fd} = state ->
+        bytes_to_read = min(len, size - position)
+
+        case read_temp_chunk(temp_fd, position, bytes_to_read) do
+          {:ok, data} when byte_size(data) > 0 ->
+            {{:ok, data}, %{state | position: position + byte_size(data)}}
+
+          {:ok, ""} ->
+            {:eof, state}
+
+          {:error, :eof} ->
+            {:eof, state}
+
+          {:error, reason} ->
+            {{:error, reason}, state}
+        end
+
       %{mode: mode, backend_handle: backend_handle} = state
       when mode in [:read, :read_write] and not is_nil(backend_handle) ->
         result =
@@ -247,9 +264,6 @@ defmodule Sftpd.DirectIODevice do
           {:error, reason} ->
             {{:error, reason}, state}
         end
-
-      %{mode: :read_write} = state ->
-        {{:error, :einval}, state}
 
       state ->
         {{:error, :einval}, state}
