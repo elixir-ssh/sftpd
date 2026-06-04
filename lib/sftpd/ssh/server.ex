@@ -351,6 +351,19 @@ defmodule Sftpd.SSH.Server do
     {:stop, state}
   end
 
+  defp handle_encrypted_payload(<<20, _rest::binary>>, state, socket) do
+    Logger.debug("pure ssh rejecting encrypted rekey request")
+
+    case send_encrypted_payload(socket, state, [
+           <<1, 3::32>>,
+           Wire.string("encrypted rekey is not supported"),
+           Wire.string("")
+         ]) do
+      {:ok, state} -> {:stop, state}
+      {:error, _reason} -> {:stop, state}
+    end
+  end
+
   defp handle_encrypted_payload(<<50, rest::binary>>, state, socket) do
     Logger.debug("pure ssh received userauth request")
     userauth_payload = rest
@@ -578,7 +591,13 @@ defmodule Sftpd.SSH.Server do
       {:ok, payload, state} ->
         case handle_encrypted_payload(payload, state, socket) do
           {:continue, state} ->
-            drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+            case fetch_channel(state, recipient) do
+              {:ok, %{sftp?: true} = channel} ->
+                drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+
+              _ ->
+                {responses, state, channel, bytes_read}
+            end
 
           {:stop, state} ->
             {responses, state, channel, bytes_read}

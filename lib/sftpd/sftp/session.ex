@@ -85,9 +85,11 @@ defmodule Sftpd.SFTP.Session do
 
           case prepare_read_write_handle(path, pflags, read_handle, write_handle, state) do
             {:ok, write_handle, append_offset, size} ->
+              dirty? = truncate_open?(pflags)
+
               put_handle(
                 id,
-                {:file, :read_write, path, read_handle, write_handle, append_offset, false, [],
+                {:file, :read_write, path, read_handle, write_handle, append_offset, dirty?, [],
                  size},
                 state
               )
@@ -105,10 +107,14 @@ defmodule Sftpd.SFTP.Session do
         with :ok <- validate_write_open(path, pflags, state),
              {:ok, backend_handle} <-
                state.backend.open_write(path, attrs, state.session, state.backend_state) do
-          {backend_handle, append_offset} =
-            prepare_write_handle(path, pflags, backend_handle, state)
+          case prepare_write_handle(path, pflags, backend_handle, state) do
+            {:ok, backend_handle, append_offset} ->
+              put_handle(id, {:file, :write, path, backend_handle, append_offset}, state)
 
-          put_handle(id, {:file, :write, path, backend_handle, append_offset}, state)
+            {:error, reason} ->
+              _ = state.backend.abort_write(backend_handle, state.backend_state)
+              {Codec.status(id, reason), state}
+          end
         else
           {:error, reason} ->
             {Codec.status(id, reason), state}
@@ -335,11 +341,15 @@ defmodule Sftpd.SFTP.Session do
   defp handle_request(%{id: id}, state), do: {Codec.status(id, :unsupported), state}
 
   defp prepare_write_handle(path, pflags, backend_handle, state) do
-    if append_open?(pflags) do
-      {:ok, backend_handle, append_offset} = seed_append_handle(path, backend_handle, state)
-      {backend_handle, append_offset}
-    else
-      {backend_handle, nil}
+    cond do
+      append_open?(pflags) ->
+        seed_append_handle(path, backend_handle, state)
+
+      truncate_open?(pflags) ->
+        {:ok, backend_handle, nil}
+
+      true ->
+        seed_write_update_handle(path, backend_handle, state)
     end
   end
 
@@ -423,7 +433,23 @@ defmodule Sftpd.SFTP.Session do
          {:ok, backend_handle} <- seed_handle_chunks(read_handle, backend_handle, state, size, 0) do
       {:ok, backend_handle, size}
     else
-      _ -> {:ok, backend_handle, size}
+      false -> {:ok, backend_handle, size}
+      {:error, reason} -> {:error, reason}
+      :eof -> {:error, :eof}
+    end
+  end
+
+  defp seed_write_update_handle(path, backend_handle, state) do
+    size = append_offset(path, state)
+
+    with true <- size > 0,
+         {:ok, read_handle} <- state.backend.open_read(path, state.session, state.backend_state),
+         {:ok, backend_handle} <- seed_handle_chunks(read_handle, backend_handle, state, size, 0) do
+      {:ok, backend_handle, nil}
+    else
+      false -> {:ok, backend_handle, nil}
+      {:error, reason} -> {:error, reason}
+      :eof -> {:error, :eof}
     end
   end
 

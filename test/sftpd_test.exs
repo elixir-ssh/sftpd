@@ -761,6 +761,31 @@ defmodule SftpdTest do
       :gen_tcp.close(socket)
     end
 
+    test "disconnects on encrypted rekey requests" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{socket: socket, c2s: c2s, s2c: s2c} = open_raw_authenticated_session(port)
+
+      {packet, _c2s} = encrypt_client_packet(c2s, <<20, 0::128, 0::32>>)
+
+      assert :ok = :gen_tcp.send(socket, packet)
+      assert {:ok, <<1, 3::32, _rest::binary>>, _s2c} = recv_encrypted_server_packet(socket, s2c)
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
+    end
+
     test "disconnects after repeated failed userauth requests" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
