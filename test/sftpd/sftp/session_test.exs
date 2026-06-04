@@ -63,6 +63,7 @@ defmodule Sftpd.SFTP.SessionTest do
 
     def finish_write(%{finish_error?: true}, _state), do: {:error, :eio}
     def finish_write(_handle, _state), do: :ok
+    def abort_write(_handle, _state), do: :ok
 
     def file_attrs("/attrs-error", _session, _state), do: {:error, :enoent}
 
@@ -341,6 +342,30 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:attrs, 6, %{size: 3}} = decode_response(response)
   end
 
+  test "closing untouched mixed read/write opens does not truncate existing content", %{
+    session: session
+  } do
+    {response, session} = handle(open(1, "/file.txt", 0x0000_000A), session)
+    {:handle, 1, write_handle} = decode_response(response)
+    {_response, session} = handle(write(2, write_handle, 0, "old"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(open(4, "/file.txt", 0x0000_0003), session)
+    assert {:handle, 4, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(read(5, mixed_handle, 0, 16), session)
+    assert {:data, 5, "old"} = decode_response(response)
+
+    {response, session} = handle(close(6, mixed_handle), session)
+    assert {:status, 6, 0} = decode_response(response)
+
+    {response, session} = handle(open(7, "/file.txt", 0x0000_0001), session)
+    assert {:handle, 7, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(8, read_handle, 0, 16), session)
+    assert {:data, 8, "old"} = decode_response(response)
+  end
+
   test "mixed append opens missing files without crashing", %{session: session} do
     {response, session} = handle(open(1, "/missing-append.txt", 0x0000_000E), session)
     assert {:handle, 1, append_handle} = decode_response(response)
@@ -377,8 +402,10 @@ defmodule Sftpd.SFTP.SessionTest do
 
     {response, session} = handle(open(13, "/finish-error", 0x0000_0003), session)
     {:handle, 13, mixed_finish_handle} = decode_response(response)
-    {response, session} = handle(close(14, mixed_finish_handle), session)
-    assert {:status, 14, 4} = decode_response(response)
+    {response, session} = handle(write(14, mixed_finish_handle, 0, "x"), session)
+    assert {:status, 14, 0} = decode_response(response)
+    {response, session} = handle(close(15, mixed_finish_handle), session)
+    assert {:status, 15, 4} = decode_response(response)
 
     {response, session} = handle(open(5, "/read-error", 0x0000_0001), session)
     {:handle, 5, read_handle} = decode_response(response)

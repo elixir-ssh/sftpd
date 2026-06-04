@@ -36,7 +36,7 @@ defmodule Sftpd.SFTP.Session do
       {_handle, {:file, :write, _path, backend_handle, _append_offset}} ->
         _ = state.backend.abort_write(backend_handle, state.backend_state)
 
-      {_handle, {:file, :read_write, _path, _read_handle, write_handle, _append_offset}} ->
+      {_handle, {:file, :read_write, _path, _read_handle, write_handle, _append_offset, _dirty?}} ->
         _ = state.backend.abort_write(write_handle, state.backend_state)
 
       _entry ->
@@ -86,7 +86,7 @@ defmodule Sftpd.SFTP.Session do
 
             put_handle(
               id,
-              {:file, :read_write, path, read_handle, write_handle, append_offset},
+              {:file, :read_write, path, read_handle, write_handle, append_offset, false},
               state
             )
 
@@ -132,7 +132,7 @@ defmodule Sftpd.SFTP.Session do
 
         {response, %{state | handles: handles}}
 
-      {{:file, :read_write, _path, _read_handle, write_handle, _append_offset}, handles} ->
+      {{:file, :read_write, _path, _read_handle, write_handle, _append_offset, true}, handles} ->
         response =
           case state.backend.finish_write(write_handle, state.backend_state) do
             :ok -> Codec.status(id, :ok)
@@ -140,6 +140,10 @@ defmodule Sftpd.SFTP.Session do
           end
 
         {response, %{state | handles: handles}}
+
+      {{:file, :read_write, _path, _read_handle, write_handle, _append_offset, false}, handles} ->
+        _ = state.backend.abort_write(write_handle, state.backend_state)
+        {Codec.status(id, :ok), %{state | handles: handles}}
 
       {{:file, :read, _path, _backend_handle}, handles} ->
         {Codec.status(id, :ok), %{state | handles: handles}}
@@ -163,10 +167,10 @@ defmodule Sftpd.SFTP.Session do
           {:error, reason} -> {Codec.status(id, reason), state}
         end
 
-      {:file, :read_write, _path, nil, _write_handle, _append_offset} ->
+      {:file, :read_write, _path, nil, _write_handle, _append_offset, _dirty?} ->
         {Codec.status(id, :failure), state}
 
-      {:file, :read_write, _path, read_handle, _write_handle, _append_offset} ->
+      {:file, :read_write, _path, read_handle, _write_handle, _append_offset, _dirty?} ->
         case state.backend.read_at(read_handle, offset, len, state.backend_state) do
           {:ok, ""} -> {Codec.status(id, :eof), state}
           {:ok, data} -> {Codec.data(id, data), state}
@@ -197,7 +201,7 @@ defmodule Sftpd.SFTP.Session do
             {Codec.status(id, reason), state}
         end
 
-      {:file, :read_write, path, read_handle, write_handle, append_offset} ->
+      {:file, :read_write, path, read_handle, write_handle, append_offset, _dirty?} ->
         write_offset = append_offset || offset
 
         case state.backend.write_at(write_handle, write_offset, data, state.backend_state) do
@@ -208,7 +212,7 @@ defmodule Sftpd.SFTP.Session do
               Map.put(
                 state.handles,
                 handle,
-                {:file, :read_write, path, read_handle, write_handle, append_offset}
+                {:file, :read_write, path, read_handle, write_handle, append_offset, true}
               )
 
             {Codec.status(id, :ok), %{state | handles: handles}}
@@ -324,16 +328,20 @@ defmodule Sftpd.SFTP.Session do
   defp new_handle({:file, :write, _path, _backend_handle, _append_offset}),
     do: <<"W", :crypto.strong_rand_bytes(16)::binary>>
 
-  defp new_handle({:file, :read_write, _path, _read_handle, _write_handle, _append_offset}),
-    do: <<"B", :crypto.strong_rand_bytes(16)::binary>>
+  defp new_handle(
+         {:file, :read_write, _path, _read_handle, _write_handle, _append_offset, _dirty?}
+       ),
+       do: <<"B", :crypto.strong_rand_bytes(16)::binary>>
 
   defp new_handle({:dir, _}), do: <<"D", :crypto.strong_rand_bytes(16)::binary>>
 
   defp file_handle_path({:file, :read, path, _backend_handle}), do: path
   defp file_handle_path({:file, :write, path, _backend_handle, _append_offset}), do: path
 
-  defp file_handle_path({:file, :read_write, path, _read_handle, _write_handle, _append_offset}),
-    do: path
+  defp file_handle_path(
+         {:file, :read_write, path, _read_handle, _write_handle, _append_offset, _dirty?}
+       ),
+       do: path
 
   defp write_open?(pflags),
     do: (pflags &&& (@open_write ||| @open_create ||| @open_truncate)) != 0

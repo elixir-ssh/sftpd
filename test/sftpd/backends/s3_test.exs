@@ -773,6 +773,27 @@ defmodule Sftpd.Backends.S3Test do
       assert :ok = S3.finish_write(writer, state)
     end
 
+    test "finish_write preserves last write for overlapping small chunks", %{state: state} do
+      writer = %{
+        bucket: "test-bucket",
+        key: "small.txt",
+        upload_id: nil,
+        next_offset: 3,
+        next_part_number: 1,
+        pending_chunks: :queue.from_list([{0, "abc"}, {1, "XY"}]),
+        pending_size: 5,
+        uploaded_parts: []
+      }
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :put
+        assert op.body == "aXY"
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.finish_write(writer, state)
+    end
+
     test "finish_write uploads the final part and completes multipart upload", %{state: state} do
       writer = %{
         bucket: "test-bucket",

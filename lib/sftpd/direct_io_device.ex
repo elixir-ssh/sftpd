@@ -46,6 +46,7 @@ defmodule Sftpd.DirectIODevice do
         writer_handle: writer_handle,
         write_strategy: :direct,
         stream_offset: 0,
+        dirty?: false,
         temp_path: temp_path,
         temp_fd: temp_fd
       })
@@ -88,6 +89,7 @@ defmodule Sftpd.DirectIODevice do
         writer_handle: writer_handle,
         write_strategy: :direct,
         stream_offset: 0,
+        dirty?: false,
         temp_path: temp_path,
         temp_fd: temp_fd
       })
@@ -161,7 +163,7 @@ defmodule Sftpd.DirectIODevice do
 
             case maybe_direct_write(state, data, bytes) do
               {:ok, state} ->
-                put_state(handle, %{state | position: position, size: size})
+                put_state(handle, %{state | position: position, size: size, dirty?: true})
                 :ok
 
               {:error, reason} ->
@@ -190,6 +192,10 @@ defmodule Sftpd.DirectIODevice do
 
       %{mode: :write} = state ->
         finalize_write(state)
+
+      %{mode: :read_write, dirty?: false} = state ->
+        cleanup_unfinished_write(state)
+        :ok
 
       %{mode: :read_write} = state ->
         finalize_write(state)

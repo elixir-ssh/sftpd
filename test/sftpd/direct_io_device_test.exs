@@ -179,6 +179,25 @@ defmodule Sftpd.DirectIODeviceTest do
     assert :ok = DirectIODevice.close(handle)
   end
 
+  test "closing untouched read/write handles preserves existing content", %{
+    backend_state: backend_state
+  } do
+    :ok = Memory.write_file(~c"/file.bin", "content", backend_state)
+
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: ~c"/file.bin",
+               mode: :read_write,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert {:ok, "content"} = DirectIODevice.read(handle, 16)
+    assert :ok = DirectIODevice.close(handle)
+    assert {:ok, "content"} = Memory.read_file(~c"/file.bin", backend_state)
+  end
+
   test "aborts replay writer when replay finalize fails" do
     {:ok, state} = Agent.start_link(fn -> %{finish_error_on_open: 2} end)
 

@@ -487,34 +487,26 @@ defmodule Sftpd.Backends.S3 do
     pending_chunks
     |> :queue.to_list()
     |> Enum.map(&normalize_pending_chunk/1)
-    |> Enum.sort_by(fn {offset, _chunk} -> offset end)
-    |> materialize_range(start_offset, len, [])
-    |> IO.iodata_to_binary()
+    |> Enum.reduce(zeroes(len), fn {chunk_offset, chunk}, body ->
+      overlay_chunk(body, start_offset, len, chunk_offset, chunk)
+    end)
   end
 
-  defp materialize_range(_chunks, _offset, 0, acc), do: Enum.reverse(acc)
-  defp materialize_range([], _offset, len, acc), do: Enum.reverse([zeroes(len) | acc])
-
-  defp materialize_range([{chunk_offset, chunk} | chunks], offset, len, acc) do
+  defp overlay_chunk(body, start_offset, len, chunk_offset, chunk) do
     chunk_size = byte_size(chunk)
-    chunk_end = chunk_offset + chunk_size
+    range_end = start_offset + len
+    overlap_start = max(start_offset, chunk_offset)
+    overlap_end = min(range_end, chunk_offset + chunk_size)
 
-    cond do
-      chunk_end <= offset ->
-        materialize_range(chunks, offset, len, acc)
+    if overlap_start < overlap_end do
+      body_offset = overlap_start - start_offset
+      chunk_start = overlap_start - chunk_offset
+      take = overlap_end - overlap_start
 
-      chunk_offset > offset ->
-        gap = min(chunk_offset - offset, len)
-
-        materialize_range([{chunk_offset, chunk} | chunks], offset + gap, len - gap, [
-          zeroes(gap) | acc
-        ])
-
-      true ->
-        start = offset - chunk_offset
-        take = min(chunk_size - start, len)
-        part = binary_part(chunk, start, take)
-        materialize_range(chunks, offset + take, len - take, [part | acc])
+      <<prefix::binary-size(^body_offset), _old::binary-size(^take), suffix::binary>> = body
+      IO.iodata_to_binary([prefix, binary_part(chunk, chunk_start, take), suffix])
+    else
+      body
     end
   end
 
