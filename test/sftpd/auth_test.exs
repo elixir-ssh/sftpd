@@ -28,6 +28,20 @@ defmodule Sftpd.AuthTest do
     def authorize_public_key(_username, _public_key, _opts), do: :error
   end
 
+  defmodule DisconnectPasswordAuth do
+    def authenticate_password(_username, _password, _peer, _opts), do: :disconnect
+  end
+
+  defmodule PasswordOnlyAuth do
+    def authenticate_password(username, password, _peer, _opts) do
+      if username == "module-user" and password == "secret" do
+        {:ok, %{username: username}}
+      else
+        :error
+      end
+    end
+  end
+
   describe "fingerprint/2" do
     test "returns stable OpenSSH-style SHA256 fingerprints" do
       public_key = rsa_public_key()
@@ -119,6 +133,43 @@ defmodule Sftpd.AuthTest do
   end
 
   describe "password callback" do
+    test "validates password and module auth configurations" do
+      assert Sftpd.Auth.Adapter.valid_config?({:passwords, [{"user", "pass"}]})
+      refute Sftpd.Auth.Adapter.valid_config?({:passwords, ["bad-entry"]})
+      refute Sftpd.Auth.Adapter.valid_config?(:bad)
+      refute Sftpd.Auth.Adapter.valid_config?({DoesNotExist.AuthModule, []})
+      assert Sftpd.Auth.Adapter.valid_config?({PasswordOnlyAuth, []})
+    end
+
+    test "authenticates password lists while ignoring malformed entries at runtime" do
+      auth = {:passwords, ["bad-entry", {:user, :secret}]}
+
+      assert {:ok, %{username: "user"}} =
+               Sftpd.Auth.Adapter.authenticate_password(auth, :user, :secret, :peer)
+
+      assert :error = Sftpd.Auth.Adapter.authenticate_password(auth, :user, :wrong, :peer)
+    end
+
+    test "delegates password auth to custom modules and propagates disconnects" do
+      assert {:ok, %{username: "module-user"}} =
+               Sftpd.Auth.Adapter.authenticate_password(
+                 {PasswordOnlyAuth, []},
+                 "module-user",
+                 :secret,
+                 :peer
+               )
+
+      password_fun = Sftpd.Auth.Adapter.password_fun({DisconnectPasswordAuth, []})
+      assert :disconnect = password_fun.("user", "password", :peer, nil)
+    end
+
+    test "public-key authorization returns error when unavailable" do
+      assert :error = Sftpd.Auth.Adapter.authorize_public_key({:passwords, []}, "user", :key)
+
+      assert :error =
+               Sftpd.Auth.Adapter.authorize_public_key({PasswordOnlyAuth, []}, "user", :key)
+    end
+
     test "rejects non-map sessions from custom auth modules" do
       password_fun = Sftpd.Auth.Adapter.password_fun({InvalidPasswordSessionAuth, []})
 

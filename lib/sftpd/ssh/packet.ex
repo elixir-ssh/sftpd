@@ -48,16 +48,14 @@ defmodule Sftpd.SSH.Packet do
         :more
 
       true ->
-        <<packet_body::binary-size(^packet_len), rest::binary>> = rest
+        {packet_body, rest} = :erlang.split_binary(rest, packet_len)
         <<padding_len, payload_and_padding::binary>> = packet_body
         payload_len = packet_len - padding_len - 1
 
         if payload_len < 0 or byte_size(payload_and_padding) < payload_len do
           {:error, :bad_packet}
         else
-          <<payload::binary-size(^payload_len), _padding::binary-size(^padding_len)>> =
-            payload_and_padding
-
+          {payload, _padding} = :erlang.split_binary(payload_and_padding, payload_len)
           {:ok, payload, rest}
         end
     end
@@ -74,9 +72,7 @@ defmodule Sftpd.SSH.Packet do
         if payload_len < 0 or byte_size(payload_and_padding) < payload_len do
           {:error, :bad_packet}
         else
-          <<payload::binary-size(^payload_len), _padding::binary-size(^padding_len)>> =
-            payload_and_padding
-
+          {payload, _padding} = :erlang.split_binary(payload_and_padding, payload_len)
           {:ok, payload}
         end
 

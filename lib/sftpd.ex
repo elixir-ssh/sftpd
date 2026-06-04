@@ -248,6 +248,8 @@ defmodule Sftpd do
     GenServer.stop(pid)
   catch
     :exit, {:noproc, _} -> :ok
+    :exit, :shutdown -> :ok
+    :exit, {:shutdown, _reason} -> :ok
   end
 
   defp stop_ref(ref), do: :ssh.stop_daemon(ref)

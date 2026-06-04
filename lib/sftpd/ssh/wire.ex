@@ -45,8 +45,7 @@ defmodule Sftpd.SSH.Wire do
   end
 
   @spec take_string(binary()) :: {:ok, binary(), binary()} | :error
-  def take_string(<<len::32, rest::binary>>) when byte_size(rest) >= len do
-    <<value::binary-size(^len), rest::binary>> = rest
+  def take_string(<<len::32, value::binary-size(len), rest::binary>>) do
     {:ok, value, rest}
   end
 

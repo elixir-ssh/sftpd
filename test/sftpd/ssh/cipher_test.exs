@@ -58,15 +58,57 @@ defmodule Sftpd.SSH.CipherTest do
     assert next_state.sequence == 1
   end
 
+  test "decrypts packet payload from buffered encrypted packets" do
+    state = state(:server_to_client)
+
+    {encrypted, _decrypt_state} =
+      Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))
+
+    assert {:ok, "payload", "", next_state} =
+             Cipher.decrypt_packet_payload(state, IO.iodata_to_binary(encrypted))
+
+    assert next_state.sequence == 1
+
+    assert :more =
+             Cipher.decrypt_packet_payload(
+               state,
+               binary_part(IO.iodata_to_binary(encrypted), 0, 8)
+             )
+  end
+
   test "rejects tampered ciphertext" do
     state = state(:server_to_client)
     {encrypted, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))
     encrypted = IO.iodata_to_binary(encrypted)
     last = byte_size(encrypted) - 1
-    <<prefix::binary-size(^last), byte>> = encrypted
+    {prefix, <<byte>>} = :erlang.split_binary(encrypted, last)
     tampered = <<prefix::binary, Bitwise.bxor(byte, 1)>>
 
     assert {:error, :bad_packet} = Cipher.decrypt_packet(state, tampered)
+  end
+
+  test "rejects tampered payload ciphertext and malformed split bodies" do
+    state = state(:server_to_client)
+    {encrypted, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))
+    <<packet_length::32, encrypted_body::binary>> = IO.iodata_to_binary(encrypted)
+    last = byte_size(encrypted_body) - 1
+    {prefix, <<byte>>} = :erlang.split_binary(encrypted_body, last)
+
+    assert {:error, :bad_packet} =
+             Cipher.decrypt_packet_payload(
+               state,
+               packet_length,
+               <<prefix::binary, Bitwise.bxor(byte, 1)>>
+             )
+
+    assert {:error, :bad_packet} = Cipher.decrypt_packet_payload(state, packet_length, "short")
+  end
+
+  test "wraps sequence numbers at the SSH uint32 boundary" do
+    state = state(:server_to_client) |> Cipher.set_sequence(0xFFFF_FFFF)
+    {_encrypted, state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))
+
+    assert state.sequence == 0
   end
 
   test "decrypts multiple encrypted packets with sequence increments" do

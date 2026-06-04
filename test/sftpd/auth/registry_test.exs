@@ -53,6 +53,31 @@ defmodule Sftpd.Auth.RegistryTest do
     end)
   end
 
+  test "registry ignores non-pid calls and unknown monitor messages" do
+    assert :ok = Registry.track(nil)
+    assert :error = Registry.fetch(nil)
+    assert :ok = Registry.delete(nil)
+
+    Registry.ensure_started()
+    server = Process.whereis(Registry)
+
+    send(server, {:DOWN, make_ref(), :process, self(), :normal})
+    send(server, :ignored)
+
+    assert is_map(:sys.get_state(server))
+  end
+
+  test "deleting an untracked pid is a no-op" do
+    connection_manager = idle_process()
+
+    try do
+      assert :ok = Registry.delete(connection_manager)
+      assert Registry.fetch(connection_manager) == :error
+    after
+      stop_process(connection_manager)
+    end
+  end
+
   defp idle_process do
     spawn(fn ->
       receive do

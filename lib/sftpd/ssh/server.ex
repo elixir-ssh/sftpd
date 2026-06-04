@@ -831,7 +831,7 @@ defmodule Sftpd.SSH.Server do
 
   defp channel_data_payloads(client_channel, data, max_packet, acc) do
     bytes = min(byte_size(data), max_packet)
-    <<chunk::binary-size(^bytes), rest::binary>> = data
+    {chunk, rest} = :erlang.split_binary(data, bytes)
     payload = channel_data_payload(client_channel, chunk)
     channel_data_payloads(client_channel, rest, max_packet, [payload | acc])
   end
@@ -858,7 +858,7 @@ defmodule Sftpd.SSH.Server do
   defp channel_data_pair_payloads(client_channel, header, data, max_packet)
        when is_binary(data) do
     first_data_size = min(byte_size(data), max_packet - byte_size(header))
-    <<first_data::binary-size(^first_data_size), rest::binary>> = data
+    {first_data, rest} = :erlang.split_binary(data, first_data_size)
 
     first_payload = channel_data_payload(client_channel, [header, first_data])
 

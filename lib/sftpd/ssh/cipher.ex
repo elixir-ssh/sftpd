@@ -63,11 +63,8 @@ defmodule Sftpd.SSH.Cipher do
   @spec decrypt_packet(state(), binary()) ::
           {:ok, binary(), binary(), state()} | :more | {:error, :bad_packet}
   def decrypt_packet(%{algorithm: @aes256_gcm} = state, buffer) do
-    with <<packet_length::32, rest::binary>> when byte_size(rest) >= packet_length + @aes_tag_len <-
-           buffer do
-      <<ciphertext::binary-size(^packet_length), tag::binary-size(@aes_tag_len), rest::binary>> =
-        rest
-
+    with <<packet_length::32, ciphertext::binary-size(packet_length),
+           tag::binary-size(@aes_tag_len), rest::binary>> <- buffer do
       aad = <<packet_length::32>>
       iv = packet_iv(state.iv, state.sequence)
 
@@ -86,11 +83,8 @@ defmodule Sftpd.SSH.Cipher do
   @spec decrypt_packet_payload(state(), binary()) ::
           {:ok, binary(), binary(), state()} | :more | {:error, :bad_packet}
   def decrypt_packet_payload(%{algorithm: @aes256_gcm} = state, buffer) do
-    with <<packet_length::32, rest::binary>> when byte_size(rest) >= packet_length + @aes_tag_len <-
-           buffer do
-      <<ciphertext::binary-size(^packet_length), tag::binary-size(@aes_tag_len), rest::binary>> =
-        rest
-
+    with <<packet_length::32, ciphertext::binary-size(packet_length),
+           tag::binary-size(@aes_tag_len), rest::binary>> <- buffer do
       aad = <<packet_length::32>>
       iv = packet_iv(state.iv, state.sequence)
 
@@ -113,7 +107,7 @@ defmodule Sftpd.SSH.Cipher do
           {:ok, binary(), state()} | {:error, :bad_packet}
   def decrypt_packet_payload(%{algorithm: @aes256_gcm} = state, packet_length, encrypted_body)
       when byte_size(encrypted_body) == packet_length + @aes_tag_len do
-    <<ciphertext::binary-size(^packet_length), tag::binary-size(@aes_tag_len)>> = encrypted_body
+    {ciphertext, tag} = :erlang.split_binary(encrypted_body, packet_length)
     aad = <<packet_length::32>>
     iv = packet_iv(state.iv, state.sequence)
 

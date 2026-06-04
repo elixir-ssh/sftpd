@@ -11,14 +11,80 @@ defmodule Sftpd.SFTP.SessionTest do
   @ssh_fxp_close 4
   @ssh_fxp_read 5
   @ssh_fxp_write 6
+  @ssh_fxp_lstat 7
+  @ssh_fxp_fstat 8
+  @ssh_fxp_setstat 9
+  @ssh_fxp_fsetstat 10
   @ssh_fxp_opendir 11
   @ssh_fxp_readdir 12
+  @ssh_fxp_remove 13
   @ssh_fxp_mkdir 14
+  @ssh_fxp_rmdir 15
   @ssh_fxp_realpath 16
+  @ssh_fxp_stat 17
+  @ssh_fxp_rename 18
+  @ssh_fxp_readlink 19
+  @ssh_fxp_symlink 20
   @ssh_fxp_status 101
   @ssh_fxp_handle 102
   @ssh_fxp_data 103
   @ssh_fxp_name 104
+  @ssh_fxp_attrs 105
+
+  defmodule ErrorBackend do
+    @moduledoc false
+
+    def open_write("/open-write-error", _attrs, _session, _state), do: {:error, :eacces}
+
+    def open_write("/finish-error", _attrs, _session, _state),
+      do: {:ok, %{path: "/finish-error", finish_error?: true}}
+
+    def open_write("/write-error", _attrs, _session, _state),
+      do: {:ok, %{path: "/write-error", write_error?: true}}
+
+    def open_write(path, _attrs, _session, _state), do: {:ok, %{path: path}}
+
+    def open_read("/open-read-error", _session, _state), do: {:error, :enoent}
+
+    def open_read("/read-error", _session, _state),
+      do: {:ok, %{path: "/read-error", read_error?: true}}
+
+    def open_read(path, _session, _state), do: {:ok, %{path: path}}
+
+    def read_at(%{read_error?: true}, _offset, _len, _state), do: {:error, :eacces}
+    def read_at(_handle, _offset, _len, _state), do: {:ok, "ok"}
+
+    def write_at(%{write_error?: true}, _offset, _data, _state), do: {:error, :eacces}
+    def write_at(handle, _offset, _data, _state), do: {:ok, handle}
+
+    def finish_write(%{finish_error?: true}, _state), do: {:error, :eio}
+    def finish_write(_handle, _state), do: :ok
+
+    def file_attrs("/attrs-error", _session, _state), do: {:error, :enoent}
+
+    def file_attrs(_path, _session, _state),
+      do: {:ok, %{type: :regular, size: 2, permissions: 0o100644}}
+
+    def open_dir("/open-dir-error", _session, _state), do: {:error, :enoent}
+    def open_dir("/read-dir-error", _session, _state), do: {:ok, %{read_error?: true}}
+    def open_dir(_path, _session, _state), do: {:ok, %{}}
+
+    def read_dir(%{read_error?: true}, _state), do: {:error, :eacces}
+    def read_dir(handle, _state), do: {:ok, [], handle}
+    def close_dir(_handle, _state), do: :ok
+
+    def make_dir("/mkdir-error", _attrs, _session, _state), do: {:error, :eacces}
+    def make_dir(_path, _attrs, _session, _state), do: :ok
+
+    def del_dir("/rmdir-error", _session, _state), do: {:error, :eacces}
+    def del_dir(_path, _session, _state), do: :ok
+
+    def delete("/remove-error", _session, _state), do: {:error, :eacces}
+    def delete(_path, _session, _state), do: :ok
+
+    def rename("/rename-error", _newpath, _session, _state), do: {:error, :eacces}
+    def rename(_oldpath, _newpath, _session, _state), do: :ok
+  end
 
   setup do
     {:ok, backend_state} = Memory.init([])
@@ -89,6 +155,124 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:name, 1, ["/dir/file.txt"]} = decode_response(response)
   end
 
+  test "stat and fstat return attrs for paths and open file handles", %{session: session} do
+    {response, session} = handle(open(1, "/file.txt", 0x0000_000A), session)
+    {:handle, 1, write_handle} = decode_response(response)
+    {_response, session} = handle(write(2, write_handle, 0, "abc"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(path_packet(@ssh_fxp_stat, 4, "/file.txt"), session)
+    assert {:attrs, 4, %{size: 3}} = decode_response(response)
+
+    {response, session} = handle(path_packet(@ssh_fxp_lstat, 5, "/file.txt"), session)
+    assert {:attrs, 5, %{size: 3}} = decode_response(response)
+
+    {response, session} = handle(open(6, "/file.txt", 0x0000_0001), session)
+    {:handle, 6, read_handle} = decode_response(response)
+
+    {response, _session} = handle(handle_packet(@ssh_fxp_fstat, 7, read_handle), session)
+    assert {:attrs, 7, %{size: 3}} = decode_response(response)
+  end
+
+  test "mutation operations return backend statuses", %{session: session} do
+    {_response, session} = handle(mkdir(1, "/dir"), session)
+
+    {response, session} = handle(open(2, "/dir/file.txt", 0x0000_000A), session)
+    {:handle, 2, handle} = decode_response(response)
+    {_response, session} = handle(write(3, handle, 0, "data"), session)
+    {_response, session} = handle(close(4, handle), session)
+
+    {response, session} = handle(rename(5, "/dir/file.txt", "/dir/renamed.txt"), session)
+    assert {:status, 5, 0} = decode_response(response)
+
+    {response, session} = handle(path_packet(@ssh_fxp_remove, 6, "/dir/renamed.txt"), session)
+    assert {:status, 6, 0} = decode_response(response)
+
+    {response, _session} = handle(path_packet(@ssh_fxp_rmdir, 7, "/dir"), session)
+    assert {:status, 7, 0} = decode_response(response)
+  end
+
+  test "invalid handles and unsupported requests return status failures", %{session: session} do
+    for packet <- [
+          close(1, "missing"),
+          read(2, "missing", 0, 1),
+          write(3, "missing", 0, "x"),
+          handle_packet(@ssh_fxp_fstat, 4, "missing"),
+          readdir(5, "missing")
+        ] do
+      {response, _session} = handle(packet, session)
+      assert {:status, _id, 4} = decode_response(response)
+    end
+
+    for packet <- [
+          open(6, "/file", 0),
+          path_packet(@ssh_fxp_readlink, 7, "/link"),
+          attrs_packet(@ssh_fxp_setstat, 8, "/file"),
+          attrs_packet(@ssh_fxp_fsetstat, 9, "handle"),
+          rename_like(@ssh_fxp_symlink, 10, "/target", "/link")
+        ] do
+      {response, _session} = handle(packet, session)
+      assert {:status, _id, 8} = decode_response(response)
+    end
+
+    {response, _session} = Session.handle_packet(<<255>>, session)
+    assert {:status, 0, 5} = decode_response(response)
+  end
+
+  test "backend open and file operation errors are returned as SFTP statuses" do
+    session = Session.new(ErrorBackend, %{}, %{username: "test"})
+
+    {response, session} = handle(open(1, "/open-write-error", 0x0000_000A), session)
+    assert {:status, 1, 3} = decode_response(response)
+
+    {response, session} = handle(open(2, "/open-read-error", 0x0000_0001), session)
+    assert {:status, 2, 2} = decode_response(response)
+
+    {response, session} = handle(open(3, "/finish-error", 0x0000_000A), session)
+    {:handle, 3, finish_handle} = decode_response(response)
+    {response, session} = handle(close(4, finish_handle), session)
+    assert {:status, 4, 4} = decode_response(response)
+
+    {response, session} = handle(open(5, "/read-error", 0x0000_0001), session)
+    {:handle, 5, read_handle} = decode_response(response)
+    {response, session} = handle(read(6, read_handle, 0, 1), session)
+    assert {:status, 6, 3} = decode_response(response)
+
+    {response, session} = handle(open(7, "/write-error", 0x0000_000A), session)
+    {:handle, 7, write_handle} = decode_response(response)
+    {response, session} = handle(write(8, write_handle, 0, "x"), session)
+    assert {:status, 8, 3} = decode_response(response)
+
+    {response, session} = handle(open(9, "/attrs-error", 0x0000_0001), session)
+    {:handle, 9, attrs_handle} = decode_response(response)
+    {response, _session} = handle(handle_packet(@ssh_fxp_fstat, 10, attrs_handle), session)
+    assert {:status, 10, 2} = decode_response(response)
+  end
+
+  test "backend directory and mutation errors are returned as SFTP statuses" do
+    session = Session.new(ErrorBackend, %{}, %{username: "test"})
+
+    {response, session} = handle(opendir(1, "/open-dir-error"), session)
+    assert {:status, 1, 2} = decode_response(response)
+
+    {response, session} = handle(opendir(2, "/read-dir-error"), session)
+    {:handle, 2, dir_handle} = decode_response(response)
+    {response, session} = handle(readdir(3, dir_handle), session)
+    assert {:status, 3, 3} = decode_response(response)
+
+    for {packet, id} <- [
+          {mkdir(4, "/mkdir-error"), 4},
+          {path_packet(@ssh_fxp_rmdir, 5, "/rmdir-error"), 5},
+          {path_packet(@ssh_fxp_remove, 6, "/remove-error"), 6},
+          {rename(7, "/rename-error", "/new"), 7},
+          {path_packet(@ssh_fxp_stat, 8, "/attrs-error"), 8}
+        ] do
+      {response, _session} = handle(packet, session)
+      assert {:status, ^id, code} = decode_response(response)
+      assert code in [2, 3]
+    end
+  end
+
   defp handle(packet, session) do
     {:ok, request} = unwrap(packet)
     Session.handle_packet(request, session)
@@ -121,6 +305,13 @@ defmodule Sftpd.SFTP.SessionTest do
   defp readdir(id, handle), do: packet([<<@ssh_fxp_readdir, id::32>>, string(handle)])
   defp mkdir(id, path), do: packet([<<@ssh_fxp_mkdir, id::32>>, string(path), <<0::32>>])
   defp realpath(id, path), do: packet([<<@ssh_fxp_realpath, id::32>>, string(path)])
+  defp path_packet(type, id, path), do: packet([<<type, id::32>>, string(path)])
+  defp handle_packet(type, id, handle), do: packet([<<type, id::32>>, string(handle)])
+  defp attrs_packet(type, id, target), do: packet([<<type, id::32>>, string(target), <<0::32>>])
+  defp rename(id, oldpath, newpath), do: rename_like(@ssh_fxp_rename, id, oldpath, newpath)
+
+  defp rename_like(type, id, oldpath, newpath),
+    do: packet([<<type, id::32>>, string(oldpath), string(newpath)])
 
   defp packet(payload) do
     len = IO.iodata_length(payload)
@@ -154,11 +345,15 @@ defmodule Sftpd.SFTP.SessionTest do
           end)
 
         {:name, id, names}
+
+      <<@ssh_fxp_attrs, id::32, rest::binary>> ->
+        {:ok, attrs, <<>>} = take_attrs(rest)
+        {:attrs, id, attrs}
     end
   end
 
   defp take_string(<<len::32, rest::binary>>) do
-    <<value::binary-size(^len), rest::binary>> = rest
+    {value, rest} = :erlang.split_binary(rest, len)
     {:ok, value, rest}
   end
 

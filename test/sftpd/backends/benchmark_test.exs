@@ -53,4 +53,44 @@ defmodule Sftpd.Backends.BenchmarkTest do
 
     assert :eof = Benchmark.read_file_range("/range.bin", 100, 1, state)
   end
+
+  test "whole-file reads return zero-filled binaries and reject directories", %{state: state} do
+    assert :ok = Benchmark.write_file("/file.bin", :binary.copy("x", 1_050_000), state)
+    assert {:ok, data} = Benchmark.read_file("/file.bin", state)
+    assert IO.iodata_length(data) == 1_050_000
+    assert IO.iodata_to_binary(data) == :binary.copy(<<0>>, 1_050_000)
+
+    assert :ok = Benchmark.make_dir("/dir", state)
+    assert {:error, :eisdir} = Benchmark.read_file("/dir", state)
+    assert {:error, :enoent} = Benchmark.read_file("/missing", state)
+  end
+
+  test "rename, delete, and directory removal update synthetic metadata", %{state: state} do
+    assert :ok = Benchmark.make_dir("/dir", state)
+    assert :ok = Benchmark.write_file("/dir/file.txt", "ignored", state)
+    assert {:error, :eexist} = Benchmark.del_dir("/dir", state)
+
+    assert :ok = Benchmark.rename("/dir/file.txt", "/dir/renamed.txt", state)
+    assert {:error, :enoent} = Benchmark.file_info("/dir/file.txt", state)
+
+    assert {:ok, {:file_info, 7, :regular, _, _, _, _, _, _, _, _, _, _, _}} =
+             Benchmark.file_info("/dir/renamed.txt", state)
+
+    assert :ok = Benchmark.delete("/dir/renamed.txt", state)
+    assert :ok = Benchmark.del_dir("/dir", state)
+  end
+
+  test "handle callback aliases share the module backend contract", %{state: state} do
+    assert :ok = Benchmark.make_dir("/dir", %{}, %{}, state)
+    assert {:ok, dir} = Benchmark.open_dir("/dir", %{}, state)
+    assert {:ok, entries, dir} = Benchmark.read_dir(dir, state)
+    assert Enum.map(entries, & &1.name) == [".", ".."]
+    assert :eof = Benchmark.read_dir(dir, state)
+    assert :ok = Benchmark.close_dir(dir, state)
+
+    assert {:ok, writer} = Benchmark.begin_write("/abort.bin", state)
+    assert {:ok, writer} = Benchmark.write_chunk(writer, 0, "abc", state)
+    assert :ok = Benchmark.abort_write(writer, state)
+    assert {:error, :enoent} = Benchmark.open_read("/abort.bin", %{}, state)
+  end
 end

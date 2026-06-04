@@ -50,14 +50,12 @@ defmodule Sftpd.SFTP.Codec do
   @spec split_packets(binary()) :: {[binary()], binary()}
   def split_packets(buffer), do: split_packets(buffer, [])
 
-  defp split_packets(<<len::32, rest::binary>> = buffer, packets) do
-    if byte_size(rest) >= len do
-      <<packet::binary-size(^len), tail::binary>> = rest
-      split_packets(tail, [packet | packets])
-    else
-      {Enum.reverse(packets), buffer}
-    end
+  defp split_packets(<<len::32, packet::binary-size(len), tail::binary>>, packets) do
+    split_packets(tail, [packet | packets])
   end
+
+  defp split_packets(<<_len::32, _rest::binary>> = buffer, packets),
+    do: {Enum.reverse(packets), buffer}
 
   defp split_packets(buffer, packets), do: {Enum.reverse(packets), buffer}
 
@@ -244,8 +242,7 @@ defmodule Sftpd.SFTP.Codec do
   defp string(data) when is_list(data), do: data |> to_string() |> string()
   defp string(data) when is_binary(data), do: [<<byte_size(data)::32>>, data]
 
-  defp take_string(<<len::32, rest::binary>>) when byte_size(rest) >= len do
-    <<value::binary-size(^len), tail::binary>> = rest
+  defp take_string(<<len::32, value::binary-size(len), tail::binary>>) do
     {:ok, value, tail}
   end
 

@@ -51,6 +51,37 @@ defmodule Sftpd.BackendTest do
                  mtime: 1_704_067_200
                })
     end
+
+    test "builds directory info and directory attrs with defaults" do
+      assert {:file_info, 4096, :directory, :read, _, _, _, 16877, 2, 0, 0, 0, 1, 1} =
+               Backend.directory_info()
+
+      assert {:file_info, 0, :directory, :read_write, _, _, _, 16877, 1, 0, 0, _, 1, 1} =
+               Backend.file_info_from_attrs(%{type: :directory})
+    end
+
+    test "accepts multiple timestamp forms for attrs" do
+      naive = ~N[2024-01-02 03:04:05]
+      erl = {{2024, 1, 2}, {3, 4, 5}}
+
+      assert Backend.unix_time(naive) == 1_704_164_645
+      assert Backend.unix_time(erl) == 1_704_164_645
+
+      assert {:file_info, 0, :regular, :read_write, ^erl, ^erl, ^erl, 33188, 1, 0, 0, _, 1, 1} =
+               Backend.file_info_from_attrs(%{mtime: erl})
+
+      assert {:file_info, 0, :regular, :read_write, ^erl, ^erl, ^erl, 33188, 1, 0, 0, _, 1, 1} =
+               Backend.file_info_from_attrs(%{mtime: naive})
+    end
+
+    test "normalizes unknown file types from OTP file info to regular attrs" do
+      info =
+        {:file_info, 3, :device, :read, :bad_time, :bad_time, :bad_time, 0o100600, 1, 2, 3, 4, 5,
+         6}
+
+      assert %{size: 3, type: :regular, permissions: 0o100600, uid: 2, gid: 3} =
+               Backend.attrs_from_file_info(info)
+    end
   end
 
   defp path_string do

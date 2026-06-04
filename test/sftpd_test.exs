@@ -40,6 +40,18 @@ defmodule SftpdTest do
     def authorize_public_key(_username, _public_key, _opts), do: :error
   end
 
+  defmodule ShutdownOnStopServer do
+    use GenServer
+
+    def start(test_pid), do: GenServer.start(__MODULE__, test_pid)
+    def init(test_pid), do: {:ok, test_pid}
+
+    def terminate(_reason, test_pid) do
+      send(test_pid, :terminating)
+      exit(:shutdown)
+    end
+  end
+
   defmodule SessionBackend do
     def init(opts) do
       {:ok, mem_state} = Sftpd.Backends.Memory.init([])
@@ -926,6 +938,14 @@ defmodule SftpdTest do
 
     test "server callback skips stop when daemon already exited" do
       assert :ok = Sftpd.Server.terminate(:shutdown, %{daemon_down?: true})
+    end
+
+    test "stop_server treats already-shutting-down Elixir transports as stopped" do
+      {:ok, pid} = ShutdownOnStopServer.start(self())
+
+      assert :ok = Sftpd.stop_server({:elixir, pid})
+      assert_receive :terminating
+      refute Process.alive?(pid)
     end
   end
 
