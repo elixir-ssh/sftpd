@@ -1144,6 +1144,16 @@ defmodule Sftpd.SSH.Server do
     def __test_sftp_response_payloads__(channel, responses) do
       sftp_response_payloads(channel, responses)
     end
+
+    @doc false
+    def __test_split_responses_for_window__(responses, window) do
+      split_responses_for_window(responses, window)
+    end
+
+    @doc false
+    def __test_validate_backend__(backend) do
+      validate_backend(backend)
+    end
   end
 
   defp authenticate_password(auth, username, password, socket) do

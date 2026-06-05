@@ -183,6 +183,23 @@ defmodule Sftpd.IODeviceTest do
     assert {:ok, "abXYef"} = Memory.read_file(~c"/out.bin", backend_state)
   end
 
+  test "append writes against missing files start at offset zero", %{backend_state: backend_state} do
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/new-append.bin",
+               mode: :write,
+               append?: true,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert :ok = IODevice.write(handle, "new", 3)
+    assert :ok = IODevice.close(handle)
+
+    assert {:ok, "new"} = Memory.read_file(~c"/new-append.bin", backend_state)
+  end
+
   test "replays random writes sequentially when backend rejects positioned writes" do
     {:ok, state} = Agent.start_link(fn -> %{} end)
 
@@ -304,6 +321,28 @@ defmodule Sftpd.IODeviceTest do
     assert {:ok, 0} = IODevice.position(handle, {:bof, 0})
     assert {:ok, "abXYef"} = IODevice.read(handle, 6)
     assert :ok = IODevice.close(handle)
+  end
+
+  test "truncating read/write handles ignore previous content", %{backend_state: backend_state} do
+    :ok = Memory.write_file(~c"/file.bin", "old", backend_state)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/file.bin",
+               mode: :read_write,
+               truncate?: true,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert :eof = IODevice.read(handle, 1)
+    assert :ok = IODevice.write(handle, "new", 3)
+    assert {:ok, 0} = IODevice.position(handle, {:bof, 0})
+    assert {:ok, "new"} = IODevice.read(handle, 8)
+    assert :ok = IODevice.close(handle)
+
+    assert {:ok, "new"} = Memory.read_file(~c"/file.bin", backend_state)
   end
 
   test "aborts replay writer when replay finalize fails" do

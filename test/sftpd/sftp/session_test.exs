@@ -55,12 +55,16 @@ defmodule Sftpd.SFTP.SessionTest do
     def open_read("/read-error", _session, _state),
       do: {:ok, %{path: "/read-error", read_error?: true}}
 
+    def open_read("/eof-read", _session, _state),
+      do: {:ok, %{path: "/eof-read", eof?: true}}
+
     def open_read("/empty-read", _session, _state),
       do: {:ok, %{path: "/empty-read", empty?: true}}
 
     def open_read(path, _session, _state), do: {:ok, %{path: path}}
 
     def read_at(%{read_error?: true}, _offset, _len, _state), do: {:error, :eacces}
+    def read_at(%{eof?: true}, _offset, _len, _state), do: :eof
     def read_at(%{empty?: true}, _offset, _len, _state), do: {:ok, []}
     def read_at(_handle, _offset, _len, _state), do: {:ok, "ok"}
 
@@ -78,6 +82,8 @@ defmodule Sftpd.SFTP.SessionTest do
 
     def file_attrs(path, _session, _state) when path in ["/attrs-error", "/write-error"],
       do: {:error, :enoent}
+
+    def file_attrs("/no-such-file-error", _session, _state), do: {:error, :no_such_file}
 
     def file_attrs(path, _session, _state)
         when path in ["/open-dir-error", "/read-dir-error"],
@@ -309,6 +315,32 @@ defmodule Sftpd.SFTP.SessionTest do
     assert_receive {:aborted, "/pending.txt"}
   end
 
+  test "abort_open_writes aborts mixed handles and leaves read handles alone", %{
+    session: session
+  } do
+    {response, session} = handle(open(1, "/read.txt", 0x0000_000A), session)
+    {:handle, 1, write_handle} = decode_response(response)
+    {_response, session} = handle(write(2, write_handle, 0, "read"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(open(4, "/read.txt", 0x0000_0001), session)
+    assert {:handle, 4, _read_handle} = decode_response(response)
+
+    abort_session =
+      AbortBackend
+      |> Session.new(self(), %{username: "test"})
+      |> Map.put(:initialized?, true)
+
+    {response, abort_session} = handle(open(5, "/mixed.txt", 0x0000_000B), abort_session)
+    assert {:handle, 5, _mixed_handle} = decode_response(response)
+
+    session = %{abort_session | handles: Map.merge(abort_session.handles, session.handles)}
+    session = Session.abort_open_writes(session)
+
+    assert session.handles == %{}
+    assert_receive {:aborted, "/mixed.txt"}
+  end
+
   test "directory handles return one listing and then eof", %{session: session} do
     {_response, session} = handle(mkdir(1, "/dir"), session)
 
@@ -479,6 +511,33 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:attrs, 6, %{size: 3}} = decode_response(response)
   end
 
+  test "mixed append opens read base content plus appended writes before close", %{
+    session: session
+  } do
+    {response, session} = handle(open(1, "/append-read.txt", 0x0000_000A), session)
+    {:handle, 1, write_handle} = decode_response(response)
+    {_response, session} = handle(write(2, write_handle, 0, "base"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(open(4, "/append-read.txt", 0x0000_0007), session)
+    assert {:handle, 4, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(write(5, mixed_handle, 0, "tail"), session)
+    assert {:status, 5, 0} = decode_response(response)
+
+    {response, session} = handle(read(6, mixed_handle, 0, 16), session)
+    assert {:data, 6, "basetail"} = decode_response(response)
+
+    {response, session} = handle(close(7, mixed_handle), session)
+    assert {:status, 7, 0} = decode_response(response)
+
+    {response, session} = handle(open(8, "/append-read.txt", 0x0000_0001), session)
+    assert {:handle, 8, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(9, read_handle, 0, 16), session)
+    assert {:data, 9, "basetail"} = decode_response(response)
+  end
+
   test "closing untouched mixed read/write opens does not truncate existing content", %{
     session: session
   } do
@@ -547,6 +606,81 @@ defmodule Sftpd.SFTP.SessionTest do
 
     {response, _session} = handle(read(9, read_handle, 0, 16), session)
     assert {:data, 9, "abXYef"} = decode_response(response)
+  end
+
+  test "mixed read/write sparse writes read as zero-filled gaps before close", %{
+    session: session
+  } do
+    {response, session} = handle(open(1, "/sparse-mixed.bin", 0x0000_000B), session)
+    assert {:handle, 1, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(write(2, mixed_handle, 4, "tail"), session)
+    assert {:status, 2, 0} = decode_response(response)
+
+    {response, session} = handle(read(3, mixed_handle, 0, 8), session)
+    assert {:data, 3, <<0, 0, 0, 0, "tail">>} = decode_response(response)
+
+    {response, session} = handle(close(4, mixed_handle), session)
+    assert {:status, 4, 0} = decode_response(response)
+
+    {response, session} = handle(open(5, "/sparse-mixed.bin", 0x0000_0001), session)
+    assert {:handle, 5, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(6, read_handle, 0, 8), session)
+    assert {:data, 6, <<0, 0, 0, 0, "tail">>} = decode_response(response)
+  end
+
+  test "mixed read/write reads treat backend eof as zero-filled base data" do
+    session =
+      ErrorBackend |> Session.new(%{}, %{username: "test"}) |> Map.put(:initialized?, true)
+
+    {response, session} = handle(open(1, "/eof-read", 0x0000_0003), session)
+    assert {:handle, 1, mixed_handle} = decode_response(response)
+
+    {response, _session} = handle(read(2, mixed_handle, 0, 2), session)
+    assert {:data, 2, <<0, 0>>} = decode_response(response)
+  end
+
+  test "mixed read/write merges overlapping dirty ranges before read", %{session: session} do
+    {response, session} = handle(open(1, "/merged-ranges.bin", 0x0000_000B), session)
+    assert {:handle, 1, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(write(2, mixed_handle, 0, "abcd"), session)
+    assert {:status, 2, 0} = decode_response(response)
+
+    {response, session} = handle(write(3, mixed_handle, 2, "XY"), session)
+    assert {:status, 3, 0} = decode_response(response)
+
+    {response, _session} = handle(read(4, mixed_handle, 0, 4), session)
+    assert {:data, 4, "abXY"} = decode_response(response)
+  end
+
+  test "truncating mixed read/write opens read only new writes", %{session: session} do
+    {response, session} = handle(open(1, "/truncate-rewrite.txt", 0x0000_000A), session)
+    {:handle, 1, write_handle} = decode_response(response)
+    {_response, session} = handle(write(2, write_handle, 0, "old"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(open(4, "/truncate-rewrite.txt", 0x0000_0013), session)
+    assert {:handle, 4, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(read(5, mixed_handle, 0, 1), session)
+    assert {:status, 5, 1} = decode_response(response)
+
+    {response, session} = handle(write(6, mixed_handle, 0, "new"), session)
+    assert {:status, 6, 0} = decode_response(response)
+
+    {response, session} = handle(read(7, mixed_handle, 0, 16), session)
+    assert {:data, 7, "new"} = decode_response(response)
+
+    {response, session} = handle(close(8, mixed_handle), session)
+    assert {:status, 8, 0} = decode_response(response)
+
+    {response, session} = handle(open(9, "/truncate-rewrite.txt", 0x0000_0001), session)
+    assert {:handle, 9, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(10, read_handle, 0, 16), session)
+    assert {:data, 10, "new"} = decode_response(response)
   end
 
   test "exclusive create rejects existing files", %{session: session} do
@@ -705,6 +839,14 @@ defmodule Sftpd.SFTP.SessionTest do
       assert {:status, ^id, code} = decode_response(response)
       assert code in [2, 3, 4]
     end
+  end
+
+  test "mkdir treats no-such-file backend errors as missing paths" do
+    session =
+      ErrorBackend |> Session.new(%{}, %{username: "test"}) |> Map.put(:initialized?, true)
+
+    {response, _session} = handle(mkdir(1, "/no-such-file-error"), session)
+    assert {:status, 1, 0} = decode_response(response)
   end
 
   defp handle(packet, session) do
