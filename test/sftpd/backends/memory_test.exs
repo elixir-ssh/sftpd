@@ -92,35 +92,62 @@ defmodule Sftpd.Backends.MemoryTest do
       assert chunk == :binary.copy(<<31>>, 1024)
     end
 
-    test "fills gaps in sparse non-overlapping chunks", %{state: state} do
-      {:ok, handle} = Memory.open_write("/sparse-fast.bin", %{}, %{}, state)
-      {:ok, handle} = Memory.write_at(handle, 0, "head", state)
-      {:ok, handle} = Memory.write_at(handle, 8, "tail", state)
+    property "fills gaps in sparse non-overlapping chunks", %{state: state} do
+      check all(
+              head <- binary(min_length: 1, max_length: 32),
+              tail <- binary(min_length: 1, max_length: 32),
+              gap <- integer(0..32)
+            ) do
+        tail_offset = byte_size(head) + gap
 
-      assert :ok = Memory.finish_write(handle, state)
-      assert {:ok, <<"head", 0, 0, 0, 0, "tail">>} = Memory.read_file("/sparse-fast.bin", state)
+        {:ok, handle} = Memory.open_write("/sparse-fast.bin", %{}, %{}, state)
+        {:ok, handle} = Memory.write_at(handle, 0, head, state)
+        {:ok, handle} = Memory.write_at(handle, tail_offset, tail, state)
 
-      {:ok, read_handle} = Memory.open_read("/sparse-fast.bin", %{}, state)
-      assert {:ok, <<0, 0, 0, 0>>} = Memory.read_at(read_handle, 4, 4, state)
-      assert {:ok, "tail"} = Memory.read_at(read_handle, 8, 4, state)
+        assert :ok = Memory.finish_write(handle, state)
+        expected = [head, :binary.copy(<<0>>, gap), tail] |> IO.iodata_to_binary()
+        assert {:ok, ^expected} = Memory.read_file("/sparse-fast.bin", state)
+
+        {:ok, read_handle} = Memory.open_read("/sparse-fast.bin", %{}, state)
+        assert {:ok, ^tail} = Memory.read_at(read_handle, tail_offset, byte_size(tail), state)
+      end
     end
 
-    test "preserves overwrite semantics for overlapping chunks", %{state: state} do
-      {:ok, handle} = Memory.open_write("/overlap-fast.bin", %{}, %{}, state)
-      {:ok, handle} = Memory.write_at(handle, 0, "abcdef", state)
-      {:ok, handle} = Memory.write_at(handle, 2, "XY", state)
+    property "preserves overwrite semantics for overlapping chunks", %{state: state} do
+      check all(
+              prefix <- binary(min_length: 1, max_length: 32),
+              replacement <- binary(min_length: 1, max_length: 32),
+              suffix <- binary(min_length: 1, max_length: 32)
+            ) do
+        original = [prefix, :binary.copy("x", byte_size(replacement)), suffix]
+        offset = byte_size(prefix)
 
-      assert :ok = Memory.finish_write(handle, state)
-      assert {:ok, "abXYef"} = Memory.read_file("/overlap-fast.bin", state)
+        {:ok, handle} = Memory.open_write("/overlap-fast.bin", %{}, %{}, state)
+        {:ok, handle} = Memory.write_at(handle, 0, original, state)
+        {:ok, handle} = Memory.write_at(handle, offset, replacement, state)
+
+        assert :ok = Memory.finish_write(handle, state)
+        expected = [prefix, replacement, suffix] |> IO.iodata_to_binary()
+        assert {:ok, ^expected} = Memory.read_file("/overlap-fast.bin", state)
+      end
     end
 
-    test "preserves write order for out-of-order overlapping chunks", %{state: state} do
-      {:ok, handle} = Memory.open_write("/overlap-reordered.bin", %{}, %{}, state)
-      {:ok, handle} = Memory.write_at(handle, 2, "XY", state)
-      {:ok, handle} = Memory.write_at(handle, 0, "abcd", state)
+    property "preserves write order for out-of-order overlapping chunks", %{state: state} do
+      check all(
+              head <- binary(min_length: 1, max_length: 32),
+              tail <- binary(min_length: 2, max_length: 32)
+            ) do
+        later = [head, tail]
+        offset = byte_size(head)
 
-      assert :ok = Memory.finish_write(handle, state)
-      assert {:ok, "abcd"} = Memory.read_file("/overlap-reordered.bin", state)
+        {:ok, handle} = Memory.open_write("/overlap-reordered.bin", %{}, %{}, state)
+        {:ok, handle} = Memory.write_at(handle, offset, "XY", state)
+        {:ok, handle} = Memory.write_at(handle, 0, later, state)
+
+        assert :ok = Memory.finish_write(handle, state)
+        expected = IO.iodata_to_binary(later)
+        assert {:ok, ^expected} = Memory.read_file("/overlap-reordered.bin", state)
+      end
     end
   end
 

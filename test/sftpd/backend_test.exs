@@ -26,30 +26,40 @@ defmodule Sftpd.BackendTest do
   end
 
   describe "file attrs helpers" do
-    test "round trips regular file_info into fast attrs" do
-      info = Backend.file_info(12, {{2024, 1, 1}, {0, 0, 0}}, :read_write)
+    property "round trips regular file_info into fast attrs" do
+      check all(size <- integer(0..1_000_000)) do
+        info = Backend.file_info(size, {{2024, 1, 1}, {0, 0, 0}}, :read_write)
 
-      assert %{
-               size: 12,
-               type: :regular,
-               permissions: 33188,
-               uid: 1,
-               gid: 1,
-               atime: 1_704_067_200,
-               mtime: 1_704_067_200
-             } = Backend.attrs_from_file_info(info)
-    end
-
-    test "converts fast attrs to OTP file_info" do
-      assert {:file_info, 42, :regular, :read_write, _, _, _, 33188, 1, 0, 0, _, 1000, 1000} =
-               Backend.file_info_from_attrs(%{
-                 size: 42,
+        assert %{
+                 size: ^size,
                  type: :regular,
                  permissions: 33188,
-                 uid: 1000,
-                 gid: 1000,
+                 uid: 1,
+                 gid: 1,
+                 atime: 1_704_067_200,
                  mtime: 1_704_067_200
-               })
+               } = Backend.attrs_from_file_info(info)
+      end
+    end
+
+    property "converts fast attrs to OTP file_info" do
+      check all(
+              size <- integer(0..1_000_000),
+              permissions <- integer(0..0o7777),
+              uid <- integer(0..65_535),
+              gid <- integer(0..65_535)
+            ) do
+        assert {:file_info, ^size, :regular, :read_write, _, _, _, ^permissions, 1, 0, 0, _, ^uid,
+                ^gid} =
+                 Backend.file_info_from_attrs(%{
+                   size: size,
+                   type: :regular,
+                   permissions: permissions,
+                   uid: uid,
+                   gid: gid,
+                   mtime: 1_704_067_200
+                 })
+      end
     end
 
     test "builds directory info and directory attrs with defaults" do

@@ -1,5 +1,6 @@
 defmodule Sftpd.DirectIODeviceTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Sftpd.Backends.Memory
   alias Sftpd.DirectIODevice
@@ -8,20 +9,26 @@ defmodule Sftpd.DirectIODeviceTest do
     @moduledoc false
 
     def file_attrs("/attrs-error", _session, _state), do: {:error, :enoent}
-    def file_attrs("/nested-iodata", _session, _state), do: {:ok, %{size: 4}}
+
+    def file_attrs("/nested-iodata", _session, %{seed_data: data}),
+      do: {:ok, %{size: IO.iodata_length(data)}}
+
     def file_attrs(_path, _session, _state), do: {:ok, %{size: 4}}
 
     def open_read("/open-read-error", _session, _state), do: {:error, :eacces}
     def open_read("/read-error", _session, _state), do: {:ok, :read_error}
     def open_read("/backend-eof", _session, _state), do: {:ok, :backend_eof}
     def open_read("/iodata", _session, _state), do: {:ok, :iodata}
-    def open_read("/nested-iodata", _session, _state), do: {:ok, :nested_iodata}
+
+    def open_read("/nested-iodata", _session, %{seed_data: data}),
+      do: {:ok, {:nested_iodata, data}}
+
     def open_read(_path, _session, _state), do: {:ok, :reader}
 
     def read_at(:read_error, _offset, _len, _state), do: {:error, :eio}
     def read_at(:backend_eof, _offset, _len, _state), do: :eof
     def read_at(:iodata, _offset, _len, _state), do: {:ok, ["io", "data"]}
-    def read_at(:nested_iodata, _offset, _len, _state), do: {:ok, ["io", ["da"]]}
+    def read_at({:nested_iodata, data}, _offset, _len, _state), do: {:ok, data}
     def read_at(_handle, _offset, 0, _state), do: {:ok, ""}
     def read_at(_handle, _offset, len, _state), do: {:ok, binary_part("data", 0, min(len, 4))}
 
@@ -135,18 +142,27 @@ defmodule Sftpd.DirectIODeviceTest do
     assert {:ok, "iodata"} = DirectIODevice.read(handle, 6)
   end
 
-  test "read/write seeding accepts iodata without flattening backend replay" do
-    assert {:ok, handle} =
-             DirectIODevice.start(%{
-               path: "/nested-iodata",
-               mode: :read_write,
-               backend: ErrorBackend,
-               backend_state: %{test_pid: self()}
-             })
+  property "read/write seeding accepts iodata without flattening backend replay" do
+    check all(
+            head <- binary(min_length: 1, max_length: 16),
+            tail <- binary(max_length: 16)
+          ) do
+      data = [head, [tail]]
+      bytes = IO.iodata_length(data)
+      expected = IO.iodata_to_binary(data)
 
-    assert_receive {:seed_write, 0, ["io", ["da"]], 4, false}
-    assert {:ok, "ioda"} = DirectIODevice.read(handle, 4)
-    assert :ok = DirectIODevice.close(handle)
+      assert {:ok, handle} =
+               DirectIODevice.start(%{
+                 path: "/nested-iodata",
+                 mode: :read_write,
+                 backend: ErrorBackend,
+                 backend_state: %{test_pid: self(), seed_data: data}
+               })
+
+      assert_receive {:seed_write, 0, ^data, ^bytes, false}
+      assert {:ok, ^expected} = DirectIODevice.read(handle, bytes)
+      assert :ok = DirectIODevice.close(handle)
+    end
   end
 
   test "writes iodata and finalizes on close", %{backend_state: backend_state} do
@@ -221,24 +237,34 @@ defmodule Sftpd.DirectIODeviceTest do
     assert {:ok, "content"} = Memory.read_file(~c"/file.bin", backend_state)
   end
 
-  test "read/write handles preserve existing bytes around partial writes", %{
+  property "read/write handles preserve existing bytes around partial writes", %{
     backend_state: backend_state
   } do
-    :ok = Memory.write_file(~c"/file.bin", "abcdef", backend_state)
+    check all(
+            prefix <- binary(min_length: 1, max_length: 32),
+            replacement <- binary(min_length: 1, max_length: 32),
+            suffix <- binary(min_length: 1, max_length: 32)
+          ) do
+      original = [prefix, :binary.copy("x", byte_size(replacement)), suffix]
+      expected = [prefix, replacement, suffix] |> IO.iodata_to_binary()
+      offset = byte_size(prefix)
 
-    assert {:ok, handle} =
-             DirectIODevice.start(%{
-               path: ~c"/file.bin",
-               mode: :read_write,
-               backend: Memory,
-               backend_state: backend_state,
-               session: %{}
-             })
+      :ok = Memory.write_file(~c"/file.bin", original, backend_state)
 
-    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
-    assert :ok = DirectIODevice.write(handle, "XY", 2)
-    assert :ok = DirectIODevice.close(handle)
-    assert {:ok, "abXYef"} = Memory.read_file(~c"/file.bin", backend_state)
+      assert {:ok, handle} =
+               DirectIODevice.start(%{
+                 path: ~c"/file.bin",
+                 mode: :read_write,
+                 backend: Memory,
+                 backend_state: backend_state,
+                 session: %{}
+               })
+
+      assert {:ok, ^offset} = DirectIODevice.position(handle, {:bof, offset})
+      assert :ok = DirectIODevice.write(handle, replacement, byte_size(replacement))
+      assert :ok = DirectIODevice.close(handle)
+      assert {:ok, ^expected} = Memory.read_file(~c"/file.bin", backend_state)
+    end
   end
 
   test "read/write handles read accepted writes before close", %{

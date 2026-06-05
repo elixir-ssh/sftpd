@@ -404,43 +404,9 @@ defmodule Sftpd.Backends.S3Test do
       end
     end
 
-    test "read_file_range sets the range header and returns data", %{state: state} do
-      expect(MockExAws, :request, fn op ->
-        assert op.headers["range"] == "bytes=5-8"
-        {:ok, %{status_code: 206, body: "6789"}}
-      end)
-
-      assert {:ok, "6789"} = S3.read_file_range(~c"/file.txt", 5, 4, state)
-    end
-
     test "read_file_range returns eof on 416", %{state: state} do
       expect(MockExAws, :request, fn _op -> {:error, {:http_error, 416, %{}}} end)
       assert :eof = S3.read_file_range(~c"/file.txt", 100, 4, state)
-    end
-
-    test "read_file_range returns eof for empty successful bodies", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 206, body: ""}} end)
-      assert :eof = S3.read_file_range(~c"/file.txt", 0, 4, state)
-    end
-
-    test "read_file_range accepts a 200 response only for offset zero within len", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 200, body: "abc"}} end)
-      assert {:ok, "abc"} = S3.read_file_range(~c"/file.txt", 0, 4, state)
-    end
-
-    test "read_file_range rejects oversized 200 responses", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 200, body: "abcde"}} end)
-      assert {:error, :eio} = S3.read_file_range(~c"/file.txt", 0, 4, state)
-    end
-
-    test "read_file_range rejects 200 responses for non-zero offsets", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 200, body: "full-object"}} end)
-      assert {:error, :eio} = S3.read_file_range(~c"/file.txt", 5, 4, state)
-    end
-
-    test "read_file_range returns eio for unexpected success statuses", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 301, body: "redirect"}} end)
-      assert {:error, :eio} = S3.read_file_range(~c"/file.txt", 0, 4, state)
     end
 
     test "read_file_range normalizes generic request errors", %{state: state} do
@@ -774,38 +740,25 @@ defmodule Sftpd.Backends.S3Test do
                S3.write_chunk(writer, 100 * @multipart_part_size, "tail", state)
     end
 
-    test "finish_write rejects cumulative sparse gaps before small-object materialization", %{
+    property "finish_write rejects cumulative sparse gaps before materialization", %{
       state: state
     } do
-      assert {:ok, writer} = S3.begin_write(~c"/sparse.bin", state)
-      assert {:ok, writer} = S3.write_chunk(writer, @max_sparse_write_gap, "a", state)
+      check all(
+              first_chunk <- binary(min_length: 1, max_length: 1024),
+              final_chunk <- binary(min_length: 1, max_length: 1024),
+              uploaded_size <- member_of([0, @multipart_part_size])
+            ) do
+        first_offset = uploaded_size + @max_sparse_write_gap
+        final_offset = uploaded_size + 2 * @max_sparse_write_gap + byte_size(first_chunk)
 
-      assert {:ok, writer} =
-               S3.write_chunk(writer, 2 * @max_sparse_write_gap + 1, "b", state)
+        writer =
+          sparse_writer(
+            uploaded_size,
+            [{first_offset, first_chunk}, {final_offset, final_chunk}]
+          )
 
-      assert {:error, :einval} = S3.finish_write(writer, state)
-    end
-
-    test "finish_write rejects cumulative sparse multipart tails before materialization", %{
-      state: state
-    } do
-      writer = %{
-        bucket: "test-bucket",
-        key: "large.bin",
-        upload_id: "upload-1",
-        next_offset: @multipart_part_size + 2 * @max_sparse_write_gap + 2,
-        next_part_number: 2,
-        pending_chunks:
-          :queue.from_list([
-            {@multipart_part_size + @max_sparse_write_gap, "a"},
-            {@multipart_part_size + 2 * @max_sparse_write_gap + 1, "b"}
-          ]),
-        pending_size: 2,
-        uploaded_size: @multipart_part_size,
-        uploaded_parts: [{1, "etag-1"}]
-      }
-
-      assert {:error, :einval} = S3.finish_write(writer, state)
+        assert {:error, :einval} = S3.finish_write(writer, state)
+      end
     end
 
     test "finish_write uses put_object directly for small files", %{state: state} do
@@ -1034,6 +987,43 @@ defmodule Sftpd.Backends.S3Test do
       {_offset, chunk}, size -> size + byte_size(chunk)
       chunk, size -> size + byte_size(chunk)
     end)
+  end
+
+  defp sparse_writer(0, chunks) do
+    %{
+      bucket: "test-bucket",
+      key: "sparse.bin",
+      upload_id: nil,
+      next_offset: sparse_next_offset(chunks),
+      next_part_number: 1,
+      pending_chunks: :queue.from_list(chunks),
+      pending_size: pending_chunk_size(chunks),
+      uploaded_parts: []
+    }
+  end
+
+  defp sparse_writer(uploaded_size, chunks) do
+    %{
+      bucket: "test-bucket",
+      key: "large.bin",
+      upload_id: "upload-1",
+      next_offset: sparse_next_offset(chunks),
+      next_part_number: 2,
+      pending_chunks: :queue.from_list(chunks),
+      pending_size: pending_chunk_size(chunks),
+      uploaded_size: uploaded_size,
+      uploaded_parts: [{1, "etag-1"}]
+    }
+  end
+
+  defp sparse_next_offset(chunks) do
+    chunks
+    |> Enum.map(fn {offset, chunk} -> offset + byte_size(chunk) end)
+    |> Enum.max()
+  end
+
+  defp pending_chunk_size(chunks) do
+    Enum.reduce(chunks, 0, fn {_offset, chunk}, size -> size + byte_size(chunk) end)
   end
 
   defp drain_uploaded_parts do

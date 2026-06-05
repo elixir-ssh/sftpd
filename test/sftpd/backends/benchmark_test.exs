@@ -1,5 +1,6 @@
 defmodule Sftpd.Backends.BenchmarkTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Sftpd.Backends.Benchmark
 
@@ -8,15 +9,28 @@ defmodule Sftpd.Backends.BenchmarkTest do
     %{state: state}
   end
 
-  test "tracks uploaded size without storing content", %{state: state} do
-    {:ok, handle} = Benchmark.open_write("/upload.bin", %{}, %{}, state)
-    {:ok, handle} = Benchmark.write_at(handle, 0, :binary.copy("a", 1024), state)
-    {:ok, handle} = Benchmark.write_at(handle, 4096, :binary.copy("b", 512), state)
+  property "tracks uploaded size without storing content", %{state: state} do
+    check all(
+            first_offset <- integer(0..4096),
+            first_size <- integer(0..2048),
+            second_offset <- integer(0..8192),
+            second_size <- integer(0..2048)
+          ) do
+      {:ok, handle} = Benchmark.open_write("/upload.bin", %{}, %{}, state)
 
-    assert :ok = Benchmark.finish_write(handle, state)
+      {:ok, handle} =
+        Benchmark.write_at(handle, first_offset, :binary.copy("a", first_size), state)
 
-    assert {:ok, {:file_info, 4608, :regular, _, _, _, _, _, _, _, _, _, _, _}} =
-             Benchmark.file_info("/upload.bin", state)
+      {:ok, handle} =
+        Benchmark.write_at(handle, second_offset, :binary.copy("b", second_size), state)
+
+      assert :ok = Benchmark.finish_write(handle, state)
+
+      expected_size = max(first_offset + first_size, second_offset + second_size)
+
+      assert {:ok, {:file_info, ^expected_size, :regular, _, _, _, _, _, _, _, _, _, _, _}} =
+               Benchmark.file_info("/upload.bin", state)
+    end
   end
 
   test "normalizes configured files and root listings" do
@@ -46,18 +60,25 @@ defmodule Sftpd.Backends.BenchmarkTest do
              Benchmark.file_info("/raw.bin", state)
   end
 
-  test "returns zero-filled reads bounded by file size", %{state: state} do
-    assert :ok = Benchmark.write_file("/download.bin", :binary.copy("x", 4096), state)
-    {:ok, handle} = Benchmark.open_read("/download.bin", %{}, state)
+  property "returns zero-filled reads bounded by file size", %{state: state} do
+    check all(
+            file_size <- integer(1..8192),
+            offset <- integer(0..8192),
+            len <- integer(0..8192)
+          ) do
+      assert :ok = Benchmark.write_file("/download.bin", :binary.copy("x", file_size), state)
+      {:ok, handle} = Benchmark.open_read("/download.bin", %{}, state)
 
-    assert {:ok, data} = Benchmark.read_at(handle, 1024, 2048, state)
-    assert byte_size(data) == 2048
-    assert data == :binary.copy(<<0>>, 2048)
+      expected_size = max(min(len, file_size - offset), 0)
 
-    assert {:ok, data} = Benchmark.read_at(handle, 3072, 4096, state)
-    assert byte_size(data) == 1024
-    assert {:ok, ""} = Benchmark.read_at(handle, 0, 0, state)
-    assert :eof = Benchmark.read_at(handle, 4096, 1, state)
+      if offset >= file_size and len > 0 do
+        assert :eof = Benchmark.read_at(handle, offset, len, state)
+      else
+        assert {:ok, data} = Benchmark.read_at(handle, offset, len, state)
+        assert byte_size(data) == expected_size
+        assert data == :binary.copy(<<0>>, expected_size)
+      end
+    end
   end
 
   test "supports directory metadata and listing", %{state: state} do
@@ -72,14 +93,24 @@ defmodule Sftpd.Backends.BenchmarkTest do
     assert attrs.type == :regular
   end
 
-  test "legacy range callback uses the same bounded zero reads", %{state: state} do
-    assert :ok = Benchmark.write_file("/range.bin", :binary.copy("x", 100), state)
+  property "legacy range callback uses the same bounded zero reads", %{state: state} do
+    check all(
+            file_size <- integer(1..8192),
+            offset <- integer(0..8192),
+            len <- integer(1..8192)
+          ) do
+      assert :ok = Benchmark.write_file("/range.bin", :binary.copy("x", file_size), state)
 
-    assert {:ok, data} = Benchmark.read_file_range("/range.bin", 90, 50, state)
-    assert byte_size(data) == 10
-    assert data == :binary.copy(<<0>>, 10)
+      expected_size = max(min(len, file_size - offset), 0)
 
-    assert :eof = Benchmark.read_file_range("/range.bin", 100, 1, state)
+      if offset >= file_size do
+        assert :eof = Benchmark.read_file_range("/range.bin", offset, len, state)
+      else
+        assert {:ok, data} = Benchmark.read_file_range("/range.bin", offset, len, state)
+        assert byte_size(data) == expected_size
+        assert data == :binary.copy(<<0>>, expected_size)
+      end
+    end
   end
 
   test "whole-file reads return zero-filled binaries and reject directories", %{state: state} do
