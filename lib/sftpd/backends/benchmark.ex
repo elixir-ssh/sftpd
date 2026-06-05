@@ -15,6 +15,12 @@ defmodule Sftpd.Backends.Benchmark do
   @zero_slab :binary.copy(<<0>>, 1024 * 1024)
 
   @type state :: %{agent: pid()}
+  @type file_data :: %{size: non_neg_integer(), mtime: NaiveDateTime.t()}
+  @type read_handle :: %{path: Backend.path(), size: non_neg_integer()}
+  @type write_handle :: %{path: Backend.path(), size: non_neg_integer()}
+  @type dir_handle :: %{entries: [Backend.entry()], read?: boolean()}
+
+  @spec init(keyword()) :: {:ok, state()}
   @impl true
   def init(opts) do
     files =
@@ -27,6 +33,7 @@ defmodule Sftpd.Backends.Benchmark do
     {:ok, %{agent: agent}}
   end
 
+  @spec list_dir(Backend.path(), state()) :: {:ok, [charlist()]}
   def list_dir(path, %{agent: agent}) do
     prefix = normalize_prefix(path)
 
@@ -53,6 +60,7 @@ defmodule Sftpd.Backends.Benchmark do
     {:ok, [~c".", ~c".." | entries]}
   end
 
+  @spec file_info(Backend.path(), state()) :: {:ok, Backend.file_info()} | {:error, :enoent}
   def file_info(path, %{agent: agent}) do
     if Backend.root_path?(path) do
       {:ok, Backend.directory_info()}
@@ -76,6 +84,7 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
+  @spec make_dir(Backend.path(), state()) :: :ok
   def make_dir(path, %{agent: agent}) do
     key = normalize_prefix(path) <> @keep_marker
 
@@ -86,6 +95,7 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
+  @spec del_dir(Backend.path(), state()) :: :ok | {:error, :eexist}
   def del_dir(path, %{agent: agent}) do
     prefix = normalize_prefix(path)
     keep_marker_key = prefix <> @keep_marker
@@ -99,6 +109,7 @@ defmodule Sftpd.Backends.Benchmark do
     end)
   end
 
+  @spec delete(Backend.path(), state()) :: :ok
   def delete(path, %{agent: agent}) do
     key = copied_normalized_path(path)
 
@@ -109,6 +120,7 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
+  @spec rename(Backend.path(), Backend.path(), state()) :: :ok
   def rename(src, dst, %{agent: agent}) do
     src_key = copied_normalized_path(src)
     dst_key = copied_normalized_path(dst)
@@ -133,6 +145,7 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
+  @spec read_file(Backend.path(), state()) :: {:ok, iodata()} | {:error, atom()}
   def read_file(path, state) do
     case file_info(path, state) do
       {:ok, {:file_info, size, :regular, _, _, _, _, _, _, _, _, _, _, _}} ->
@@ -146,6 +159,7 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
+  @spec write_file(Backend.path(), iodata(), state()) :: :ok
   def write_file(path, content, %{agent: agent}) do
     key = copied_normalized_path(path)
     size = IO.iodata_length(content)
@@ -157,15 +171,22 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
+  @spec read_file_range(Backend.path(), non_neg_integer(), pos_integer(), state()) ::
+          {:ok, iodata()} | :eof | {:error, atom()}
   def read_file_range(path, offset, len, state) do
     with {:ok, handle} <- open_read(path, %{}, state) do
       read_at(handle, offset, len, state)
     end
   end
 
+  @spec begin_write(Backend.path(), state()) :: {:ok, write_handle()}
   def begin_write(path, state), do: open_write(path, %{}, %{}, state)
+
+  @spec write_chunk(write_handle(), non_neg_integer(), iodata(), state()) ::
+          {:ok, write_handle()}
   def write_chunk(handle, offset, data, state), do: write_at(handle, offset, data, state)
 
+  @spec finish_write(write_handle(), state()) :: :ok
   @impl true
   def finish_write(%{path: path, size: size}, %{agent: agent}) do
     Agent.update(agent, fn files ->
@@ -175,9 +196,12 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
+  @spec abort_write(write_handle(), state()) :: :ok
   @impl true
   def abort_write(_handle, _state), do: :ok
 
+  @spec open_read(Backend.path(), Backend.session(), state()) ::
+          {:ok, read_handle()} | {:error, :enoent}
   @impl true
   def open_read(path, _session, %{agent: agent}) do
     key = copied_normalized_path(path)
@@ -190,6 +214,8 @@ defmodule Sftpd.Backends.Benchmark do
     end)
   end
 
+  @spec read_at(read_handle(), non_neg_integer(), pos_integer(), state()) ::
+          {:ok, iodata()} | :eof
   @impl true
   def read_at(%{size: size}, offset, len, _state) do
     cond do
@@ -201,16 +227,20 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
+  @spec open_write(Backend.path(), Backend.attrs(), Backend.session(), state()) ::
+          {:ok, write_handle()}
   @impl true
   def open_write(path, _attrs, _session, _state) do
     {:ok, %{path: copied_normalized_path(path), size: 0}}
   end
 
+  @spec write_at(write_handle(), non_neg_integer(), iodata(), state()) :: {:ok, write_handle()}
   @impl true
   def write_at(%{size: size} = handle, offset, data, _state) do
     {:ok, %{handle | size: max(size, offset + IO.iodata_length(data))}}
   end
 
+  @spec open_dir(Backend.path(), Backend.session(), state()) :: {:ok, dir_handle()}
   @impl true
   def open_dir(path, _session, state) do
     with {:ok, names} <- list_dir(path, state) do
@@ -231,6 +261,7 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
+  @spec read_dir(dir_handle(), state()) :: {:ok, [Backend.entry()], dir_handle()} | :eof
   @impl true
   def read_dir(%{read?: true}, _state), do: :eof
 
@@ -238,9 +269,12 @@ defmodule Sftpd.Backends.Benchmark do
     {:ok, entries, %{handle | read?: true}}
   end
 
+  @spec close_dir(dir_handle(), state()) :: :ok
   @impl true
   def close_dir(_handle, _state), do: :ok
 
+  @spec file_attrs(Backend.path(), Backend.session(), state()) ::
+          {:ok, Backend.attrs()} | {:error, atom()}
   @impl true
   def file_attrs(path, _session, state) do
     case file_info(path, state) do
@@ -249,15 +283,19 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
+  @spec make_dir(Backend.path(), Backend.attrs(), Backend.session(), state()) :: :ok
   @impl true
   def make_dir(path, _attrs, _session, state), do: make_dir(path, state)
 
+  @spec del_dir(Backend.path(), Backend.session(), state()) :: :ok | {:error, :eexist}
   @impl true
   def del_dir(path, _session, state), do: del_dir(path, state)
 
+  @spec delete(Backend.path(), Backend.session(), state()) :: :ok
   @impl true
   def delete(path, _session, state), do: delete(path, state)
 
+  @spec rename(Backend.path(), Backend.path(), Backend.session(), state()) :: :ok
   @impl true
   def rename(src, dst, _session, state), do: rename(src, dst, state)
 

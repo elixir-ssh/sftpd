@@ -41,6 +41,14 @@ defmodule Sftpd.Backends.S3 do
           uploaded_parts: [{pos_integer(), binary()}]
         }
 
+  @type read_handle :: %{
+          path: Backend.path(),
+          session: Backend.session(),
+          size: non_neg_integer()
+        }
+
+  @type dir_handle :: %{entries: [Backend.entry()], read?: boolean()}
+
   @doc """
   Initialize the S3 backend.
 
@@ -236,6 +244,8 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
+  @spec open_read(Backend.path(), Backend.session(), state()) ::
+          {:ok, read_handle()} | {:error, atom()}
   @impl true
   def open_read(path, session, state) do
     case file_attrs(path, session, state) do
@@ -250,16 +260,22 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
+  @spec read_at(read_handle(), non_neg_integer(), pos_integer(), state()) ::
+          {:ok, binary()} | :eof | {:error, atom()}
   @impl true
   def read_at(%{path: path, session: session}, offset, len, state) do
     read_file_range(path, offset, len, session, state)
   end
 
+  @spec open_write(Backend.path(), Backend.attrs(), Backend.session(), state()) ::
+          {:ok, writer_handle()} | {:error, atom()}
   @impl true
   def open_write(path, _attrs, session, state) do
     begin_write(path, session, state)
   end
 
+  @spec write_at(writer_handle(), non_neg_integer(), iodata(), state()) ::
+          {:ok, writer_handle()} | {:error, atom()}
   @impl true
   def write_at(writer, offset, data, state) do
     write_chunk(writer, offset, data, state)
@@ -348,6 +364,8 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
+  @spec open_dir(Backend.path(), Backend.session(), state()) ::
+          {:ok, dir_handle()} | {:error, atom()}
   @impl true
   def open_dir(path, session, state) do
     with {:ok, names} <- list_dir(path, session, state) do
@@ -360,6 +378,7 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
+  @spec read_dir(dir_handle(), state()) :: {:ok, [Backend.entry()], dir_handle()} | :eof
   @impl true
   def read_dir(%{read?: true}, _state), do: :eof
 
@@ -367,9 +386,12 @@ defmodule Sftpd.Backends.S3 do
     {:ok, entries, %{handle | read?: true}}
   end
 
+  @spec close_dir(dir_handle(), state()) :: :ok
   @impl true
   def close_dir(_handle, _state), do: :ok
 
+  @spec file_attrs(Backend.path(), Backend.session(), state()) ::
+          {:ok, Backend.attrs()} | {:error, atom()}
   @impl true
   def file_attrs(path, session, state) do
     case file_info(path, session, state) do
@@ -378,6 +400,8 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
+  @spec make_dir(Backend.path(), Backend.attrs(), Backend.session(), state()) ::
+          :ok | {:error, atom()}
   @impl true
   def make_dir(path, _attrs, session, state), do: make_dir(path, session, state)
 

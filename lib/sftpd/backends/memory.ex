@@ -64,6 +64,10 @@ defmodule Sftpd.Backends.Memory do
               size: non_neg_integer(),
               mtime: NaiveDateTime.t()
             }
+  @type read_handle :: %{path: Backend.path(), file: file_data()} | %{content: binary()}
+  @type write_handle :: %{path: Backend.path(), chunks: [{non_neg_integer(), binary()}]}
+  @type dir_handle :: %{entries: [Backend.entry()], read?: boolean()}
+
   @spec init(keyword()) :: {:ok, state()}
   @impl true
   def init(opts) do
@@ -201,6 +205,8 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
+  @spec open_read(Backend.path(), Backend.session(), state()) ::
+          {:ok, read_handle()} | {:error, :enoent}
   @impl true
   def open_read(path, _session, %{agent: agent}) do
     key = copied_normalized_path(path)
@@ -213,6 +219,8 @@ defmodule Sftpd.Backends.Memory do
     end)
   end
 
+  @spec read_at(read_handle(), non_neg_integer(), pos_integer(), state()) ::
+          {:ok, binary()} | :eof
   @impl true
   def read_at(%{file: file_data}, offset, len, _state) do
     read_file_data_at(file_data, offset, len)
@@ -222,6 +230,8 @@ defmodule Sftpd.Backends.Memory do
     read_content_at(content, offset, len)
   end
 
+  @spec read_file_range(Backend.path(), non_neg_integer(), pos_integer(), state()) ::
+          {:ok, binary()} | :eof | {:error, :enoent}
   def read_file_range(path, offset, len, state) do
     with {:ok, handle} <- open_read(path, %{}, state) do
       read_at(handle, offset, len, state)
@@ -239,19 +249,27 @@ defmodule Sftpd.Backends.Memory do
     end
   end
 
+  @spec open_write(Backend.path(), Backend.attrs(), Backend.session(), state()) ::
+          {:ok, write_handle()}
   @impl true
   def open_write(path, _attrs, _session, _state) do
     {:ok, %{path: copied_normalized_path(path), chunks: []}}
   end
 
+  @spec write_at(write_handle(), non_neg_integer(), iodata(), state()) :: {:ok, write_handle()}
   @impl true
   def write_at(%{chunks: chunks} = handle, offset, data, _state) do
     {:ok, %{handle | chunks: [{offset, IO.iodata_to_binary(data)} | chunks]}}
   end
 
+  @spec begin_write(Backend.path(), state()) :: {:ok, write_handle()}
   def begin_write(path, state), do: open_write(path, %{}, %{}, state)
+
+  @spec write_chunk(write_handle(), non_neg_integer(), iodata(), state()) ::
+          {:ok, write_handle()}
   def write_chunk(handle, offset, data, state), do: write_at(handle, offset, data, state)
 
+  @spec finish_write(write_handle(), state()) :: :ok
   @impl true
   def finish_write(%{path: path, chunks: chunks}, %{agent: agent}) do
     file_data = chunks_to_file_data(chunks)
@@ -263,15 +281,18 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
+  @spec abort_write(write_handle(), state()) :: :ok
   @impl true
   def abort_write(_handle, _state), do: :ok
 
+  @spec open_dir(Backend.path(), Backend.session(), state()) :: {:ok, dir_handle()}
   @impl true
   def open_dir(path, _session, state) do
     {:ok, entries} = fast_list_dir(path, state)
     {:ok, %{entries: entries, read?: false}}
   end
 
+  @spec read_dir(dir_handle(), state()) :: {:ok, [Backend.entry()], dir_handle()} | :eof
   @impl true
   def read_dir(%{read?: true}, _state), do: :eof
 
@@ -279,9 +300,12 @@ defmodule Sftpd.Backends.Memory do
     {:ok, entries, %{handle | read?: true}}
   end
 
+  @spec close_dir(dir_handle(), state()) :: :ok
   @impl true
   def close_dir(_handle, _state), do: :ok
 
+  @spec file_attrs(Backend.path(), Backend.session(), state()) ::
+          {:ok, Backend.attrs()} | {:error, atom()}
   @impl true
   def file_attrs(path, _session, state) do
     case file_info(path, state) do
@@ -290,15 +314,19 @@ defmodule Sftpd.Backends.Memory do
     end
   end
 
+  @spec make_dir(Backend.path(), Backend.attrs(), Backend.session(), state()) :: :ok
   @impl true
   def make_dir(path, _attrs, _session, state), do: make_dir(path, state)
 
+  @spec del_dir(Backend.path(), Backend.session(), state()) :: :ok | {:error, :eexist}
   @impl true
   def del_dir(path, _session, state), do: del_dir(path, state)
 
+  @spec delete(Backend.path(), Backend.session(), state()) :: :ok
   @impl true
   def delete(path, _session, state), do: delete(path, state)
 
+  @spec rename(Backend.path(), Backend.path(), Backend.session(), state()) :: :ok
   @impl true
   def rename(src, dst, _session, state), do: rename(src, dst, state)
 

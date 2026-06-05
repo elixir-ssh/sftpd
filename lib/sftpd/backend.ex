@@ -16,6 +16,7 @@ defmodule Sftpd.Backend do
   @type write_handle :: term()
   @type dir_handle :: term()
   @type entry :: %{name: binary(), attrs: attrs()}
+  @type unix_time_input :: :calendar.datetime() | NaiveDateTime.t() | term()
 
   @typedoc "Erlang file_info tuple used by OTP ssh_sftpd adapters"
   @type file_info ::
@@ -79,6 +80,7 @@ defmodule Sftpd.Backend do
   end
 
   @doc false
+  @spec unix_time(unix_time_input()) :: integer()
   def unix_time({{year, month, day}, {hour, minute, second}}) do
     {{year, month, day}, {hour, minute, second}}
     |> NaiveDateTime.from_erl!()
@@ -97,6 +99,7 @@ defmodule Sftpd.Backend do
   @doc """
   Convert an Erlang `:file_info` tuple to backend attribute maps.
   """
+  @spec attrs_from_file_info(file_info()) :: attrs()
   def attrs_from_file_info(
         {:file_info, size, type, _access, atime, mtime, _ctime, mode, _links, _major, _minor,
          _inode, uid, gid}
@@ -120,6 +123,7 @@ defmodule Sftpd.Backend do
   end
 
   @doc false
+  @spec file_info_from_attrs(attrs()) :: file_info()
   def file_info_from_attrs(attrs) do
     type = Map.get(attrs, :type, :regular)
     size = Map.get(attrs, :size, 0)
