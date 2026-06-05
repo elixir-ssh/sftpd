@@ -1,28 +1,33 @@
 defmodule Sftpd.SSH.PacketTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Sftpd.SSH.Packet
 
-  test "clear packet framing round-trips payloads" do
-    encoded = IO.iodata_to_binary(Packet.encode_clear(["abc", "def"]))
+  property "clear packet framing round-trips payloads" do
+    check all(
+            head <- binary(max_length: 128),
+            tail <- binary(max_length: 128),
+            block_size <- member_of([4, 8, 16])
+          ) do
+      payload = [head, tail]
+      expected = IO.iodata_to_binary(payload)
 
-    assert {:ok, "abcdef", ""} = Packet.decode_clear(encoded)
-    assert rem(byte_size(encoded), 8) == 0
+      encoded = IO.iodata_to_binary(Packet.encode_clear(payload, block_size))
+
+      assert {:ok, ^expected, ""} = Packet.decode_clear(encoded)
+      assert rem(byte_size(encoded), block_size) == 0
+      assert byte_size(encoded) >= 16
+    end
   end
 
-  test "clear packet framing handles very small payloads" do
-    encoded = IO.iodata_to_binary(Packet.encode_clear("", 4))
+  property "aead packet framing exposes length-prefixed plaintext" do
+    check all(payload <- binary(max_length: 256)) do
+      encoded = IO.iodata_to_binary(Packet.encode_aead(payload))
+      <<packet_len::32, plaintext::binary-size(packet_len)>> = encoded
 
-    assert {:ok, "", ""} = Packet.decode_clear(encoded)
-    assert rem(byte_size(encoded), 4) == 0
-    assert byte_size(encoded) >= 16
-  end
-
-  test "aead packet framing exposes length-prefixed plaintext" do
-    encoded = IO.iodata_to_binary(Packet.encode_aead(["abc", "def"]))
-    <<packet_len::32, plaintext::binary-size(packet_len)>> = encoded
-
-    assert {:ok, "abcdef"} = Packet.decode_decrypted(packet_len, plaintext)
+      assert {:ok, ^payload} = Packet.decode_decrypted(packet_len, plaintext)
+    end
   end
 
   test "clear packet decoder preserves incomplete packets" do
@@ -46,10 +51,12 @@ defmodule Sftpd.SSH.PacketTest do
     assert {:ok, "two", ""} = Packet.decode_clear(rest)
   end
 
-  test "decrypted packet decoder returns payload without a length-prefixed copy" do
-    <<packet_len::32, plaintext::binary>> = IO.iodata_to_binary(Packet.encode_clear("payload"))
+  property "decrypted packet decoder returns payload without a length-prefixed copy" do
+    check all(payload <- binary(max_length: 256)) do
+      <<packet_len::32, plaintext::binary>> = IO.iodata_to_binary(Packet.encode_clear(payload))
 
-    assert {:ok, "payload"} = Packet.decode_decrypted(packet_len, plaintext)
+      assert {:ok, ^payload} = Packet.decode_decrypted(packet_len, plaintext)
+    end
   end
 
   test "decrypted packet decoder rejects malformed plaintext" do

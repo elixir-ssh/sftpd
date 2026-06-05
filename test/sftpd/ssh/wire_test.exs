@@ -1,16 +1,31 @@
 defmodule Sftpd.SSH.WireTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Sftpd.SSH.Wire
 
-  test "encodes and decodes SSH strings without copying through lists" do
-    encoded = IO.iodata_to_binary(Wire.string(["he", "llo"]))
-    assert {:ok, "hello", ""} = Wire.take_string(encoded)
+  property "encodes and decodes SSH strings without copying through lists" do
+    check all(
+            head <- binary(max_length: 64),
+            tail <- binary(max_length: 64)
+          ) do
+      data = [head, tail]
+      expected = IO.iodata_to_binary(data)
+
+      encoded = IO.iodata_to_binary(Wire.string(data))
+
+      assert {:ok, ^expected, ""} = Wire.take_string(encoded)
+    end
   end
 
-  test "encodes and decodes name-lists" do
-    encoded = IO.iodata_to_binary(Wire.name_list(["a", "b", "c"]))
-    assert {:ok, ["a", "b", "c"], ""} = Wire.take_name_list(encoded)
+  property "encodes and decodes name-lists" do
+    check all(
+            names <- list_of(string(:alphanumeric, min_length: 1, max_length: 16), max_length: 16)
+          ) do
+      encoded = IO.iodata_to_binary(Wire.name_list(names))
+
+      assert {:ok, ^names, ""} = Wire.take_name_list(encoded)
+    end
   end
 
   test "decodes empty name-lists and rejects truncated strings" do
@@ -19,27 +34,23 @@ defmodule Sftpd.SSH.WireTest do
     assert :error = Wire.take_name_list(<<0, 0, 0, 4, "ab">>)
   end
 
-  test "encodes and decodes booleans" do
-    assert <<1>> = Wire.boolean(true)
-    assert <<0>> = Wire.boolean(false)
+  property "encodes and decodes booleans" do
+    check all(value <- boolean()) do
+      encoded = Wire.boolean(value)
+
+      assert {:ok, ^value, "tail"} = Wire.take_boolean(<<encoded::binary, "tail">>)
+    end
+
     assert {:ok, true, "tail"} = Wire.take_boolean(<<42, "tail">>)
-    assert {:ok, false, "tail"} = Wire.take_boolean(<<0, "tail">>)
     assert :error = Wire.take_boolean("")
   end
 
-  test "encodes mpints with sign padding when high bit is set" do
-    assert <<0, 0, 0, 2, 0, 128>> = IO.iodata_to_binary(Wire.mpint(128))
-    assert {:ok, 128, ""} = Wire.take_mpint(IO.iodata_to_binary(Wire.mpint(128)))
-  end
+  property "encodes and decodes non-negative mpints" do
+    check all(value <- integer(0..0xFFFF_FFFF)) do
+      encoded = IO.iodata_to_binary(Wire.mpint(value))
 
-  test "encodes mpints without sign padding when high bit is clear" do
-    assert <<0, 0, 0, 1, 127>> = IO.iodata_to_binary(Wire.mpint(127))
-    assert {:ok, 127, "tail"} = Wire.take_mpint(<<0, 0, 0, 1, 127, "tail">>)
-  end
-
-  test "encodes zero mpint as empty string" do
-    assert <<0, 0, 0, 0>> = IO.iodata_to_binary(Wire.mpint(0))
-    assert {:ok, 0, ""} = Wire.take_mpint(<<0, 0, 0, 0>>)
+      assert {:ok, ^value, ""} = Wire.take_mpint(encoded)
+    end
   end
 
   test "normalizes binary mpints before encoding" do

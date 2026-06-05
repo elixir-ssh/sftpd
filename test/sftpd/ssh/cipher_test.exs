@@ -1,5 +1,6 @@
 defmodule Sftpd.SSH.CipherTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Sftpd.SSH.{Cipher, Packet}
 
@@ -19,61 +20,74 @@ defmodule Sftpd.SSH.CipherTest do
     assert c2s.iv != s2c.iv
   end
 
-  test "encrypts and decrypts one clear SSH packet" do
-    state = state(:server_to_client)
-    clear = Packet.encode_aead_packet("payload")
+  property "encrypts and decrypts one clear SSH packet" do
+    check all(payload <- binary(max_length: 512)) do
+      state = state(:server_to_client)
+      clear = Packet.encode_aead_packet(payload)
 
-    {encrypted, decrypt_state} = Cipher.encrypt_packet(state, clear)
-    assert decrypt_state.sequence == 1
+      {encrypted, decrypt_state} = Cipher.encrypt_packet(state, clear)
+      assert decrypt_state.sequence == 1
 
-    assert {:ok, decrypted, "", next_state} =
-             Cipher.decrypt_packet(state, IO.iodata_to_binary(encrypted))
+      assert {:ok, decrypted, "", next_state} =
+               Cipher.decrypt_packet(state, IO.iodata_to_binary(encrypted))
 
-    assert {:ok, "payload", ""} = Packet.decode_clear(decrypted)
-    assert next_state.sequence == 1
+      assert {:ok, ^payload, ""} = Packet.decode_clear(decrypted)
+      assert next_state.sequence == 1
+    end
   end
 
-  test "encrypts packet plaintext from iodata" do
-    state = state(:server_to_client)
-    clear = Packet.encode_aead_packet(["pay", ["load"]])
+  property "encrypts packet plaintext from iodata" do
+    check all(
+            head <- binary(max_length: 256),
+            tail <- binary(max_length: 256)
+          ) do
+      state = state(:server_to_client)
+      payload = [head, [tail]]
+      expected = IO.iodata_to_binary(payload)
+      clear = Packet.encode_aead_packet(payload)
 
-    {encrypted, _decrypt_state} = Cipher.encrypt_packet(state, clear)
+      {encrypted, _decrypt_state} = Cipher.encrypt_packet(state, clear)
 
-    assert {:ok, decrypted, "", _next_state} =
-             Cipher.decrypt_packet(state, IO.iodata_to_binary(encrypted))
+      assert {:ok, decrypted, "", _next_state} =
+               Cipher.decrypt_packet(state, IO.iodata_to_binary(encrypted))
 
-    assert {:ok, "payload", ""} = Packet.decode_clear(decrypted)
+      assert {:ok, ^expected, ""} = Packet.decode_clear(decrypted)
+    end
   end
 
-  test "decrypts packet payload from split length and encrypted body" do
-    state = state(:server_to_client)
-    clear = Packet.encode_aead_packet("payload")
+  property "decrypts packet payload from split length and encrypted body" do
+    check all(payload <- binary(max_length: 512)) do
+      state = state(:server_to_client)
+      clear = Packet.encode_aead_packet(payload)
 
-    {encrypted, _decrypt_state} = Cipher.encrypt_packet(state, clear)
-    <<packet_length::32, encrypted_body::binary>> = IO.iodata_to_binary(encrypted)
+      {encrypted, _decrypt_state} = Cipher.encrypt_packet(state, clear)
+      <<packet_length::32, encrypted_body::binary>> = IO.iodata_to_binary(encrypted)
 
-    assert {:ok, "payload", next_state} =
-             Cipher.decrypt_packet_payload(state, packet_length, encrypted_body)
+      assert {:ok, ^payload, next_state} =
+               Cipher.decrypt_packet_payload(state, packet_length, encrypted_body)
 
-    assert next_state.sequence == 1
+      assert next_state.sequence == 1
+    end
   end
 
-  test "decrypts packet payload from buffered encrypted packets" do
-    state = state(:server_to_client)
+  property "decrypts packet payload from buffered encrypted packets" do
+    check all(payload <- binary(max_length: 512)) do
+      state = state(:server_to_client)
 
-    {encrypted, _decrypt_state} =
-      Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))
+      {encrypted, _decrypt_state} =
+        Cipher.encrypt_packet(state, Packet.encode_aead_packet(payload))
 
-    assert {:ok, "payload", "", next_state} =
-             Cipher.decrypt_packet_payload(state, IO.iodata_to_binary(encrypted))
+      assert {:ok, ^payload, "", next_state} =
+               Cipher.decrypt_packet_payload(state, IO.iodata_to_binary(encrypted))
 
-    assert next_state.sequence == 1
+      assert next_state.sequence == 1
 
-    assert :more =
-             Cipher.decrypt_packet_payload(
-               state,
-               binary_part(IO.iodata_to_binary(encrypted), 0, 8)
-             )
+      assert :more =
+               Cipher.decrypt_packet_payload(
+                 state,
+                 binary_part(IO.iodata_to_binary(encrypted), 0, 8)
+               )
+    end
   end
 
   test "rejects tampered ciphertext" do
@@ -122,19 +136,24 @@ defmodule Sftpd.SSH.CipherTest do
     assert state.sequence == 0
   end
 
-  test "decrypts multiple encrypted packets with sequence increments" do
-    state = state(:server_to_client)
-    {first, state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("one"))
-    {second, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("two"))
+  property "decrypts multiple encrypted packets with sequence increments" do
+    check all(
+            first_payload <- binary(max_length: 128),
+            second_payload <- binary(max_length: 128)
+          ) do
+      state = state(:server_to_client)
+      {first, state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet(first_payload))
+      {second, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet(second_payload))
 
-    decrypt_state0 = state(:server_to_client)
+      decrypt_state0 = state(:server_to_client)
 
-    assert {:ok, first_clear, rest, decrypt_state1} =
-             Cipher.decrypt_packet(decrypt_state0, IO.iodata_to_binary([first, second]))
+      assert {:ok, first_clear, rest, decrypt_state1} =
+               Cipher.decrypt_packet(decrypt_state0, IO.iodata_to_binary([first, second]))
 
-    assert {:ok, "one", ""} = Packet.decode_clear(first_clear)
-    assert {:ok, second_clear, "", _decrypt_state} = Cipher.decrypt_packet(decrypt_state1, rest)
-    assert {:ok, "two", ""} = Packet.decode_clear(second_clear)
+      assert {:ok, ^first_payload, ""} = Packet.decode_clear(first_clear)
+      assert {:ok, second_clear, "", _decrypt_state} = Cipher.decrypt_packet(decrypt_state1, rest)
+      assert {:ok, ^second_payload, ""} = Packet.decode_clear(second_clear)
+    end
   end
 
   defp state(direction) do
