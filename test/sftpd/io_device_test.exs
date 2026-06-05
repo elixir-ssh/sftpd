@@ -51,6 +51,7 @@ defmodule Sftpd.IODeviceTest do
     def finish_write(_handle, _state), do: :ok
 
     def abort_write(:write_error, %{test_pid: test_pid}), do: send(test_pid, :aborted)
+    def abort_write(:finish_error, %{test_pid: test_pid}), do: send(test_pid, :aborted_finish)
     def abort_write(_handle, _state), do: :ok
   end
 
@@ -198,6 +199,26 @@ defmodule Sftpd.IODeviceTest do
     assert :ok = IODevice.close(handle)
 
     assert {:ok, "new"} = Memory.read_file(~c"/new-append.bin", backend_state)
+  end
+
+  test "read/write append handles force writes to eof", %{backend_state: backend_state} do
+    :ok = Memory.write_file(~c"/append-rw.bin", "base", backend_state)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/append-rw.bin",
+               mode: :read_write,
+               append?: true,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert {:ok, 0} = IODevice.position(handle, {:bof, 0})
+    assert :ok = IODevice.write(handle, "tail", 4)
+    assert :ok = IODevice.close(handle)
+
+    assert {:ok, "basetail"} = Memory.read_file(~c"/append-rw.bin", backend_state)
   end
 
   test "replays random writes sequentially when backend rejects positioned writes" do
@@ -477,10 +498,11 @@ defmodule Sftpd.IODeviceTest do
                path: "/finish-error",
                mode: :write,
                backend: ErrorBackend,
-               backend_state: %{}
+               backend_state: %{test_pid: self()}
              })
 
     assert {:error, :eio} = IODevice.close(close_handle)
+    assert_receive :aborted_finish
   end
 
   test "read/write start falls back to zero size when attrs are unavailable" do

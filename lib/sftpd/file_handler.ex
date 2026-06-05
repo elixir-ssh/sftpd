@@ -189,7 +189,8 @@ defmodule Sftpd.FileHandler do
           cond do
             :read in modes and :write in modes ->
               open_device(path, :read_write, backend, backend_state, state,
-                truncate?: :truncate in modes
+                truncate?: :truncate in modes,
+                append?: :append in modes
               )
 
             :write in modes ->

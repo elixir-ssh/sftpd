@@ -105,6 +105,12 @@ defmodule Sftpd do
       Keyword.has_key?(opts, :users) ->
         {:error, {:deprecated_option, :users}}
 
+      Keyword.has_key?(opts, :open_timeout) ->
+        {:error, {:deprecated_option, :open_timeout}}
+
+      Keyword.has_key?(opts, :close_timeout) ->
+        {:error, {:deprecated_option, :close_timeout}}
+
       not Keyword.has_key?(opts, :auth) ->
         {:error, {:missing_option, :auth}}
 

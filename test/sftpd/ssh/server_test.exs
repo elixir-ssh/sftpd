@@ -14,6 +14,11 @@ defmodule Sftpd.SSH.ServerTest do
       send(test_pid, {:aborted, path})
       :ok
     end
+
+    def close_dir(%{path: path, test_pid: test_pid}, _state) do
+      send(test_pid, {:closed_dir, path})
+      :ok
+    end
   end
 
   test "validates the backend contract" do
@@ -36,14 +41,15 @@ defmodule Sftpd.SSH.ServerTest do
     assert :noreply = Server.__test_global_request_reply__(<<0, 0, 0, 4, "bad">>)
   end
 
-  test "aborts open SFTP writes when encrypted sessions exit" do
+  test "cleans up open SFTP handles when encrypted sessions exit" do
     sftp_session =
       AbortBackend
       |> SFTP.Session.new(self(), %{username: "test"})
       |> Map.put(:initialized?, true)
       |> Map.put(:handles, %{
         "write" =>
-          {:file, :write, "/pending.txt", %{path: "/pending.txt", test_pid: self()}, nil, 0}
+          {:file, :write, "/pending.txt", %{path: "/pending.txt", test_pid: self()}, nil, 0},
+        "dir" => {:dir, %{path: "/open-dir", test_pid: self()}}
       })
 
     state = %{channels: %{0 => %{sftp_session: sftp_session}}}
@@ -52,6 +58,7 @@ defmodule Sftpd.SSH.ServerTest do
              Server.__test_abort_open_writes__(state)
 
     assert_receive {:aborted, "/pending.txt"}
+    assert_receive {:closed_dir, "/open-dir"}
   end
 
   test "abort open writes is a no-op before channels are initialized" do

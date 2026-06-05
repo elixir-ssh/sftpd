@@ -59,6 +59,7 @@ defmodule Sftpd.IODevice do
             write_strategy: :direct,
             stream_offset: size,
             dirty?: append?,
+            append?: append?,
             temp_path: temp_path,
             temp_fd: temp_fd
           })
@@ -86,6 +87,7 @@ defmodule Sftpd.IODevice do
     session = Map.get(opts, :session, %{})
     path = to_string(path)
     truncate? = Map.get(opts, :truncate?, false)
+    append? = Map.get(opts, :append?, false)
 
     with {:ok, writer_handle} <- backend.open_write(path, %{}, session, backend_state),
          {:ok, temp_path, temp_fd} <- open_temp_file(backend, writer_handle, backend_state) do
@@ -127,6 +129,7 @@ defmodule Sftpd.IODevice do
             write_strategy: :direct,
             stream_offset: size,
             dirty?: truncate?,
+            append?: append?,
             temp_path: temp_path,
             temp_fd: temp_fd
           })
@@ -383,9 +386,11 @@ defmodule Sftpd.IODevice do
         {:error, :einval}
 
       %{mode: mode} = state when mode in [:write, :read_write] ->
-        case persist_to_tempfile(state.temp_fd, state.position, data) do
+        write_position = write_position(state)
+
+        case persist_to_tempfile(state.temp_fd, write_position, data) do
           :ok ->
-            position = state.position + bytes
+            position = write_position + bytes
             size = max(state.size, position)
 
             case maybe_direct_write(state, data, bytes) do
@@ -476,14 +481,12 @@ defmodule Sftpd.IODevice do
 
   defp maybe_direct_write(%{write_strategy: :replay} = state, _data, _bytes), do: {:ok, state}
 
-  defp maybe_direct_write(%{position: offset, stream_offset: offset} = state, data, bytes) do
-    case state.backend.write_at(state.writer_handle, offset, data, state.backend_state) do
-      {:ok, writer_handle} ->
-        {:ok, %{state | writer_handle: writer_handle, stream_offset: offset + bytes}}
+  defp maybe_direct_write(%{append?: true, size: offset} = state, data, bytes) do
+    direct_write_at(state, offset, data, bytes)
+  end
 
-      {:error, reason} ->
-        {:error, reason}
-    end
+  defp maybe_direct_write(%{position: offset, stream_offset: offset} = state, data, bytes) do
+    direct_write_at(state, offset, data, bytes)
   end
 
   defp maybe_direct_write(%{write_strategy: :direct} = state, _data, _bytes) do
@@ -499,7 +502,15 @@ defmodule Sftpd.IODevice do
   defp finalize_write(%{write_strategy: :direct} = state) do
     result = state.backend.finish_write(state.writer_handle, state.backend_state)
     cleanup_tempfile(state)
-    result
+
+    case result do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        _ = state.backend.abort_write(state.writer_handle, state.backend_state)
+        {:error, reason}
+    end
   end
 
   defp finalize_write(%{write_strategy: :replay} = state) do
@@ -566,6 +577,19 @@ defmodule Sftpd.IODevice do
   end
 
   defp cleanup_unfinished_write(state), do: cleanup_tempfile(state)
+
+  defp write_position(%{append?: true, size: size}), do: size
+  defp write_position(%{position: position}), do: position
+
+  defp direct_write_at(state, offset, data, bytes) do
+    case state.backend.write_at(state.writer_handle, offset, data, state.backend_state) do
+      {:ok, writer_handle} ->
+        {:ok, %{state | writer_handle: writer_handle, stream_offset: offset + bytes}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp open_temp_file(backend, writer_handle, backend_state) do
     case open_temp_file(System.tmp_dir!()) do

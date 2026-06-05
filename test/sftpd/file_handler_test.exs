@@ -203,10 +203,26 @@ defmodule Sftpd.FileHandlerTest do
       state = %{backend: Memory, backend_state: backend_state}
 
       assert {{:ok, handle}, ^state} = FileHandler.open(~c"/append.txt", [:write, :append], state)
+      assert {{:ok, 0}, ^state} = FileHandler.position(handle, {:bof, 0}, state)
       assert {:ok, ^state} = FileHandler.write(handle, "tail", state)
       assert {:ok, ^state} = FileHandler.close(handle, state)
 
       assert {:ok, "basetail"} = Memory.read_file(~c"/append.txt", backend_state)
+    end
+
+    test "preserves append mode for mixed read/write handles" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/append-rw.txt", "base", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:ok, handle}, ^state} =
+               FileHandler.open(~c"/append-rw.txt", [:read, :write, :append], state)
+
+      assert {{:ok, 0}, ^state} = FileHandler.position(handle, {:bof, 0}, state)
+      assert {:ok, ^state} = FileHandler.write(handle, "tail", state)
+      assert {:ok, ^state} = FileHandler.close(handle, state)
+
+      assert {:ok, "basetail"} = Memory.read_file(~c"/append-rw.txt", backend_state)
     end
 
     test "emits telemetry for open" do

@@ -103,6 +103,63 @@ defmodule SftpdTest do
       do: Sftpd.Backends.Memory.rename(src, dst, session, mem_state)
   end
 
+  defmodule AbortRecordingBackend do
+    def init(opts) do
+      {:ok, mem_state} = Sftpd.Backends.Memory.init([])
+      {:ok, %{test_pid: Keyword.fetch!(opts, :test_pid), mem_state: mem_state}}
+    end
+
+    def open_dir(path, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.open_dir(path, session, mem_state)
+
+    def read_dir(handle, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.read_dir(handle, mem_state)
+
+    def close_dir(handle, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.close_dir(handle, mem_state)
+
+    def file_attrs(path, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.file_attrs(path, session, mem_state)
+
+    def open_read(path, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.open_read(path, session, mem_state)
+
+    def read_at(handle, offset, len, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.read_at(handle, offset, len, mem_state)
+
+    def open_write(path, attrs, session, %{test_pid: test_pid, mem_state: mem_state}) do
+      with {:ok, handle} <- Sftpd.Backends.Memory.open_write(path, attrs, session, mem_state) do
+        {:ok, {path, handle, test_pid}}
+      end
+    end
+
+    def write_at({path, handle, test_pid}, offset, data, %{mem_state: mem_state}) do
+      with {:ok, handle} <- Sftpd.Backends.Memory.write_at(handle, offset, data, mem_state) do
+        {:ok, {path, handle, test_pid}}
+      end
+    end
+
+    def finish_write({_path, handle, _test_pid}, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.finish_write(handle, mem_state)
+
+    def abort_write({path, handle, test_pid}, %{mem_state: mem_state}) do
+      send(test_pid, {:aborted_write, path})
+      Sftpd.Backends.Memory.abort_write(handle, mem_state)
+    end
+
+    def make_dir(path, attrs, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.make_dir(path, attrs, session, mem_state)
+
+    def del_dir(path, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.del_dir(path, session, mem_state)
+
+    def delete(path, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.delete(path, session, mem_state)
+
+    def rename(src, dst, session, %{mem_state: mem_state}),
+      do: Sftpd.Backends.Memory.rename(src, dst, session, mem_state)
+  end
+
   setup do
     port = 10_000 + :rand.uniform(10_000)
     system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
@@ -508,18 +565,24 @@ defmodule SftpdTest do
       assert byte_size(partial_response) < read_len + 13
       assert partial_response != content
 
+      {packet, c2s} = encrypt_client_packet(c2s, <<96, server_channel::32>>)
+      assert :ok = :gen_tcp.send(socket, packet)
+
       window_bytes = read_len + 64 - byte_size(partial_response)
       {packet, _c2s} = encrypt_client_packet(c2s, <<93, server_channel::32, window_bytes::32>>)
 
       assert :ok = :gen_tcp.send(socket, packet)
 
-      assert {:ok, <<94, ^client_channel::32, rest::binary>>, _s2c, _buffer} =
+      assert {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, buffer} =
                recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
 
       assert {:ok, response_tail, ""} = Sftpd.SSH.Wire.take_string(rest)
       sftp_response = partial_response <> response_tail
       assert <<_len::32, 103, 2::32, size::32, data::binary-size(size)>> = sftp_response
       assert data == content
+
+      assert {:ok, <<97, ^client_channel::32>>, _s2c, _buffer} =
+               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
     end
 
     test "supports common SFTP v3 memory operations through the Erlang client" do
@@ -902,6 +965,41 @@ defmodule SftpdTest do
       :gen_tcp.close(socket)
     end
 
+    test "ignores channel eof for unknown recipients without closing the connection" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{socket: socket, c2s: c2s, s2c: s2c, server_channel: server_channel} =
+        open_raw_authenticated_session(port)
+
+      {packet, c2s} = encrypt_client_packet(c2s, <<96, server_channel + 1::32>>)
+      assert :ok = :gen_tcp.send(socket, packet)
+
+      {packet, _c2s} =
+        encrypt_client_packet(c2s, [
+          <<80>>,
+          Sftpd.SSH.Wire.string("keepalive@openssh.com"),
+          Sftpd.SSH.Wire.boolean(true)
+        ])
+
+      assert :ok = :gen_tcp.send(socket, packet)
+      assert {:ok, <<82>>, _s2c} = recv_encrypted_server_packet(socket, s2c)
+
+      :gen_tcp.close(socket)
+    end
+
     test "notifies the profile owner when pure transport accepts a connection" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
@@ -953,6 +1051,30 @@ defmodule SftpdTest do
 
       assert :ok = Sftpd.stop_server(ref)
       assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
+    end
+
+    test "aborts open writes when stopping active pure transport connections" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: AbortRecordingBackend,
+                 backend_opts: [test_pid: self()],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      assert {:ok, conn} = connect_elixir_ssh(port)
+      assert {:ok, channel} = :ssh_sftp.start_channel(conn)
+      assert {:ok, handle} = :ssh_sftp.open(channel, ~c"/pending.txt", [:write])
+      assert :ok = :ssh_sftp.write(channel, handle, "pending")
+
+      assert :ok = Sftpd.stop_server(ref)
+      assert_receive {:aborted_write, "/pending.txt"}, 1_000
+      :ssh.close(conn)
     end
 
     test "refuses new clients when max_sessions is exhausted" do
@@ -1018,6 +1140,19 @@ defmodule SftpdTest do
                  system_dir: "/tmp",
                  users: [{"testuser", "testpass"}]
                )
+    end
+
+    test "passing removed timeout options returns a clear error" do
+      for option <- [:open_timeout, :close_timeout] do
+        assert {:error, {:deprecated_option, ^option}} =
+                 Sftpd.start_server(
+                   [
+                     backend: Sftpd.Backends.Memory,
+                     system_dir: "/tmp",
+                     auth: {:passwords, []}
+                   ] ++ [{option, 1}]
+                 )
+      end
     end
 
     test "missing auth returns a startup error" do

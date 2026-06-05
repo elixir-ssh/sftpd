@@ -34,8 +34,8 @@ defmodule Sftpd.SFTP.Session do
     }
   end
 
-  @spec abort_open_writes(state()) :: state()
-  def abort_open_writes(state) do
+  @spec cleanup_open_handles(state()) :: state()
+  def cleanup_open_handles(state) do
     Enum.each(state.handles, fn
       {_handle, {:file, :write, _path, backend_handle, _append_offset, _size}} ->
         _ = state.backend.abort_write(backend_handle, state.backend_state)
@@ -46,12 +46,18 @@ defmodule Sftpd.SFTP.Session do
         _ = state.backend.abort_write(write_handle, state.backend_state)
         cleanup_overlay(overlay)
 
+      {_handle, {:dir, backend_handle}} ->
+        _ = state.backend.close_dir(backend_handle, state.backend_state)
+
       _entry ->
         :ok
     end)
 
     %{state | handles: %{}}
   end
+
+  @spec abort_open_writes(state()) :: state()
+  def abort_open_writes(state), do: cleanup_open_handles(state)
 
   @spec handle_packet(binary(), state()) :: {SerializedPacket.t(), state()}
   def handle_packet(packet, %{initialized?: false} = state) do
@@ -170,6 +176,9 @@ defmodule Sftpd.SFTP.Session do
         {Codec.status(id, :ok), %{state | handles: handles}}
 
       {{:file, :read, _path, _backend_handle}, handles} ->
+        {Codec.status(id, :ok), %{state | handles: handles}}
+
+      {{:dir, :closed}, handles} ->
         {Codec.status(id, :ok), %{state | handles: handles}}
 
       {{:dir, backend_handle}, handles} ->
@@ -296,6 +305,9 @@ defmodule Sftpd.SFTP.Session do
 
   defp handle_request(%{type: :readdir, id: id, handle: handle}, state) do
     case Map.get(state.handles, handle) do
+      {:dir, :closed} ->
+        {Codec.status(id, :eof), state}
+
       {:dir, backend_handle} ->
         case state.backend.read_dir(backend_handle, state.backend_state) do
           {:ok, entries, backend_handle} ->
@@ -303,10 +315,14 @@ defmodule Sftpd.SFTP.Session do
             {Codec.name(id, entries), %{state | handles: handles}}
 
           :eof ->
-            {Codec.status(id, :eof), state}
+            :ok = state.backend.close_dir(backend_handle, state.backend_state)
+            handles = Map.put(state.handles, handle, {:dir, :closed})
+            {Codec.status(id, :eof), %{state | handles: handles}}
 
           {:error, reason} ->
-            {Codec.status(id, reason), state}
+            :ok = state.backend.close_dir(backend_handle, state.backend_state)
+            handles = Map.delete(state.handles, handle)
+            {Codec.status(id, reason), %{state | handles: handles}}
         end
 
       _ ->
@@ -379,14 +395,15 @@ defmodule Sftpd.SFTP.Session do
 
   defp prepare_write_handle(path, pflags, backend_handle, state) do
     cond do
+      truncate_open?(pflags) ->
+        append_offset = if append_open?(pflags), do: 0
+        {:ok, backend_handle, append_offset, 0}
+
       append_open?(pflags) ->
         with {:ok, backend_handle, append_offset} <-
                seed_append_handle(path, backend_handle, state) do
           {:ok, backend_handle, append_offset, append_offset}
         end
-
-      truncate_open?(pflags) ->
-        {:ok, backend_handle, nil, 0}
 
       true ->
         seed_write_update_handle(path, backend_handle, state)
@@ -478,15 +495,16 @@ defmodule Sftpd.SFTP.Session do
 
   defp prepare_read_write_handle(path, pflags, read_handle, write_handle, state) do
     cond do
+      truncate_open?(pflags) ->
+        append_offset = if append_open?(pflags), do: 0
+        with {:ok, overlay} <- new_overlay(), do: {:ok, write_handle, append_offset, 0, overlay}
+
       append_open?(pflags) ->
         append_offset = append_offset(path, state)
 
         with {:ok, overlay} <- new_overlay() do
           {:ok, write_handle, append_offset, append_offset, overlay}
         end
-
-      truncate_open?(pflags) ->
-        with {:ok, overlay} <- new_overlay(), do: {:ok, write_handle, nil, 0, overlay}
 
       true ->
         seed_update_handle(path, read_handle, write_handle, state)

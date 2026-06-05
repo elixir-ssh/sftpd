@@ -72,7 +72,7 @@ defmodule Sftpd.SSH.Server do
       else
         pid = start_connection(client, state)
         ref = Process.monitor(pid)
-        %{state | connections: Map.put(state.connections, ref, pid)}
+        %{state | connections: Map.put(state.connections, ref, {pid, client})}
       end
 
     {:noreply, %{state | acceptor: start_acceptor(state)}}
@@ -91,7 +91,7 @@ defmodule Sftpd.SSH.Server do
   @impl true
   def terminate(_reason, %{socket: socket, connections: connections}) do
     :gen_tcp.close(socket)
-    Enum.each(connections, fn {_ref, pid} -> Process.exit(pid, :shutdown) end)
+    Enum.each(connections, fn {_ref, {_pid, socket}} -> :gen_tcp.close(socket) end)
     :ok
   end
 
@@ -493,6 +493,9 @@ defmodule Sftpd.SSH.Server do
         {:ok, state} ->
           {:continue, state}
 
+        {:closed, state} ->
+          {:continue, state}
+
         {:error, reason, state} ->
           Logger.debug("pure ssh failed to flush sftp responses: #{inspect(reason)}")
           {:stop, state}
@@ -524,13 +527,15 @@ defmodule Sftpd.SSH.Server do
       channel = %{channel | eof_received?: true}
 
       if channel.pending_responses == [] and channel.sftp_buffer == "" do
-        _ = SFTP.Session.abort_open_writes(channel.sftp_session)
+        _ = SFTP.Session.cleanup_open_handles(channel.sftp_session)
         {:ok, state} = send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>)
         {:continue, %{state | channels: Map.delete(state.channels, recipient)}}
       else
         {:continue, put_channel(state, channel)}
       end
     else
+      :error -> {:continue, state}
+      {:error, _reason, state} -> {:stop, state}
       _ -> {:stop, state}
     end
   end
@@ -538,7 +543,7 @@ defmodule Sftpd.SSH.Server do
   defp handle_encrypted_payload(<<97, recipient::32, _rest::binary>>, state, socket) do
     with {:ok, channel} <- fetch_channel(state, recipient),
          {:ok, state} <- send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>) do
-      _ = SFTP.Session.abort_open_writes(channel.sftp_session)
+      _ = SFTP.Session.cleanup_open_handles(channel.sftp_session)
       {:continue, %{state | channels: Map.delete(state.channels, recipient)}}
     else
       _ -> {:continue, state}
@@ -596,6 +601,9 @@ defmodule Sftpd.SSH.Server do
           {:ok, state} ->
             {:ok, channel} = fetch_channel(state, recipient)
             drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+
+          {:closed, state} ->
+            {responses, state, channel, bytes_read}
 
           {:error, _reason, state} ->
             {responses, state, channel, bytes_read}
@@ -902,7 +910,7 @@ defmodule Sftpd.SSH.Server do
          state,
          %{eof_received?: true, pending_responses: [], sftp_buffer: ""} = channel
        ) do
-    _ = SFTP.Session.abort_open_writes(channel.sftp_session)
+    _ = SFTP.Session.cleanup_open_handles(channel.sftp_session)
 
     case send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>) do
       {:ok, state} ->
@@ -1223,7 +1231,7 @@ defmodule Sftpd.SSH.Server do
     channels =
       Map.new(channels, fn {server_channel, channel} ->
         {server_channel,
-         %{channel | sftp_session: SFTP.Session.abort_open_writes(channel.sftp_session)}}
+         %{channel | sftp_session: SFTP.Session.cleanup_open_handles(channel.sftp_session)}}
       end)
 
     %{state | channels: channels}

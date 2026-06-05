@@ -92,18 +92,34 @@ defmodule Sftpd.SFTP.SessionTest do
     def file_attrs("/no-such-file-error", _session, _state), do: {:error, :no_such_file}
 
     def file_attrs(path, _session, _state)
-        when path in ["/open-dir-error", "/read-dir-error"],
+        when path in ["/open-dir-error", "/read-dir-error", "/close-on-cleanup"],
         do: {:ok, %{type: :directory, size: 0, permissions: 0o040755}}
 
     def file_attrs(_path, _session, _state),
       do: {:ok, %{type: :regular, size: 2, permissions: 0o100644}}
 
     def open_dir("/open-dir-error", _session, _state), do: {:error, :enoent}
+
+    def open_dir("/read-dir-error", _session, test_pid) when is_pid(test_pid),
+      do: {:ok, %{read_error?: true, test_pid: test_pid}}
+
     def open_dir("/read-dir-error", _session, _state), do: {:ok, %{read_error?: true}}
+    def open_dir("/close-on-cleanup", _session, test_pid), do: {:ok, %{test_pid: test_pid}}
     def open_dir(_path, _session, _state), do: {:ok, %{}}
+
+    def read_dir(%{read_error?: true, test_pid: test_pid} = handle, _state) do
+      send(test_pid, {:read_dir_error, handle})
+      {:error, :eacces}
+    end
 
     def read_dir(%{read_error?: true}, _state), do: {:error, :eacces}
     def read_dir(handle, _state), do: {:ok, [], handle}
+
+    def close_dir(%{test_pid: test_pid} = handle, _state) do
+      send(test_pid, {:closed_dir, handle})
+      :ok
+    end
+
     def close_dir(_handle, _state), do: :ok
 
     def make_dir("/mkdir-error", _attrs, _session, _state), do: {:error, :eacces}
@@ -136,9 +152,24 @@ defmodule Sftpd.SFTP.SessionTest do
 
     def open_read(_path, _session, _state), do: {:error, :enoent}
     def read_at(_handle, _offset, _len, _state), do: :eof
+
+    def open_dir("/close-on-cleanup", _session, test_pid),
+      do: {:ok, %{path: "/close-on-cleanup", test_pid: test_pid}}
+
     def open_dir(_path, _session, _state), do: {:error, :enoent}
+
     def read_dir(_handle, _state), do: :eof
+
+    def close_dir(%{path: path, test_pid: test_pid}, _state) do
+      send(test_pid, {:closed_dir, path})
+      :ok
+    end
+
     def close_dir(_handle, _state), do: :ok
+
+    def file_attrs("/close-on-cleanup", _session, _state),
+      do: {:ok, %{type: :directory, size: 0}}
+
     def file_attrs(_path, _session, _state), do: {:ok, %{type: :regular, size: 0}}
     def make_dir(_path, _attrs, _session, _state), do: :ok
     def del_dir(_path, _session, _state), do: :ok
@@ -273,6 +304,23 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:data, 8, "basetail"} = decode_response(response)
   end
 
+  test "truncate wins over append for write opens", %{session: session} do
+    {response, session} = handle(open(1, "/append-truncate.txt", 0x0000_000A), session)
+    {:handle, 1, handle} = decode_response(response)
+    {_response, session} = handle(write(2, handle, 0, "base"), session)
+    {_response, session} = handle(close(3, handle), session)
+
+    {response, session} = handle(open(4, "/append-truncate.txt", 0x0000_001E), session)
+    {:handle, 4, append_handle} = decode_response(response)
+    {_response, session} = handle(write(5, append_handle, 123, "tail"), session)
+    {_response, session} = handle(close(6, append_handle), session)
+
+    {response, session} = handle(open(7, "/append-truncate.txt", 0x0000_0001), session)
+    {:handle, 7, read_handle} = decode_response(response)
+    {response, _session} = handle(read(8, read_handle, 0, 16), session)
+    assert {:data, 8, "tail"} = decode_response(response)
+  end
+
   test "write-only update opens preserve existing content", %{session: session} do
     {response, session} = handle(open(1, "/update.txt", 0x0000_000A), session)
     {:handle, 1, write_handle} = decode_response(response)
@@ -324,7 +372,7 @@ defmodule Sftpd.SFTP.SessionTest do
     assert_receive {:aborted, "/pending.txt"}
   end
 
-  test "abort_open_writes aborts mixed handles and leaves read handles alone", %{
+  test "cleanup_open_handles aborts writes closes directories and leaves read handles alone", %{
     session: session
   } do
     {response, session} = handle(open(1, "/read.txt", 0x0000_000A), session)
@@ -343,11 +391,15 @@ defmodule Sftpd.SFTP.SessionTest do
     {response, abort_session} = handle(open(5, "/mixed.txt", 0x0000_000B), abort_session)
     assert {:handle, 5, _mixed_handle} = decode_response(response)
 
+    {response, abort_session} = handle(opendir(6, "/close-on-cleanup"), abort_session)
+    assert {:handle, 6, _dir_handle} = decode_response(response)
+
     session = %{abort_session | handles: Map.merge(abort_session.handles, session.handles)}
-    session = Session.abort_open_writes(session)
+    session = Session.cleanup_open_handles(session)
 
     assert session.handles == %{}
     assert_receive {:aborted, "/mixed.txt"}
+    assert_receive {:closed_dir, "/close-on-cleanup"}
   end
 
   test "directory handles return one listing and then eof", %{session: session} do
@@ -367,8 +419,11 @@ defmodule Sftpd.SFTP.SessionTest do
     assert ".." in names
     assert "file.txt" in names
 
-    {response, _session} = handle(readdir(7, dir_handle), session)
+    {response, session} = handle(readdir(7, dir_handle), session)
     assert {:status, 7, 1} = decode_response(response)
+
+    {response, _session} = handle(close(8, dir_handle), session)
+    assert {:status, 8, 0} = decode_response(response)
   end
 
   test "realpath returns an absolute path", %{session: session} do
@@ -562,6 +617,31 @@ defmodule Sftpd.SFTP.SessionTest do
 
     {response, _session} = handle(read(9, read_handle, 0, 16), session)
     assert {:data, 9, "basetail"} = decode_response(response)
+  end
+
+  test "truncate wins over append for mixed read/write opens", %{session: session} do
+    {response, session} = handle(open(1, "/mixed-append-truncate.txt", 0x0000_000A), session)
+    {:handle, 1, write_handle} = decode_response(response)
+    {_response, session} = handle(write(2, write_handle, 0, "base"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(open(4, "/mixed-append-truncate.txt", 0x0000_001F), session)
+    assert {:handle, 4, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(read(5, mixed_handle, 0, 16), session)
+    assert {:status, 5, 1} = decode_response(response)
+
+    {response, session} = handle(write(6, mixed_handle, 123, "tail"), session)
+    assert {:status, 6, 0} = decode_response(response)
+
+    {response, session} = handle(close(7, mixed_handle), session)
+    assert {:status, 7, 0} = decode_response(response)
+
+    {response, session} = handle(open(8, "/mixed-append-truncate.txt", 0x0000_0001), session)
+    assert {:handle, 8, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(9, read_handle, 0, 16), session)
+    assert {:data, 9, "tail"} = decode_response(response)
   end
 
   test "closing untouched mixed read/write opens does not truncate existing content", %{
@@ -887,6 +967,22 @@ defmodule Sftpd.SFTP.SessionTest do
       assert {:status, ^id, code} = decode_response(response)
       assert code in [2, 3, 4]
     end
+  end
+
+  test "readdir errors close and forget directory handles" do
+    session =
+      ErrorBackend |> Session.new(self(), %{username: "test"}) |> Map.put(:initialized?, true)
+
+    {response, session} = handle(opendir(1, "/read-dir-error"), session)
+    {:handle, 1, dir_handle} = decode_response(response)
+
+    {response, session} = handle(readdir(2, dir_handle), session)
+    assert {:status, 2, 3} = decode_response(response)
+    assert_receive {:read_dir_error, %{read_error?: true}}
+    assert_receive {:closed_dir, %{read_error?: true}}
+
+    {response, _session} = handle(close(3, dir_handle), session)
+    assert {:status, 3, 4} = decode_response(response)
   end
 
   test "mkdir treats no-such-file backend errors as missing paths" do
