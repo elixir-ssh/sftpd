@@ -1,7 +1,9 @@
 defmodule Sftpd.SFTP.CodecTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   import Bitwise
+  import StreamData, except: [string: 1, string: 2]
 
   alias Sftpd.SFTP.{Codec, SerializedPacket}
 
@@ -10,14 +12,19 @@ defmodule Sftpd.SFTP.CodecTest do
   @attr_permissions 0x0000_0004
   @attr_acmodtime 0x0000_0008
 
-  test "splits complete packets and preserves incomplete trailing data" do
-    init = <<1, 3::32>>
-    close = <<4, 9::32, string("handle")::binary>>
-    first = framed(init)
-    second = framed(close)
-    incomplete = <<9::32, "short">>
+  property "splits complete packets and preserves incomplete trailing data" do
+    check all(
+            first_payload <- binary(min_length: 1, max_length: 64),
+            second_payload <- binary(min_length: 1, max_length: 64),
+            incomplete_payload <- binary(max_length: 64)
+          ) do
+      first = framed(first_payload)
+      second = framed(second_payload)
+      incomplete = <<byte_size(incomplete_payload) + 1::32, incomplete_payload::binary>>
 
-    assert {[^init, ^close], ^incomplete} = Codec.split_packets(first <> second <> incomplete)
+      assert {[^first_payload, ^second_payload], ^incomplete} =
+               Codec.split_packets(first <> second <> incomplete)
+    end
 
     assert {[], <<1, 2, 3>>} = Codec.split_packets(<<1, 2, 3>>)
   end
@@ -131,27 +138,48 @@ defmodule Sftpd.SFTP.CodecTest do
     assert <<0o40755::32, 9::32, 9::32>> = attrs
   end
 
-  test "encodes large data payloads as split serialized packets" do
-    packet = Codec.data(9, ["abc", "def"])
+  property "encodes data payloads as split serialized packets" do
+    check all(
+            id <- integer(0..0xFFFF_FFFF),
+            head <- binary(max_length: 256),
+            tail <- binary(max_length: 256)
+          ) do
+      data = [head, tail]
+      data_size = IO.iodata_length(data)
+      packet_size = 13 + data_size
 
-    assert %SerializedPacket{kind: :data, header: header, data: ["abc", "def"], size: 19} =
-             packet
+      packet = Codec.data(id, data)
 
-    assert <<15::32, 103, 9::32, 6::32>> = header
+      assert %SerializedPacket{kind: :data, header: header, data: ^data, size: ^packet_size} =
+               packet
+
+      assert <<payload_size::32, 103, ^id::32, ^data_size::32>> = header
+      assert payload_size == 9 + data_size
+    end
   end
 
-  test "maps status atoms to sftp status codes" do
-    assert 0 = Codec.status_code(:ok)
-    assert 1 = Codec.status_code(:eof)
-    assert 2 = Codec.status_code(:enoent)
-    assert 2 = Codec.status_code(:no_such_file)
-    assert 3 = Codec.status_code(:eacces)
-    assert 5 = Codec.status_code(:bad_message)
-    assert 8 = Codec.status_code(:enotsup)
-    assert 8 = Codec.status_code(:op_unsupported)
-    assert 8 = Codec.status_code(:unsupported)
-    assert 99 = Codec.status_code(99)
-    assert 4 = Codec.status_code(:anything_else)
+  property "maps status atoms to sftp status codes" do
+    check all(
+            {status, code} <-
+              member_of([
+                {:ok, 0},
+                {:eof, 1},
+                {:enoent, 2},
+                {:no_such_file, 2},
+                {:eacces, 3},
+                {:bad_message, 5},
+                {:enotsup, 8},
+                {:op_unsupported, 8},
+                {:unsupported, 8},
+                {:anything_else, 4}
+              ])
+          ) do
+      assert ^code = Codec.status_code(status)
+    end
+
+    check all(code <- integer(0..255)) do
+      assert ^code = Codec.status_code(code)
+    end
   end
 
   defp framed(packet), do: <<byte_size(packet)::32, packet::binary>>
