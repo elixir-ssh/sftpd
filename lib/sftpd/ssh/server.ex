@@ -506,6 +506,7 @@ defmodule Sftpd.SSH.Server do
 
       case flush_sftp_responses(socket, state, channel, 0) do
         {:ok, state} -> {:continue, state}
+        {:closed, state} -> {:continue, state}
         {:error, _reason, state} -> {:stop, state}
       end
     else
@@ -868,15 +869,39 @@ defmodule Sftpd.SSH.Server do
 
     case payloads do
       [] ->
-        {:ok, state}
+        maybe_close_eof_channel(socket, state, channel)
 
       payloads ->
         case send_encrypted_payloads(socket, state, payloads) do
-          {:ok, state} -> {:ok, state}
-          {:error, reason} -> {:error, reason, state}
+          {:ok, state} ->
+            case fetch_channel(state, channel.server_channel) do
+              {:ok, channel} -> maybe_close_eof_channel(socket, state, channel)
+              :error -> {:ok, state}
+            end
+
+          {:error, reason} ->
+            {:error, reason, state}
         end
     end
   end
+
+  defp maybe_close_eof_channel(
+         socket,
+         state,
+         %{eof_received?: true, pending_responses: [], sftp_buffer: ""} = channel
+       ) do
+    _ = SFTP.Session.abort_open_writes(channel.sftp_session)
+
+    case send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>) do
+      {:ok, state} ->
+        {:closed, %{state | channels: Map.delete(state.channels, channel.server_channel)}}
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
+  end
+
+  defp maybe_close_eof_channel(_socket, state, _channel), do: {:ok, state}
 
   defp maybe_add_window_adjust(payloads, _client_channel, 0), do: payloads
 

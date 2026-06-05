@@ -217,6 +217,9 @@ defmodule Sftpd.SFTP.Codec do
   def status_code(:eof), do: @ssh_fx_eof
   def status_code(:enoent), do: @ssh_fx_no_such_file
   def status_code(:no_such_file), do: @ssh_fx_no_such_file
+  def status_code(:eexist), do: @ssh_fx_failure
+  def status_code(:eisdir), do: @ssh_fx_failure
+  def status_code(:enotdir), do: @ssh_fx_failure
   def status_code(:eacces), do: @ssh_fx_permission_denied
   def status_code(:permission_denied), do: @ssh_fx_permission_denied
   def status_code(:bad_message), do: @ssh_fx_bad_message

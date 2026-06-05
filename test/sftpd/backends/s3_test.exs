@@ -314,8 +314,22 @@ defmodule Sftpd.Backends.S3Test do
     end
 
     test "del_dir returns ok on success", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{contents: [%{key: "dir/.keep"}], common_prefixes: []}}}
+      end)
+
       expect(MockExAws, :request, fn _op -> {:ok, %{}} end)
       assert :ok = S3.del_dir(~c"/dir", state)
+    end
+
+    test "del_dir refuses non-empty directories", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{contents: [%{key: "dir/.keep"}, %{key: "dir/file.txt"}]}}}
+      end)
+
+      assert {:error, :enotempty} = S3.del_dir(~c"/dir", state)
     end
   end
 

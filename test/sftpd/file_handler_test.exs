@@ -197,6 +197,18 @@ defmodule Sftpd.FileHandlerTest do
       assert {:ok, "fast-path"} = Memory.read_file(~c"/out.txt", backend_state)
     end
 
+    test "preserves append mode for write handles" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/append.txt", "base", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:ok, handle}, ^state} = FileHandler.open(~c"/append.txt", [:write, :append], state)
+      assert {:ok, ^state} = FileHandler.write(handle, "tail", state)
+      assert {:ok, ^state} = FileHandler.close(handle, state)
+
+      assert {:ok, "basetail"} = Memory.read_file(~c"/append.txt", backend_state)
+    end
+
     test "emits telemetry for open" do
       handler_id = TelemetryHelper.attach(self(), [[:sftpd, :sftp, :open]])
       on_exit(fn -> :telemetry.detach(handler_id) end)

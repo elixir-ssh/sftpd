@@ -125,11 +125,15 @@ defmodule Sftpd.Backends.S3 do
   @spec del_dir(Backend.path(), Backend.session(), state()) :: :ok | {:error, atom()}
   @impl true
   def del_dir(path, session, %{bucket: bucket} = state) do
-    key = object_key(path, resolved_prefix(state, session)) <> "/" <> @keep_marker
+    prefix = listing_prefix(path, resolved_prefix(state, session))
+    marker_key = prefix <> @keep_marker
 
-    case aws_request(state, s3_op(:delete_object, [bucket, key])) do
-      {:ok, _} -> :ok
+    with :ok <- ensure_empty_directory(bucket, prefix, state),
+         {:ok, _} <- aws_request(state, s3_op(:delete_object, [bucket, marker_key])) do
+      :ok
+    else
       {:error, reason} -> {:error, normalize_error(reason)}
+      :enotempty -> {:error, :enotempty}
     end
   end
 
@@ -664,6 +668,29 @@ defmodule Sftpd.Backends.S3 do
     end
   end
 
+  defp ensure_empty_directory(bucket, prefix, state) do
+    request = s3_op(:list_objects_v2, [bucket, [prefix: prefix, delimiter: "/", max_keys: 2]])
+
+    case aws_request(state, request) do
+      {:ok, response} ->
+        body = Map.get(response, :body, %{})
+
+        contents =
+          body
+          |> Map.get(:contents, [])
+          |> Enum.reject(fn %{key: key} -> key == prefix <> @keep_marker end)
+
+        if contents == [] and Map.get(body, :common_prefixes, []) == [] do
+          :ok
+        else
+          :enotempty
+        end
+
+      {:error, reason} ->
+        {:error, normalize_error(reason)}
+    end
+  end
+
   defp list_entries(bucket, prefix, state, entries, continuation_token \\ nil)
 
   defp list_entries(bucket, prefix, state, entries, nil) do
@@ -795,6 +822,9 @@ defmodule Sftpd.Backends.S3 do
   defp normalize_error({:http_error, 403, _response}), do: :eacces
   defp normalize_error({:http_error, status, _response}) when status in [408, 429], do: :eio
   defp normalize_error({:http_error, status, _response}) when status >= 500, do: :eio
+  defp normalize_error(:enoent), do: :enoent
+  defp normalize_error(:enotempty), do: :enotempty
+  defp normalize_error(:eacces), do: :eacces
   defp normalize_error(:not_found), do: :enoent
   defp normalize_error(:forbidden), do: :eacces
   defp normalize_error(:timeout), do: :eio

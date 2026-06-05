@@ -13,6 +13,7 @@ defmodule Sftpd.SFTP.Session do
   @open_exclusive 0x0000_0020
   @max_read_len 1_048_576
   @seed_chunk_size 1_048_576
+  @replay_chunk_size 1_048_576
 
   @type state :: %{
           backend: module(),
@@ -40,9 +41,10 @@ defmodule Sftpd.SFTP.Session do
         _ = state.backend.abort_write(backend_handle, state.backend_state)
 
       {_handle,
-       {:file, :read_write, _path, _read_handle, write_handle, _append_offset, _dirty?,
-        _pending_chunks, _size}} ->
+       {:file, :read_write, _path, _read_handle, write_handle, _append_offset, _dirty?, overlay,
+        _size}} ->
         _ = state.backend.abort_write(write_handle, state.backend_state)
+        cleanup_overlay(overlay)
 
       _entry ->
         :ok
@@ -84,13 +86,13 @@ defmodule Sftpd.SFTP.Session do
             end
 
           case prepare_read_write_handle(path, pflags, read_handle, write_handle, state) do
-            {:ok, write_handle, append_offset, size} ->
+            {:ok, write_handle, append_offset, size, overlay} ->
               dirty? = truncate_open?(pflags)
 
               put_handle(
                 id,
-                {:file, :read_write, path, read_handle, write_handle, append_offset, dirty?, [],
-                 size},
+                {:file, :read_write, path, read_handle, write_handle, append_offset, dirty?,
+                 overlay, size},
                 state
               )
 
@@ -142,18 +144,20 @@ defmodule Sftpd.SFTP.Session do
 
         {response, %{state | handles: handles}}
 
-      {{:file, :read_write, _path, _read_handle, write_handle, _append_offset, true,
-        _pending_chunks, _size}, handles} ->
+      {{:file, :read_write, _path, _read_handle, _write_handle, _append_offset, true, overlay,
+        _size} = file_handle, handles} ->
         response =
-          case state.backend.finish_write(write_handle, state.backend_state) do
+          case finish_read_write_handle(file_handle, state) do
             :ok -> Codec.status(id, :ok)
             {:error, reason} -> Codec.status(id, reason)
           end
 
+        cleanup_overlay(overlay)
         {response, %{state | handles: handles}}
 
-      {{:file, :read_write, _path, _read_handle, write_handle, _append_offset, false,
-        _pending_chunks, _size}, handles} ->
+      {{:file, :read_write, _path, _read_handle, write_handle, _append_offset, false, overlay,
+        _size}, handles} ->
+        cleanup_overlay(overlay)
         _ = state.backend.abort_write(write_handle, state.backend_state)
         {Codec.status(id, :ok), %{state | handles: handles}}
 
@@ -180,9 +184,9 @@ defmodule Sftpd.SFTP.Session do
           {:error, reason} -> {Codec.status(id, reason), state}
         end
 
-      {:file, :read_write, _path, read_handle, _write_handle, _append_offset, _dirty?,
-       pending_chunks, size} ->
-        case read_read_write_data(read_handle, pending_chunks, offset, len, size, state) do
+      {:file, :read_write, _path, read_handle, _write_handle, _append_offset, _dirty?, overlay,
+       size} ->
+        case read_read_write_data(read_handle, overlay, offset, len, size, state) do
           {:ok, data} -> data_response(id, data, state)
           :eof -> {Codec.status(id, :eof), state}
           {:error, reason} -> {Codec.status(id, reason), state}
@@ -220,29 +224,29 @@ defmodule Sftpd.SFTP.Session do
             {Codec.status(id, reason), %{state | handles: handles}}
         end
 
-      {:file, :read_write, path, read_handle, write_handle, append_offset, _dirty?,
-       pending_chunks, size} ->
+      {:file, :read_write, path, read_handle, write_handle, append_offset, _dirty?, overlay, size} ->
         write_offset = append_offset || offset
-        data = IO.iodata_to_binary(data)
-        data_size = byte_size(data)
+        data_size = IO.iodata_length(data)
 
-        case state.backend.write_at(write_handle, write_offset, data, state.backend_state) do
-          {:ok, write_handle} ->
+        case write_overlay(overlay, write_offset, data, data_size) do
+          :ok ->
             append_offset = if append_offset, do: append_offset + data_size
             size = max(size, write_offset + data_size)
+            overlay = put_overlay_range(overlay, write_offset, data_size)
 
             handles =
               Map.put(
                 state.handles,
                 handle,
                 {:file, :read_write, path, read_handle, write_handle, append_offset, true,
-                 [{write_offset, data} | pending_chunks], size}
+                 overlay, size}
               )
 
             {Codec.status(id, :ok), %{state | handles: handles}}
 
           {:error, reason} ->
             _ = state.backend.abort_write(write_handle, state.backend_state)
+            cleanup_overlay(overlay)
             handles = Map.delete(state.handles, handle)
 
             {Codec.status(id, reason), %{state | handles: handles}}
@@ -274,8 +278,10 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{type: :opendir, id: id, path: path}, state) do
-    case state.backend.open_dir(path, state.session, state.backend_state) do
-      {:ok, backend_handle} -> put_handle(id, {:dir, backend_handle}, state)
+    with :ok <- require_directory(path, state),
+         {:ok, backend_handle} <- state.backend.open_dir(path, state.session, state.backend_state) do
+      put_handle(id, {:dir, backend_handle}, state)
+    else
       {:error, reason} -> {Codec.status(id, reason), state}
     end
   end
@@ -308,23 +314,44 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{type: :mkdir, id: id, path: path, attrs: attrs}, state) do
-    case state.backend.make_dir(path, attrs, state.session, state.backend_state) do
-      :ok -> {Codec.status(id, :ok), state}
-      {:error, reason} -> {Codec.status(id, reason), state}
+    case path_exists?(path, state) do
+      false ->
+        case state.backend.make_dir(path, attrs, state.session, state.backend_state) do
+          :ok -> {Codec.status(id, :ok), state}
+          {:error, reason} -> {Codec.status(id, reason), state}
+        end
+
+      true ->
+        {Codec.status(id, :eexist), state}
+
+      {:error, reason} ->
+        {Codec.status(id, reason), state}
     end
   end
 
   defp handle_request(%{type: :rmdir, id: id, path: path}, state) do
-    case state.backend.del_dir(path, state.session, state.backend_state) do
-      :ok -> {Codec.status(id, :ok), state}
-      {:error, reason} -> {Codec.status(id, reason), state}
+    case require_directory(path, state) do
+      :ok ->
+        case state.backend.del_dir(path, state.session, state.backend_state) do
+          :ok -> {Codec.status(id, :ok), state}
+          {:error, reason} -> {Codec.status(id, reason), state}
+        end
+
+      {:error, reason} ->
+        {Codec.status(id, reason), state}
     end
   end
 
   defp handle_request(%{type: :remove, id: id, path: path}, state) do
-    case state.backend.delete(path, state.session, state.backend_state) do
-      :ok -> {Codec.status(id, :ok), state}
-      {:error, reason} -> {Codec.status(id, reason), state}
+    case require_regular(path, state) do
+      :ok ->
+        case state.backend.delete(path, state.session, state.backend_state) do
+          :ok -> {Codec.status(id, :ok), state}
+          {:error, reason} -> {Codec.status(id, reason), state}
+        end
+
+      {:error, reason} ->
+        {Codec.status(id, reason), state}
     end
   end
 
@@ -360,6 +387,9 @@ defmodule Sftpd.SFTP.Session do
 
   defp validate_write_open(path, pflags, state) do
     case state.backend.file_attrs(path, state.session, state.backend_state) do
+      {:ok, %{type: :directory}} ->
+        {:error, :eisdir}
+
       {:ok, _attrs} ->
         if create_open?(pflags) and exclusive_open?(pflags) do
           {:error, :eexist}
@@ -389,7 +419,7 @@ defmodule Sftpd.SFTP.Session do
 
   defp new_handle(
          {:file, :read_write, _path, _read_handle, _write_handle, _append_offset, _dirty?,
-          _pending_chunks, _size}
+          _overlay, _size}
        ),
        do: <<"B", :crypto.strong_rand_bytes(16)::binary>>
 
@@ -403,7 +433,7 @@ defmodule Sftpd.SFTP.Session do
 
   defp file_handle_attrs(
          {:file, :read_write, path, _read_handle, _write_handle, _append_offset, _dirty?,
-          _pending_chunks, size},
+          _overlay, size},
          state
        ) do
     pending_file_attrs(path, size, state)
@@ -421,8 +451,7 @@ defmodule Sftpd.SFTP.Session do
     end
   end
 
-  defp write_open?(pflags),
-    do: (pflags &&& (@open_write ||| @open_create ||| @open_truncate)) != 0
+  defp write_open?(pflags), do: (pflags &&& @open_write) != 0
 
   defp read_open?(pflags), do: (pflags &&& @open_read) != 0
   defp append_open?(pflags), do: (pflags &&& @open_append) != 0
@@ -442,12 +471,14 @@ defmodule Sftpd.SFTP.Session do
   defp prepare_read_write_handle(path, pflags, read_handle, write_handle, state) do
     cond do
       append_open?(pflags) ->
-        with {:ok, write_handle, append_offset} <- seed_append_handle(path, write_handle, state) do
-          {:ok, write_handle, append_offset, append_offset}
+        append_offset = append_offset(path, state)
+
+        with {:ok, overlay} <- new_overlay() do
+          {:ok, write_handle, append_offset, append_offset, overlay}
         end
 
       truncate_open?(pflags) ->
-        {:ok, write_handle, nil, 0}
+        with {:ok, overlay} <- new_overlay(), do: {:ok, write_handle, nil, 0, overlay}
 
       true ->
         seed_update_handle(path, read_handle, write_handle, state)
@@ -484,21 +515,19 @@ defmodule Sftpd.SFTP.Session do
 
   defp seed_update_handle(path, nil, backend_handle, state) do
     case append_offset(path, state) do
-      0 -> {:ok, backend_handle, nil, 0}
-      _size -> {:error, :eio}
+      0 ->
+        with {:ok, overlay} <- new_overlay(), do: {:ok, backend_handle, nil, 0, overlay}
+
+      _size ->
+        {:error, :eio}
     end
   end
 
-  defp seed_update_handle(path, read_handle, backend_handle, state) do
+  defp seed_update_handle(path, _read_handle, backend_handle, state) do
     size = append_offset(path, state)
 
-    with true <- size > 0 do
-      case seed_handle_chunks(read_handle, backend_handle, state, size, 0) do
-        {:ok, backend_handle} -> {:ok, backend_handle, nil, size}
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      _ -> {:ok, backend_handle, nil, 0}
+    with {:ok, overlay} <- new_overlay() do
+      {:ok, backend_handle, nil, size, overlay}
     end
   end
 
@@ -529,15 +558,46 @@ defmodule Sftpd.SFTP.Session do
     end
   end
 
-  defp read_read_write_data(_read_handle, _pending_chunks, offset, _len, size, _state)
+  defp finish_read_write_handle(
+         {:file, :read_write, _path, read_handle, write_handle, _append_offset, _dirty?, overlay,
+          size},
+         state
+       ) do
+    with {:ok, write_handle} <-
+           replay_read_write_data(read_handle, write_handle, overlay, size, state, 0) do
+      state.backend.finish_write(write_handle, state.backend_state)
+    end
+  end
+
+  defp replay_read_write_data(_read_handle, write_handle, _overlay, size, _state, offset)
+       when offset >= size,
+       do: {:ok, write_handle}
+
+  defp replay_read_write_data(read_handle, write_handle, overlay, size, state, offset) do
+    len = min(@replay_chunk_size, size - offset)
+
+    with {:ok, data} <- read_read_write_data(read_handle, overlay, offset, len, size, state),
+         data_size <- IO.iodata_length(data),
+         true <- data_size > 0,
+         {:ok, write_handle} <-
+           state.backend.write_at(write_handle, offset, data, state.backend_state) do
+      replay_read_write_data(read_handle, write_handle, overlay, size, state, offset + data_size)
+    else
+      false -> {:error, :eof}
+      :eof -> {:error, :eof}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp read_read_write_data(_read_handle, _overlay, offset, _len, size, _state)
        when offset >= size,
        do: :eof
 
-  defp read_read_write_data(read_handle, pending_chunks, offset, len, size, state) do
+  defp read_read_write_data(read_handle, overlay, offset, len, size, state) do
     len = min(len, size - offset)
 
     with {:ok, base} <- read_base_data(read_handle, offset, len, state) do
-      {:ok, overlay_pending_chunks(base, offset, len, pending_chunks)}
+      overlay_ranges(base, offset, len, overlay)
     end
   end
 
@@ -551,34 +611,39 @@ defmodule Sftpd.SFTP.Session do
     end
   end
 
-  defp overlay_pending_chunks(base, offset, len, pending_chunks) do
-    Enum.reduce(Enum.reverse(pending_chunks), base, fn {chunk_offset, chunk}, acc ->
-      overlay_chunk(acc, offset, len, chunk_offset, chunk)
+  defp overlay_ranges(base, offset, len, overlay) do
+    Enum.reduce_while(overlay.ranges, {:ok, base}, fn {chunk_offset, chunk_size}, {:ok, acc} ->
+      read_end = offset + len
+      chunk_end = chunk_offset + chunk_size
+      overlap_start = max(offset, chunk_offset)
+      overlap_end = min(read_end, chunk_end)
+
+      if overlap_start < overlap_end do
+        overlap_len = overlap_end - overlap_start
+
+        case read_overlay(overlay, overlap_start, overlap_len) do
+          {:ok, chunk} ->
+            {:cont, {:ok, overlay_chunk(acc, offset, len, overlap_start, chunk)}}
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      else
+        {:cont, {:ok, acc}}
+      end
     end)
   end
 
-  defp overlay_chunk(base, read_offset, read_len, chunk_offset, chunk) do
+  defp overlay_chunk(base, read_offset, read_len, overlap_start, chunk) do
     chunk_size = byte_size(chunk)
-    read_end = read_offset + read_len
-    chunk_end = chunk_offset + chunk_size
-    overlap_start = max(read_offset, chunk_offset)
-    overlap_end = min(read_end, chunk_end)
+    prefix_len = overlap_start - read_offset
+    suffix_offset = prefix_len + chunk_size
+    suffix_len = read_len - suffix_offset
 
-    if overlap_start < overlap_end do
-      prefix_len = overlap_start - read_offset
-      overlap_len = overlap_end - overlap_start
-      suffix_offset = prefix_len + overlap_len
-      suffix_len = read_len - suffix_offset
-      chunk_part_offset = overlap_start - chunk_offset
+    prefix = binary_part(base, 0, prefix_len)
+    suffix = binary_part(base, suffix_offset, suffix_len)
 
-      prefix = binary_part(base, 0, prefix_len)
-      replacement = binary_part(chunk, chunk_part_offset, overlap_len)
-      suffix = binary_part(base, suffix_offset, suffix_len)
-
-      IO.iodata_to_binary([prefix, replacement, suffix])
-    else
-      base
-    end
+    IO.iodata_to_binary([prefix, chunk, suffix])
   end
 
   defp pad_binary(data, len) do
@@ -595,11 +660,95 @@ defmodule Sftpd.SFTP.Session do
   defp zeroes(0), do: ""
   defp zeroes(len), do: :binary.copy(<<0>>, len)
 
+  defp new_overlay do
+    path =
+      Path.join(System.tmp_dir!(), "sftpd-sftp-overlay-#{System.unique_integer([:positive])}")
+
+    case :file.open(String.to_charlist(path), [:read, :write, :binary, :raw]) do
+      {:ok, fd} -> {:ok, %{path: path, fd: fd, ranges: []}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp write_overlay(_overlay, _offset, _data, 0), do: :ok
+
+  defp write_overlay(%{fd: fd}, offset, data, _data_size) do
+    case :file.pwrite(fd, offset, data) do
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp read_overlay(%{fd: fd}, offset, len) do
+    case :file.pread(fd, offset, len) do
+      {:ok, data} -> {:ok, data}
+      :eof -> {:error, :eof}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp put_overlay_range(%{ranges: ranges} = overlay, offset, size) do
+    %{overlay | ranges: merge_ranges([{offset, size} | ranges])}
+  end
+
+  defp merge_ranges(ranges) do
+    ranges
+    |> Enum.sort_by(fn {offset, _size} -> offset end)
+    |> Enum.reduce([], fn
+      {offset, size}, [] ->
+        [{offset, size}]
+
+      {offset, size}, [{prev_offset, prev_size} | rest] ->
+        prev_end = prev_offset + prev_size
+        current_end = offset + size
+
+        if offset <= prev_end do
+          [{prev_offset, max(prev_end, current_end) - prev_offset} | rest]
+        else
+          [{offset, size}, {prev_offset, prev_size} | rest]
+        end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp cleanup_overlay(%{fd: fd, path: path}) do
+    _ = :file.close(fd)
+    _ = File.rm(path)
+    :ok
+  end
+
+  defp cleanup_overlay(_overlay), do: :ok
+
   defp data_response(id, data, state) do
     if IO.iodata_length(data) == 0 do
       {Codec.status(id, :eof), state}
     else
       {Codec.data(id, data), state}
+    end
+  end
+
+  defp path_exists?(path, state) do
+    case state.backend.file_attrs(path, state.session, state.backend_state) do
+      {:ok, _attrs} -> true
+      {:error, :enoent} -> false
+      {:error, :no_such_file} -> false
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_directory(path, state) do
+    case state.backend.file_attrs(path, state.session, state.backend_state) do
+      {:ok, %{type: :directory}} -> :ok
+      {:ok, _attrs} -> {:error, :enotdir}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_regular(path, state) do
+    case state.backend.file_attrs(path, state.session, state.backend_state) do
+      {:ok, %{type: :directory}} -> {:error, :eisdir}
+      {:ok, _attrs} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 

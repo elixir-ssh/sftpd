@@ -30,28 +30,53 @@ defmodule Sftpd.IODevice do
 
   def start(%{path: path, mode: :write, backend: backend, backend_state: backend_state} = opts) do
     session = Map.get(opts, :session, %{})
+    path = to_string(path)
+    append? = Map.get(opts, :append?, false)
 
-    with {:ok, writer_handle} <- backend.open_write(to_string(path), %{}, session, backend_state),
+    with {:ok, writer_handle} <- backend.open_write(path, %{}, session, backend_state),
          {:ok, temp_path, temp_fd} <- open_temp_file(backend, writer_handle, backend_state) do
-      handle = new_handle()
+      case maybe_seed_append_content(
+             append?,
+             backend,
+             backend_state,
+             session,
+             path,
+             writer_handle,
+             temp_fd
+           ) do
+        {:ok, writer_handle, size} ->
+          handle = new_handle()
 
-      put_state(handle, %{
-        mode: :write,
-        path: path,
-        backend: backend,
-        backend_state: backend_state,
-        session: session,
-        position: 0,
-        size: 0,
-        writer_handle: writer_handle,
-        write_strategy: :direct,
-        stream_offset: 0,
-        dirty?: false,
-        temp_path: temp_path,
-        temp_fd: temp_fd
-      })
+          put_state(handle, %{
+            mode: :write,
+            path: path,
+            backend: backend,
+            backend_state: backend_state,
+            session: session,
+            position: size,
+            size: size,
+            writer_handle: writer_handle,
+            write_strategy: :direct,
+            stream_offset: size,
+            dirty?: append?,
+            temp_path: temp_path,
+            temp_fd: temp_fd
+          })
 
-      {:ok, handle}
+          {:ok, handle}
+
+        {:error, reason} ->
+          cleanup_unfinished_write(%{
+            backend: backend,
+            backend_state: backend_state,
+            writer_handle: writer_handle,
+            write_strategy: :direct,
+            temp_path: temp_path,
+            temp_fd: temp_fd
+          })
+
+          {:error, reason}
+      end
     end
   end
 
@@ -120,6 +145,51 @@ defmodule Sftpd.IODevice do
 
           {:error, reason}
       end
+    end
+  end
+
+  defp maybe_seed_append_content(
+         false,
+         _backend,
+         _backend_state,
+         _session,
+         _path,
+         writer_handle,
+         _fd
+       ),
+       do: {:ok, writer_handle, 0}
+
+  defp maybe_seed_append_content(
+         true,
+         backend,
+         backend_state,
+         session,
+         path,
+         writer_handle,
+         temp_fd
+       ) do
+    size =
+      case backend.file_attrs(path, session, backend_state) do
+        {:ok, attrs} -> Map.get(attrs, :size, 0)
+        {:error, _reason} -> 0
+      end
+
+    with true <- size > 0,
+         {:ok, reader_handle} <- backend.open_read(path, session, backend_state),
+         {:ok, writer_handle} <-
+           seed_existing_read_write_content(
+             backend,
+             backend_state,
+             reader_handle,
+             writer_handle,
+             temp_fd,
+             size
+           ) do
+      {:ok, writer_handle, size}
+    else
+      false -> {:ok, writer_handle, size}
+      {:error, reason} -> {:error, reason}
+      :eof -> {:error, :eof}
     end
   end
 

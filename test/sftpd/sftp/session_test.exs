@@ -79,6 +79,10 @@ defmodule Sftpd.SFTP.SessionTest do
     def file_attrs(path, _session, _state) when path in ["/attrs-error", "/write-error"],
       do: {:error, :enoent}
 
+    def file_attrs(path, _session, _state)
+        when path in ["/open-dir-error", "/read-dir-error"],
+        do: {:ok, %{type: :directory, size: 0, permissions: 0o040755}}
+
     def file_attrs(_path, _session, _state),
       do: {:ok, %{type: :regular, size: 2, permissions: 0o100644}}
 
@@ -368,6 +372,37 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:status, 7, 0} = decode_response(response)
   end
 
+  test "path operations enforce file and directory target types", %{session: session} do
+    {_response, session} = handle(mkdir(1, "/dir"), session)
+
+    {response, session} = handle(open(2, "/file.txt", 0x0000_000A), session)
+    {:handle, 2, file_handle} = decode_response(response)
+    {_response, session} = handle(write(3, file_handle, 0, "data"), session)
+    {_response, session} = handle(close(4, file_handle), session)
+
+    for {packet, id} <- [
+          {open(5, "/dir", 0x0000_0012), 5},
+          {opendir(6, "/file.txt"), 6},
+          {mkdir(7, "/file.txt"), 7},
+          {mkdir(8, "/dir"), 8},
+          {path_packet(@ssh_fxp_rmdir, 9, "/file.txt"), 9},
+          {path_packet(@ssh_fxp_remove, 10, "/dir"), 10}
+        ] do
+      {response, _session} = handle(packet, session)
+      assert {:status, ^id, 4} = decode_response(response)
+    end
+  end
+
+  test "create and truncate flags do not grant write access", %{session: session} do
+    for {packet, id} <- [
+          {open(1, "/created-without-write.txt", 0x0000_0008), 1},
+          {open(2, "/truncated-without-write.txt", 0x0000_0010), 2}
+        ] do
+      {response, _session} = handle(packet, session)
+      assert {:status, ^id, 8} = decode_response(response)
+    end
+  end
+
   test "invalid handles and unsupported requests return status failures", %{session: session} do
     for packet <- [
           close(1, "missing"),
@@ -605,7 +640,9 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:status, 6, 3} = decode_response(response)
 
     {response, session} = handle(open(15, "/read-error", 0x0000_0003), session)
-    assert {:status, 15, 3} = decode_response(response)
+    {:handle, 15, read_error_handle} = decode_response(response)
+    {response, session} = handle(read(16, read_error_handle, 0, 1), session)
+    assert {:status, 16, 3} = decode_response(response)
 
     {response, session} = handle(open(17, "/open-read-error", 0x0000_0003), session)
     assert {:status, 17, 4} = decode_response(response)
@@ -628,16 +665,16 @@ defmodule Sftpd.SFTP.SessionTest do
     {response, session} = handle(open(19, "/write-error", 0x0000_000B), session)
     {:handle, 19, mixed_error_handle} = decode_response(response)
     {response, session} = handle(write(20, mixed_error_handle, 0, "x"), session)
-    assert {:status, 20, 3} = decode_response(response)
+    assert {:status, 20, 0} = decode_response(response)
     {response, session} = handle(close(21, mixed_error_handle), session)
-    assert {:status, 21, 4} = decode_response(response)
+    assert {:status, 21, 3} = decode_response(response)
 
     {response, session} = handle(open(22, "/write-error-after-open", 0x0000_0003), session)
     {:handle, 22, mixed_write_handle} = decode_response(response)
     {response, session} = handle(write(23, mixed_write_handle, 0, "x"), session)
-    assert {:status, 23, 3} = decode_response(response)
+    assert {:status, 23, 0} = decode_response(response)
     {response, session} = handle(close(24, mixed_write_handle), session)
-    assert {:status, 24, 4} = decode_response(response)
+    assert {:status, 24, 0} = decode_response(response)
 
     {response, session} = handle(open(9, "/attrs-error", 0x0000_0001), session)
     {:handle, 9, attrs_handle} = decode_response(response)
@@ -666,7 +703,7 @@ defmodule Sftpd.SFTP.SessionTest do
         ] do
       {response, _session} = handle(packet, session)
       assert {:status, ^id, code} = decode_response(response)
-      assert code in [2, 3]
+      assert code in [2, 3, 4]
     end
   end
 

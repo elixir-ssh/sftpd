@@ -193,7 +193,7 @@ defmodule Sftpd.FileHandler do
               )
 
             :write in modes ->
-              open_device(path, :write, backend, backend_state, state)
+              open_device(path, :write, backend, backend_state, state, append?: :append in modes)
 
             true ->
               open_device(path, :read, backend, backend_state, state)
