@@ -136,9 +136,17 @@ defmodule Sftpd.Backends.S3 do
     prefix = listing_prefix(path, resolved_prefix(state, session))
     marker_key = prefix <> @keep_marker
 
-    with :ok <- ensure_empty_directory(bucket, prefix, state),
-         {:ok, _} <- aws_request(state, s3_op(:delete_object, [bucket, marker_key])) do
-      :ok
+    with {:ok, marker_present?} <- ensure_empty_directory(bucket, prefix, state) do
+      case aws_request(state, s3_op(:delete_object, [bucket, marker_key])) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          case normalize_error(reason) do
+            :enoent when marker_present? -> :ok
+            normalized -> {:error, normalized}
+          end
+      end
     else
       {:error, reason} -> {:error, normalize_error(reason)}
       :enotempty -> {:error, :enotempty}
@@ -706,13 +714,13 @@ defmodule Sftpd.Backends.S3 do
       {:ok, response} ->
         body = Map.get(response, :body, %{})
 
-        contents =
-          body
-          |> Map.get(:contents, [])
-          |> Enum.reject(fn %{key: key} -> key == prefix <> @keep_marker end)
+        {marker_entries, contents} =
+          Enum.split_with(list_response_field(body, :contents), fn entry ->
+            response_field(entry, :key) == prefix <> @keep_marker
+          end)
 
-        if contents == [] and Map.get(body, :common_prefixes, []) == [] do
-          :ok
+        if contents == [] and list_response_field(body, :common_prefixes) == [] do
+          {:ok, marker_entries != []}
         else
           :enotempty
         end
@@ -720,6 +728,22 @@ defmodule Sftpd.Backends.S3 do
       {:error, reason} ->
         {:error, normalize_error(reason)}
     end
+  end
+
+  defp list_response_field(body, key), do: response_field(body, key) || []
+
+  defp response_field(map, key) do
+    value = Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+    case value do
+      [] -> []
+      value when is_list(value) -> maybe_charlist_to_string(value)
+      value -> value
+    end
+  end
+
+  defp maybe_charlist_to_string(value) do
+    if Enum.all?(value, &is_integer/1), do: to_string(value), else: value
   end
 
   defp list_entries(bucket, prefix, state, entries, continuation_token \\ nil)

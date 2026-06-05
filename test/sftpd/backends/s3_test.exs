@@ -323,6 +323,36 @@ defmodule Sftpd.Backends.S3Test do
       assert :ok = S3.del_dir(~c"/dir", state)
     end
 
+    test "del_dir treats nil list fields as empty", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{contents: [%{key: "dir/.keep"}], common_prefixes: nil}}}
+      end)
+
+      expect(MockExAws, :request, fn _op -> {:ok, %{}} end)
+      assert :ok = S3.del_dir(~c"/dir", state)
+    end
+
+    test "del_dir accepts string-keyed list responses", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{"contents" => [%{"key" => "dir/.keep"}], "common_prefixes" => []}}}
+      end)
+
+      expect(MockExAws, :request, fn _op -> {:ok, %{}} end)
+      assert :ok = S3.del_dir(~c"/dir", state)
+    end
+
+    test "del_dir tolerates missing marker deletes after marker listing", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{contents: [%{key: "dir/.keep"}], common_prefixes: []}}}
+      end)
+
+      expect(MockExAws, :request, fn _op -> {:error, {:http_error, 404, %{}}} end)
+      assert :ok = S3.del_dir(~c"/dir", state)
+    end
+
     test "del_dir refuses non-empty directories", %{state: state} do
       expect(MockExAws, :request, fn op ->
         assert op.params["prefix"] == "dir/"
