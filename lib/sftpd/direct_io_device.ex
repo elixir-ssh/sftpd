@@ -221,6 +221,8 @@ defmodule Sftpd.DirectIODevice do
     len = min(@replay_chunk_size, size - offset)
 
     with {:ok, data} <- backend.read_at(reader_handle, offset, len, backend_state),
+         bytes = IO.iodata_length(data),
+         true <- bytes > 0,
          :ok <- persist_to_tempfile(temp_fd, offset, data),
          {:ok, writer_handle} <- backend.write_at(writer_handle, offset, data, backend_state) do
       seed_existing_read_write_content(
@@ -230,9 +232,10 @@ defmodule Sftpd.DirectIODevice do
         writer_handle,
         temp_fd,
         size,
-        offset + byte_size(data)
+        offset + bytes
       )
     else
+      false -> {:error, :eof}
       :eof -> {:error, :eof}
       {:error, reason} -> {:error, reason}
     end

@@ -8,26 +8,36 @@ defmodule Sftpd.DirectIODeviceTest do
     @moduledoc false
 
     def file_attrs("/attrs-error", _session, _state), do: {:error, :enoent}
+    def file_attrs("/nested-iodata", _session, _state), do: {:ok, %{size: 4}}
     def file_attrs(_path, _session, _state), do: {:ok, %{size: 4}}
 
     def open_read("/open-read-error", _session, _state), do: {:error, :eacces}
     def open_read("/read-error", _session, _state), do: {:ok, :read_error}
     def open_read("/backend-eof", _session, _state), do: {:ok, :backend_eof}
     def open_read("/iodata", _session, _state), do: {:ok, :iodata}
+    def open_read("/nested-iodata", _session, _state), do: {:ok, :nested_iodata}
     def open_read(_path, _session, _state), do: {:ok, :reader}
 
     def read_at(:read_error, _offset, _len, _state), do: {:error, :eio}
     def read_at(:backend_eof, _offset, _len, _state), do: :eof
     def read_at(:iodata, _offset, _len, _state), do: {:ok, ["io", "data"]}
+    def read_at(:nested_iodata, _offset, _len, _state), do: {:ok, ["io", ["da"]]}
     def read_at(_handle, _offset, 0, _state), do: {:ok, ""}
     def read_at(_handle, _offset, len, _state), do: {:ok, binary_part("data", 0, min(len, 4))}
 
     def open_write("/open-write-error", _attrs, _session, _state), do: {:error, :eacces}
     def open_write("/finish-error", _attrs, _session, _state), do: {:ok, :finish_error}
     def open_write("/write-error", _attrs, _session, _state), do: {:ok, :write_error}
+    def open_write("/nested-iodata", _attrs, _session, _state), do: {:ok, :nested_writer}
     def open_write(_path, _attrs, _session, _state), do: {:ok, :writer}
 
     def write_at(:write_error, _offset, _data, _state), do: {:error, :eio}
+
+    def write_at(:nested_writer = handle, offset, data, %{test_pid: test_pid}) do
+      send(test_pid, {:seed_write, offset, data, IO.iodata_length(data), is_binary(data)})
+      {:ok, handle}
+    end
+
     def write_at(handle, _offset, _data, _state), do: {:ok, handle}
 
     def finish_write(:finish_error, _state), do: {:error, :eio}
@@ -123,6 +133,20 @@ defmodule Sftpd.DirectIODeviceTest do
              })
 
     assert {:ok, "iodata"} = DirectIODevice.read(handle, 6)
+  end
+
+  test "read/write seeding accepts iodata without flattening backend replay" do
+    assert {:ok, handle} =
+             DirectIODevice.start(%{
+               path: "/nested-iodata",
+               mode: :read_write,
+               backend: ErrorBackend,
+               backend_state: %{test_pid: self()}
+             })
+
+    assert_receive {:seed_write, 0, ["io", ["da"]], 4, false}
+    assert {:ok, "ioda"} = DirectIODevice.read(handle, 4)
+    assert :ok = DirectIODevice.close(handle)
   end
 
   test "writes iodata and finalizes on close", %{backend_state: backend_state} do
