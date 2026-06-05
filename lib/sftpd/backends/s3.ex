@@ -23,6 +23,7 @@ defmodule Sftpd.Backends.S3 do
   @keep_marker ".keep"
   @multipart_part_size 5 * 1024 * 1024
   @max_sparse_write_gap 4 * @multipart_part_size
+  @max_materialized_sparse_hole @max_sparse_write_gap
 
   @typedoc "S3 backend state containing bucket name, optional prefix, and AWS client module"
   @type prefix :: String.t() | {:session, atom()}
@@ -433,11 +434,15 @@ defmodule Sftpd.Backends.S3 do
     if writer.next_offset == uploaded_size do
       {:ok, writer}
     else
-      part =
-        pending_body(writer.pending_chunks, uploaded_size, writer.next_offset - uploaded_size)
-
-      writer = %{writer | pending_chunks: :queue.new(), pending_size: 0}
-      upload_part(writer, part, state)
+      with {:ok, part} <-
+             checked_pending_body(
+               writer.pending_chunks,
+               uploaded_size,
+               writer.next_offset - uploaded_size
+             ) do
+        writer = %{writer | pending_chunks: :queue.new(), pending_size: 0}
+        upload_part(writer, part, state)
+      end
     end
   end
 
@@ -479,14 +484,24 @@ defmodule Sftpd.Backends.S3 do
   end
 
   defp put_small_object(writer, state) do
-    case aws_request(state, s3_op(:put_object, [writer.bucket, writer.key, pending_body(writer)])) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, normalize_error(reason)}
+    with {:ok, body} <- checked_pending_body(writer) do
+      case aws_request(state, s3_op(:put_object, [writer.bucket, writer.key, body])) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, normalize_error(reason)}
+      end
     end
   end
 
-  defp pending_body(%{pending_chunks: pending_chunks, next_offset: next_offset}) do
-    pending_body(pending_chunks, 0, next_offset)
+  defp checked_pending_body(%{pending_chunks: pending_chunks, next_offset: next_offset}) do
+    checked_pending_body(pending_chunks, 0, next_offset)
+  end
+
+  defp checked_pending_body(pending_chunks, start_offset, len) do
+    if sparse_hole_size(pending_chunks, start_offset, len) > @max_materialized_sparse_hole do
+      {:error, :einval}
+    else
+      {:ok, pending_body(pending_chunks, start_offset, len)}
+    end
   end
 
   defp pending_body(pending_chunks, start_offset, len) do
@@ -570,6 +585,37 @@ defmodule Sftpd.Backends.S3 do
       end
     end)
     |> Kernel.>=(target)
+  end
+
+  defp sparse_hole_size(pending_chunks, start_offset, len) do
+    max(len - covered_size(pending_chunks, start_offset, len), 0)
+  end
+
+  defp covered_size(pending_chunks, start_offset, len) do
+    range_end = start_offset + len
+
+    pending_chunks
+    |> :queue.to_list()
+    |> Enum.map(&normalize_pending_chunk/1)
+    |> Enum.map(fn {offset, chunk} ->
+      {max(offset, start_offset), min(offset + byte_size(chunk), range_end)}
+    end)
+    |> Enum.reject(fn {from, to} -> from >= to end)
+    |> Enum.sort_by(fn {from, _to} -> from end)
+    |> Enum.reduce({0, nil}, fn
+      {from, to}, {covered, nil} ->
+        {covered, {from, to}}
+
+      {from, to}, {covered, {open_from, open_to}} when from <= open_to ->
+        {covered, {open_from, max(open_to, to)}}
+
+      {from, to}, {covered, {open_from, open_to}} ->
+        {covered + open_to - open_from, {from, to}}
+    end)
+    |> then(fn
+      {covered, nil} -> covered
+      {covered, {from, to}} -> covered + to - from
+    end)
   end
 
   defp pending_queue_size(queue) do

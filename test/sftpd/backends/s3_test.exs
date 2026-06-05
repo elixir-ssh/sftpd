@@ -8,6 +8,7 @@ defmodule Sftpd.Backends.S3Test do
   alias Sftpd.Test.MockExAws
 
   @multipart_part_size 5 * 1024 * 1024
+  @max_sparse_write_gap 4 * @multipart_part_size
 
   setup :verify_on_exit!
 
@@ -771,6 +772,40 @@ defmodule Sftpd.Backends.S3Test do
 
       assert {:error, :einval} =
                S3.write_chunk(writer, 100 * @multipart_part_size, "tail", state)
+    end
+
+    test "finish_write rejects cumulative sparse gaps before small-object materialization", %{
+      state: state
+    } do
+      assert {:ok, writer} = S3.begin_write(~c"/sparse.bin", state)
+      assert {:ok, writer} = S3.write_chunk(writer, @max_sparse_write_gap, "a", state)
+
+      assert {:ok, writer} =
+               S3.write_chunk(writer, 2 * @max_sparse_write_gap + 1, "b", state)
+
+      assert {:error, :einval} = S3.finish_write(writer, state)
+    end
+
+    test "finish_write rejects cumulative sparse multipart tails before materialization", %{
+      state: state
+    } do
+      writer = %{
+        bucket: "test-bucket",
+        key: "large.bin",
+        upload_id: "upload-1",
+        next_offset: @multipart_part_size + 2 * @max_sparse_write_gap + 2,
+        next_part_number: 2,
+        pending_chunks:
+          :queue.from_list([
+            {@multipart_part_size + @max_sparse_write_gap, "a"},
+            {@multipart_part_size + 2 * @max_sparse_write_gap + 1, "b"}
+          ]),
+        pending_size: 2,
+        uploaded_size: @multipart_part_size,
+        uploaded_parts: [{1, "etag-1"}]
+      }
+
+      assert {:error, :einval} = S3.finish_write(writer, state)
     end
 
     test "finish_write uses put_object directly for small files", %{state: state} do
