@@ -1,6 +1,8 @@
 defmodule Sftpd.IODevice do
   @moduledoc false
 
+  alias Sftpd.IODevice.Store
+
   @type handle :: {:sftpd_io, reference()}
 
   @replay_chunk_size 5 * 1024 * 1024
@@ -13,7 +15,7 @@ defmodule Sftpd.IODevice do
          {:ok, backend_handle} <- backend.open_read(to_string(path), session, backend_state) do
       handle = new_handle()
 
-      put_state(handle, %{
+      Store.put(handle, %{
         mode: :read,
         path: path,
         backend: backend,
@@ -47,7 +49,7 @@ defmodule Sftpd.IODevice do
         {:ok, writer_handle, size} ->
           handle = new_handle()
 
-          put_state(handle, %{
+          Store.put(handle, %{
             mode: :write,
             path: path,
             backend: backend,
@@ -116,7 +118,7 @@ defmodule Sftpd.IODevice do
           handle = new_handle()
           size = if truncate?, do: 0, else: size
 
-          put_state(handle, %{
+          Store.put(handle, %{
             mode: :read_write,
             path: path,
             backend: backend,
@@ -381,7 +383,7 @@ defmodule Sftpd.IODevice do
 
   @spec write(handle(), iodata(), non_neg_integer()) :: :ok | {:error, atom()}
   def write(handle, data, bytes) do
-    case Process.get(key(handle)) do
+    case Store.get(handle) do
       nil ->
         {:error, :einval}
 
@@ -395,30 +397,30 @@ defmodule Sftpd.IODevice do
 
             case maybe_direct_write(state, data, bytes) do
               {:ok, state} ->
-                put_state(handle, %{state | position: position, size: size, dirty?: true})
+                Store.put(handle, %{state | position: position, size: size, dirty?: true})
                 :ok
 
               {:error, reason} ->
                 cleanup_unfinished_write(state)
-                _ = pop_state(handle)
+                _ = Store.delete(handle)
                 {:error, reason}
             end
 
           {:error, reason} ->
             cleanup_unfinished_write(state)
-            _ = pop_state(handle)
+            _ = Store.delete(handle)
             {:error, reason}
         end
 
       state ->
-        put_state(handle, state)
+        Store.put(handle, state)
         {:error, :einval}
     end
   end
 
   @spec close(handle()) :: :ok | {:error, atom()}
   def close(handle) do
-    case pop_state(handle) do
+    case Store.delete(handle) do
       nil ->
         :ok
 
@@ -439,24 +441,14 @@ defmodule Sftpd.IODevice do
 
   defp new_handle, do: {:sftpd_io, make_ref()}
 
-  defp key({:sftpd_io, ref}), do: {:sftpd_io, ref}
-
-  defp put_state(handle, state) do
-    Process.put(key(handle), state)
-  end
-
-  defp pop_state(handle) do
-    Process.delete(key(handle))
-  end
-
   defp update_state(handle, fun) do
-    case Process.get(key(handle)) do
+    case Store.get(handle) do
       nil ->
         {:error, :einval}
 
       state ->
         {reply, state} = fun.(state)
-        put_state(handle, state)
+        Store.put(handle, state)
         reply
     end
   end
