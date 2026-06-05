@@ -1038,8 +1038,8 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp sftp_response_split_payloads(channel, %SerializedPacket{kind: :iodata, iodata: data}) do
-    data = IO.iodata_to_binary(data)
-    channel_data_payloads(channel, data)
+    max_packet = max(1, channel.client_max_packet)
+    channel_data_payloads(channel.client_channel, data, max_packet, IO.iodata_length(data), [])
   end
 
   defp sftp_response_split_payloads(
@@ -1049,11 +1049,6 @@ defmodule Sftpd.SSH.Server do
     channel_data_pair_payloads(channel, header, data)
   end
 
-  defp channel_data_payloads(channel, data) do
-    max_packet = max(1, channel.client_max_packet)
-    channel_data_payloads(channel.client_channel, data, max_packet, [])
-  end
-
   defp channel_data_payloads(_client_channel, "", _max_packet, acc), do: Enum.reverse(acc)
 
   defp channel_data_payloads(client_channel, data, max_packet, acc) do
@@ -1061,6 +1056,16 @@ defmodule Sftpd.SSH.Server do
     {chunk, rest} = :erlang.split_binary(data, bytes)
     payload = channel_data_payload(client_channel, chunk)
     channel_data_payloads(client_channel, rest, max_packet, [payload | acc])
+  end
+
+  defp channel_data_payloads(_client_channel, _data, _max_packet, 0, acc),
+    do: Enum.reverse(acc)
+
+  defp channel_data_payloads(client_channel, data, max_packet, data_size, acc) do
+    bytes = min(data_size, max_packet)
+    {chunk, rest} = split_iodata(data, bytes)
+    payload = channel_data_payload(client_channel, chunk)
+    channel_data_payloads(client_channel, rest, max_packet, data_size - bytes, [payload | acc])
   end
 
   defp channel_data_payload(client_channel, data) do
@@ -1075,7 +1080,7 @@ defmodule Sftpd.SSH.Server do
     cond do
       header_size >= max_packet ->
         channel_data_payloads(client_channel, header, max_packet, []) ++
-          channel_data_payloads(client_channel, IO.iodata_to_binary(data), max_packet, [])
+          channel_data_payloads(client_channel, data, max_packet, IO.iodata_length(data), [])
 
       true ->
         channel_data_pair_payloads(client_channel, header, data, max_packet)
@@ -1093,12 +1098,27 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp channel_data_pair_payloads(client_channel, header, data, max_packet) do
-    channel_data_pair_payloads(
-      client_channel,
-      header,
-      IO.iodata_to_binary(data),
-      max_packet
-    )
+    first_data_size = min(IO.iodata_length(data), max_packet - byte_size(header))
+    {first_data, rest} = split_iodata(data, first_data_size)
+    first_payload = channel_data_payload(client_channel, [header, first_data])
+
+    [
+      first_payload
+      | channel_data_payloads(
+          client_channel,
+          rest,
+          max_packet,
+          IO.iodata_length(data) - first_data_size,
+          []
+        )
+    ]
+  end
+
+  if function_exported?(Mix, :env, 0) and Mix.env() == :test do
+    @doc false
+    def __test_sftp_response_payloads__(channel, responses) do
+      sftp_response_payloads(channel, responses)
+    end
   end
 
   defp authenticate_password(auth, username, password, socket) do

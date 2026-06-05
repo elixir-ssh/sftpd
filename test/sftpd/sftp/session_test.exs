@@ -61,7 +61,7 @@ defmodule Sftpd.SFTP.SessionTest do
     def open_read(path, _session, _state), do: {:ok, %{path: path}}
 
     def read_at(%{read_error?: true}, _offset, _len, _state), do: {:error, :eacces}
-    def read_at(%{empty?: true}, _offset, _len, _state), do: {:ok, ""}
+    def read_at(%{empty?: true}, _offset, _len, _state), do: {:ok, []}
     def read_at(_handle, _offset, _len, _state), do: {:ok, "ok"}
 
     def write_at(%{write_error?: true}, _offset, _data, _state), do: {:error, :eacces}
@@ -138,6 +138,31 @@ defmodule Sftpd.SFTP.SessionTest do
     end
 
     def file_attrs(_path, _session, _state), do: {:ok, %{type: :regular, size: 8_000_000}}
+  end
+
+  defmodule IodataSeedBackend do
+    @moduledoc false
+
+    @seed_data ["ab", ["cd"]]
+
+    def open_read("/seeded.txt", _session, _state), do: {:ok, :reader}
+    def open_read(_path, _session, _state), do: {:error, :enoent}
+
+    def read_at(:reader, 0, _len, _state), do: {:ok, @seed_data}
+    def read_at(:reader, _offset, _len, _state), do: :eof
+
+    def open_write("/seeded.txt", _attrs, _session, test_pid), do: {:ok, {:writer, test_pid}}
+
+    def write_at({:writer, test_pid} = handle, offset, data, _state) do
+      send(test_pid, {:seed_write, offset, data, IO.iodata_length(data), is_binary(data)})
+      {:ok, handle}
+    end
+
+    def finish_write(_handle, _state), do: :ok
+    def abort_write(_handle, _state), do: :ok
+
+    def file_attrs("/seeded.txt", _session, _state),
+      do: {:ok, %{type: :regular, size: IO.iodata_length(@seed_data), permissions: 0o100644}}
   end
 
   setup do
@@ -245,6 +270,18 @@ defmodule Sftpd.SFTP.SessionTest do
 
     {response, _session} = handle(read(8, read_handle, 0, 16), session)
     assert {:data, 8, "abXYef"} = decode_response(response)
+  end
+
+  test "write-only update seeding passes backend iodata through without flattening" do
+    session =
+      IodataSeedBackend
+      |> Session.new(self(), %{username: "test"})
+      |> Map.put(:initialized?, true)
+
+    {response, _session} = handle(open(1, "/seeded.txt", 0x0000_0002), session)
+
+    assert {:handle, 1, _handle} = decode_response(response)
+    assert_receive {:seed_write, 0, ["ab", ["cd"]], 4, false}
   end
 
   test "write opens without create require existing files", %{session: session} do

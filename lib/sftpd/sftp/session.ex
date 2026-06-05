@@ -175,8 +175,7 @@ defmodule Sftpd.SFTP.Session do
     case Map.get(state.handles, handle) do
       {:file, :read, _path, backend_handle} ->
         case state.backend.read_at(backend_handle, offset, len, state.backend_state) do
-          {:ok, ""} -> {Codec.status(id, :eof), state}
-          {:ok, data} -> {Codec.data(id, data), state}
+          {:ok, data} -> data_response(id, data, state)
           :eof -> {Codec.status(id, :eof), state}
           {:error, reason} -> {Codec.status(id, reason), state}
         end
@@ -184,8 +183,7 @@ defmodule Sftpd.SFTP.Session do
       {:file, :read_write, _path, read_handle, _write_handle, _append_offset, _dirty?,
        pending_chunks, size} ->
         case read_read_write_data(read_handle, pending_chunks, offset, len, size, state) do
-          {:ok, ""} -> {Codec.status(id, :eof), state}
-          {:ok, data} -> {Codec.data(id, data), state}
+          {:ok, data} -> data_response(id, data, state)
           :eof -> {Codec.status(id, :eof), state}
           {:error, reason} -> {Codec.status(id, reason), state}
         end
@@ -513,8 +511,8 @@ defmodule Sftpd.SFTP.Session do
     len = min(@seed_chunk_size, size - offset)
 
     with {:ok, data} <- state.backend.read_at(read_handle, offset, len, state.backend_state),
-         data <- IO.iodata_to_binary(data),
-         true <- byte_size(data) > 0,
+         data_size <- IO.iodata_length(data),
+         true <- data_size > 0,
          {:ok, backend_handle} <-
            state.backend.write_at(backend_handle, offset, data, state.backend_state) do
       seed_handle_chunks(
@@ -522,7 +520,7 @@ defmodule Sftpd.SFTP.Session do
         backend_handle,
         state,
         size,
-        offset + byte_size(data)
+        offset + data_size
       )
     else
       false -> {:error, :eof}
@@ -596,6 +594,14 @@ defmodule Sftpd.SFTP.Session do
 
   defp zeroes(0), do: ""
   defp zeroes(len), do: :binary.copy(<<0>>, len)
+
+  defp data_response(id, data, state) do
+    if IO.iodata_length(data) == 0 do
+      {Codec.status(id, :eof), state}
+    else
+      {Codec.data(id, data), state}
+    end
+  end
 
   defp normalize_realpath(path) do
     path =
