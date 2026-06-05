@@ -304,12 +304,12 @@ defmodule Sftpd.SSH.Server do
       {:ok, payload, state} ->
         case handle_encrypted_payload(payload, state, socket) do
           {:continue, state} -> encrypted_loop(state, socket)
-          {:stop, state} -> state
+          {:stop, state} -> abort_open_writes(state)
         end
 
       {:error, reason} ->
         Logger.debug("pure ssh encrypted receive failed: #{inspect(reason)}")
-        state
+        abort_open_writes(state)
     end
   end
 
@@ -326,12 +326,15 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp handle_encrypted_payload(<<80, rest::binary>>, state, socket) do
-    with {:ok, _request_name, rest} <- Wire.take_string(rest),
-         {:ok, true, _rest} <- Wire.take_boolean(rest),
-         {:ok, state} <- send_encrypted_payload(socket, state, <<82>>) do
-      {:continue, state}
-    else
-      _ -> {:continue, state}
+    case global_request_reply(rest) do
+      {:reply, payload} ->
+        case send_encrypted_payload(socket, state, payload) do
+          {:ok, state} -> {:continue, state}
+          {:error, _reason} -> {:stop, state}
+        end
+
+      :noreply ->
+        {:continue, state}
     end
   end
 
@@ -545,6 +548,15 @@ defmodule Sftpd.SSH.Server do
   defp handle_encrypted_payload(payload, state, _socket) do
     Logger.debug("pure ssh ignored encrypted message #{inspect(Packet.message_id(payload))}")
     {:continue, state}
+  end
+
+  defp global_request_reply(rest) do
+    with {:ok, _request_name, rest} <- Wire.take_string(rest),
+         {:ok, want_reply?, _rest} <- Wire.take_boolean(rest) do
+      if want_reply?, do: {:reply, <<82>>}, else: :noreply
+    else
+      _ -> :noreply
+    end
   end
 
   defp drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
@@ -1154,6 +1166,16 @@ defmodule Sftpd.SSH.Server do
     def __test_validate_backend__(backend) do
       validate_backend(backend)
     end
+
+    @doc false
+    def __test_global_request_reply__(payload) do
+      global_request_reply(payload)
+    end
+
+    @doc false
+    def __test_abort_open_writes__(state) do
+      abort_open_writes(state)
+    end
   end
 
   defp authenticate_password(auth, username, password, socket) do
@@ -1196,6 +1218,18 @@ defmodule Sftpd.SSH.Server do
   defp put_channel(state, %{server_channel: server_channel} = channel) do
     %{state | channels: Map.put(state.channels, server_channel, channel)}
   end
+
+  defp abort_open_writes(%{channels: channels} = state) do
+    channels =
+      Map.new(channels, fn {server_channel, channel} ->
+        {server_channel,
+         %{channel | sftp_session: SFTP.Session.abort_open_writes(channel.sftp_session)}}
+      end)
+
+    %{state | channels: channels}
+  end
+
+  defp abort_open_writes(state), do: state
 
   defp handle_sftp_data(data, channel) do
     buffer = channel.sftp_buffer <> data

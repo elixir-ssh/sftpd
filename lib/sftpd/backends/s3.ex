@@ -238,8 +238,15 @@ defmodule Sftpd.Backends.S3 do
 
   @impl true
   def open_read(path, session, state) do
-    with {:ok, attrs} <- file_attrs(path, session, state) do
-      {:ok, %{path: path, session: session, size: Map.get(attrs, :size, 0)}}
+    case file_attrs(path, session, state) do
+      {:ok, %{type: :directory}} ->
+        {:error, :eisdir}
+
+      {:ok, attrs} ->
+        {:ok, %{path: path, session: session, size: Map.get(attrs, :size, 0)}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

@@ -1,9 +1,20 @@
 defmodule Sftpd.SSH.ServerTest do
   use ExUnit.Case, async: true
 
-  alias Sftpd.SFTP.SerializedPacket
   alias Sftpd.Backends.Memory
+  alias Sftpd.SFTP
+  alias Sftpd.SFTP.SerializedPacket
   alias Sftpd.SSH.Server
+  alias Sftpd.SSH.Wire
+
+  defmodule AbortBackend do
+    @moduledoc false
+
+    def abort_write(%{path: path, test_pid: test_pid}, _state) do
+      send(test_pid, {:aborted, path})
+      :ok
+    end
+  end
 
   test "validates the backend contract" do
     assert :ok = Server.__test_validate_backend__(Memory)
@@ -13,6 +24,38 @@ defmodule Sftpd.SSH.ServerTest do
 
     assert {:error, {:unsupported_backend, "not a module"}} =
              Server.__test_validate_backend__("not a module")
+  end
+
+  test "unsupported global requests fail when the client wants a reply" do
+    request = IO.iodata_to_binary([Wire.string("tcpip-forward"), Wire.boolean(true)])
+
+    assert {:reply, <<82>>} = Server.__test_global_request_reply__(request)
+
+    noreply = IO.iodata_to_binary([Wire.string("tcpip-forward"), Wire.boolean(false)])
+    assert :noreply = Server.__test_global_request_reply__(noreply)
+    assert :noreply = Server.__test_global_request_reply__(<<0, 0, 0, 4, "bad">>)
+  end
+
+  test "aborts open SFTP writes when encrypted sessions exit" do
+    sftp_session =
+      AbortBackend
+      |> SFTP.Session.new(self(), %{username: "test"})
+      |> Map.put(:initialized?, true)
+      |> Map.put(:handles, %{
+        "write" =>
+          {:file, :write, "/pending.txt", %{path: "/pending.txt", test_pid: self()}, nil, 0}
+      })
+
+    state = %{channels: %{0 => %{sftp_session: sftp_session}}}
+
+    assert %{channels: %{0 => %{sftp_session: %{handles: %{}}}}} =
+             Server.__test_abort_open_writes__(state)
+
+    assert_receive {:aborted, "/pending.txt"}
+  end
+
+  test "abort open writes is a no-op before channels are initialized" do
+    assert %{auth_session: nil} = Server.__test_abort_open_writes__(%{auth_session: nil})
   end
 
   test "splits oversized iodata responses without flattening chunks" do

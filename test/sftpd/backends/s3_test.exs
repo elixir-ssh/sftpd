@@ -457,6 +457,33 @@ defmodule Sftpd.Backends.S3Test do
       assert {:ok, "6789"} = S3.read_at(handle, 5, 4, state)
     end
 
+    test "open_read rejects virtual directories", %{state: state} do
+      expect(MockExAws, :request, fn _op -> {:error, :not_found} end)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        assert op.params["delimiter"] == "/"
+        assert op.params["max-keys"] == 1
+        {:ok, %{body: %{contents: [], common_prefixes: [%{prefix: "dir/child/"}]}}}
+      end)
+
+      assert {:error, :eisdir} = S3.open_read("/dir", %{}, state)
+    end
+
+    test "open_read propagates metadata lookup errors", %{state: state} do
+      expect(MockExAws, :request, fn _op -> {:error, :timeout} end)
+
+      assert {:error, :eio} = S3.open_read("/file.txt", %{}, state)
+    end
+
+    test "read_at normalizes transient range read errors", %{state: state} do
+      handle = %{path: "/file.txt", session: %{}, size: 10}
+
+      expect(MockExAws, :request, fn _op -> {:error, {:http_error, 408, %{}}} end)
+
+      assert {:error, :eio} = S3.read_at(handle, 0, 4, state)
+    end
+
     test "open_write, write_at, and finish_write materialize small objects", %{state: state} do
       assert {:ok, writer} = S3.open_write("/small.txt", %{}, %{}, state)
       assert {:ok, writer} = S3.write_at(writer, 0, ["abc", "def"], state)

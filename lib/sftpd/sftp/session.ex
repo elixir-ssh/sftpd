@@ -138,18 +138,26 @@ defmodule Sftpd.SFTP.Session do
       {{:file, :write, _path, backend_handle, _append_offset, _size}, handles} ->
         response =
           case state.backend.finish_write(backend_handle, state.backend_state) do
-            :ok -> Codec.status(id, :ok)
-            {:error, reason} -> Codec.status(id, reason)
+            :ok ->
+              Codec.status(id, :ok)
+
+            {:error, reason} ->
+              _ = state.backend.abort_write(backend_handle, state.backend_state)
+              Codec.status(id, reason)
           end
 
         {response, %{state | handles: handles}}
 
-      {{:file, :read_write, _path, _read_handle, _write_handle, _append_offset, true, overlay,
+      {{:file, :read_write, _path, _read_handle, write_handle, _append_offset, true, overlay,
         _size} = file_handle, handles} ->
         response =
           case finish_read_write_handle(file_handle, state) do
-            :ok -> Codec.status(id, :ok)
-            {:error, reason} -> Codec.status(id, reason)
+            :ok ->
+              Codec.status(id, :ok)
+
+            {:error, reason} ->
+              _ = state.backend.abort_write(write_handle, state.backend_state)
+              Codec.status(id, reason)
           end
 
         cleanup_overlay(overlay)
@@ -662,12 +670,29 @@ defmodule Sftpd.SFTP.Session do
 
   defp new_overlay do
     path =
-      Path.join(System.tmp_dir!(), "sftpd-sftp-overlay-#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "sftpd-sftp-overlay-#{random_temp_suffix()}.tmp")
 
-    case :file.open(String.to_charlist(path), [:read, :write, :binary, :raw]) do
-      {:ok, fd} -> {:ok, %{path: path, fd: fd, ranges: []}}
-      {:error, reason} -> {:error, reason}
+    case :file.open(String.to_charlist(path), [:read, :write, :binary, :raw, :exclusive]) do
+      {:ok, fd} ->
+        case :file.change_mode(String.to_charlist(path), 0o600) do
+          :ok ->
+            {:ok, %{path: path, fd: fd, ranges: []}}
+
+          {:error, reason} ->
+            _ = :file.close(fd)
+            _ = File.rm(path)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  defp random_temp_suffix do
+    16
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
   end
 
   defp write_overlay(_overlay, _offset, _data, 0), do: :ok

@@ -39,8 +39,8 @@ defmodule Sftpd.SFTP.SessionTest do
 
     def open_write("/open-write-error", _attrs, _session, _state), do: {:error, :eacces}
 
-    def open_write("/finish-error", _attrs, _session, _state),
-      do: {:ok, %{path: "/finish-error", finish_error?: true}}
+    def open_write("/finish-error", _attrs, _session, state),
+      do: {:ok, %{path: "/finish-error", finish_error?: true, test_pid: test_pid(state)}}
 
     def open_write("/write-error", _attrs, _session, _state),
       do: {:ok, %{path: "/write-error", write_error?: true}}
@@ -78,6 +78,12 @@ defmodule Sftpd.SFTP.SessionTest do
 
     def finish_write(%{finish_error?: true}, _state), do: {:error, :eio}
     def finish_write(_handle, _state), do: :ok
+
+    def abort_write(%{path: path, test_pid: test_pid}, _state) when is_pid(test_pid) do
+      send(test_pid, {:aborted, path})
+      :ok
+    end
+
     def abort_write(_handle, _state), do: :ok
 
     def file_attrs(path, _session, _state) when path in ["/attrs-error", "/write-error"],
@@ -111,6 +117,9 @@ defmodule Sftpd.SFTP.SessionTest do
 
     def rename("/rename-error", _newpath, _session, _state), do: {:error, :eacces}
     def rename(_oldpath, _newpath, _session, _state), do: :ok
+
+    defp test_pid(pid) when is_pid(pid), do: pid
+    defp test_pid(_state), do: nil
   end
 
   defmodule AbortBackend do
@@ -495,6 +504,23 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:status, 4, 0} = decode_response(response)
   end
 
+  test "mixed read/write overlay temp files are private and removed on close", %{
+    session: session
+  } do
+    {response, session} = handle(open(1, "/private-overlay.txt", 0x0000_000B), session)
+    assert {:handle, 1, mixed_handle} = decode_response(response)
+
+    assert {:file, :read_write, _path, _read_handle, _write_handle, _append_offset, _dirty?,
+            %{path: overlay_path}, _size} = session.handles[mixed_handle]
+
+    assert {:ok, %{access: :read_write, mode: mode, type: :regular}} = File.stat(overlay_path)
+    assert (mode &&& 0o777) == 0o600
+
+    {response, _session} = handle(close(2, mixed_handle), session)
+    assert {:status, 2, 0} = decode_response(response)
+    refute File.exists?(overlay_path)
+  end
+
   test "mixed read/write opens can read existing content", %{session: session} do
     {response, session} = handle(open(1, "/file.txt", 0x0000_000A), session)
     {:handle, 1, write_handle} = decode_response(response)
@@ -814,6 +840,28 @@ defmodule Sftpd.SFTP.SessionTest do
     {:handle, 9, attrs_handle} = decode_response(response)
     {response, _session} = handle(handle_packet(@ssh_fxp_fstat, 10, attrs_handle), session)
     assert {:status, 10, 2} = decode_response(response)
+  end
+
+  test "close-time write finalization failures abort backend writers" do
+    session =
+      ErrorBackend |> Session.new(self(), %{username: "test"}) |> Map.put(:initialized?, true)
+
+    {response, session} = handle(open(1, "/finish-error", 0x0000_000A), session)
+    assert {:handle, 1, write_handle} = decode_response(response)
+
+    {response, session} = handle(close(2, write_handle), session)
+    assert {:status, 2, 4} = decode_response(response)
+    assert_receive {:aborted, "/finish-error"}
+
+    {response, session} = handle(open(3, "/finish-error", 0x0000_0003), session)
+    assert {:handle, 3, mixed_handle} = decode_response(response)
+
+    {response, session} = handle(write(4, mixed_handle, 0, "x"), session)
+    assert {:status, 4, 0} = decode_response(response)
+
+    {response, _session} = handle(close(5, mixed_handle), session)
+    assert {:status, 5, 4} = decode_response(response)
+    assert_receive {:aborted, "/finish-error"}
   end
 
   test "backend directory and mutation errors are returned as SFTP statuses" do
