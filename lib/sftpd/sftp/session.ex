@@ -1,7 +1,7 @@
 defmodule Sftpd.SFTP.Session do
   @moduledoc false
 
-  alias Sftpd.SFTP.{Codec, Paths, SerializedPacket}
+  alias Sftpd.SFTP.{Codec, Handles, Paths, SerializedPacket}
 
   @max_read_len 1_048_576
   @seed_chunk_size 1_048_576
@@ -28,24 +28,7 @@ defmodule Sftpd.SFTP.Session do
 
   @spec cleanup_open_handles(state()) :: state()
   def cleanup_open_handles(state) do
-    Enum.each(state.handles, fn
-      {_handle, {:file, :write, _path, backend_handle, _append_offset, _size}} ->
-        _ = state.backend.abort_write(backend_handle, state.backend_state)
-
-      {_handle,
-       {:file, :read_write, _path, _read_handle, write_handle, _append_offset, _dirty?, overlay,
-        _size}} ->
-        _ = state.backend.abort_write(write_handle, state.backend_state)
-        cleanup_overlay(overlay)
-
-      {_handle, {:dir, backend_handle}} ->
-        _ = state.backend.close_dir(backend_handle, state.backend_state)
-
-      _entry ->
-        :ok
-    end)
-
-    %{state | handles: %{}}
+    Handles.cleanup_open_handles(state, &cleanup_overlay/1)
   end
 
   @spec abort_open_writes(state()) :: state()
@@ -87,7 +70,7 @@ defmodule Sftpd.SFTP.Session do
             {:ok, write_handle, append_offset, size, overlay} ->
               dirty? = Paths.truncate_open?(pflags)
 
-              put_handle(
+              Handles.put(
                 id,
                 {:file, :read_write, path, read_handle, write_handle, append_offset, dirty?,
                  overlay, size},
@@ -109,7 +92,7 @@ defmodule Sftpd.SFTP.Session do
                state.backend.open_write(path, attrs, state.session, state.backend_state) do
           case prepare_write_handle(path, pflags, backend_handle, state) do
             {:ok, backend_handle, append_offset, size} ->
-              put_handle(id, {:file, :write, path, backend_handle, append_offset, size}, state)
+              Handles.put(id, {:file, :write, path, backend_handle, append_offset, size}, state)
 
             {:error, reason} ->
               _ = state.backend.abort_write(backend_handle, state.backend_state)
@@ -122,7 +105,7 @@ defmodule Sftpd.SFTP.Session do
 
       Paths.read_open?(pflags) ->
         case state.backend.open_read(path, state.session, state.backend_state) do
-          {:ok, backend_handle} -> put_handle(id, {:file, :read, path, backend_handle}, state)
+          {:ok, backend_handle} -> Handles.put(id, {:file, :read, path, backend_handle}, state)
           {:error, reason} -> {Codec.status(id, reason), state}
         end
 
@@ -276,7 +259,7 @@ defmodule Sftpd.SFTP.Session do
   defp handle_request(%{type: :fstat, id: id, handle: handle}, state) do
     case Map.get(state.handles, handle) do
       file_handle when elem(file_handle, 0) == :file ->
-        case file_handle_attrs(file_handle, state) do
+        case Handles.file_attrs(file_handle, state) do
           {:ok, attrs} -> {Codec.attrs(id, attrs), state}
           {:error, reason} -> {Codec.status(id, reason), state}
         end
@@ -289,7 +272,7 @@ defmodule Sftpd.SFTP.Session do
   defp handle_request(%{type: :opendir, id: id, path: path}, state) do
     with :ok <- Paths.require_directory(path, state),
          {:ok, backend_handle} <- state.backend.open_dir(path, state.session, state.backend_state) do
-      put_handle(id, {:dir, backend_handle}, state)
+      Handles.put(id, {:dir, backend_handle}, state)
     else
       {:error, reason} -> {Codec.status(id, reason), state}
     end
@@ -399,51 +382,6 @@ defmodule Sftpd.SFTP.Session do
 
       true ->
         seed_write_update_handle(path, backend_handle, state)
-    end
-  end
-
-  defp put_handle(id, value, state) do
-    handle = new_handle(value)
-    {Codec.handle(id, handle), %{state | handles: Map.put(state.handles, handle, value)}}
-  end
-
-  defp new_handle({:file, :read, _path, _backend_handle}),
-    do: <<"F", :crypto.strong_rand_bytes(16)::binary>>
-
-  defp new_handle({:file, :write, _path, _backend_handle, _append_offset, _size}),
-    do: <<"W", :crypto.strong_rand_bytes(16)::binary>>
-
-  defp new_handle(
-         {:file, :read_write, _path, _read_handle, _write_handle, _append_offset, _dirty?,
-          _overlay, _size}
-       ),
-       do: <<"B", :crypto.strong_rand_bytes(16)::binary>>
-
-  defp new_handle({:dir, _}), do: <<"D", :crypto.strong_rand_bytes(16)::binary>>
-
-  defp file_handle_path({:file, :read, path, _backend_handle}), do: path
-
-  defp file_handle_attrs({:file, :write, path, _backend_handle, _append_offset, size}, state) do
-    pending_file_attrs(path, size, state)
-  end
-
-  defp file_handle_attrs(
-         {:file, :read_write, path, _read_handle, _write_handle, _append_offset, _dirty?,
-          _overlay, size},
-         state
-       ) do
-    pending_file_attrs(path, size, state)
-  end
-
-  defp file_handle_attrs(file_handle, state) do
-    path = file_handle_path(file_handle)
-    state.backend.file_attrs(path, state.session, state.backend_state)
-  end
-
-  defp pending_file_attrs(path, size, state) do
-    case state.backend.file_attrs(path, state.session, state.backend_state) do
-      {:ok, attrs} -> {:ok, Map.put(attrs, :size, size)}
-      {:error, _reason} -> {:ok, %{type: :regular, size: size, permissions: 0o100644}}
     end
   end
 
