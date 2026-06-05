@@ -36,7 +36,7 @@ defmodule Sftpd.SFTP.Session do
   @spec abort_open_writes(state()) :: state()
   def abort_open_writes(state) do
     Enum.each(state.handles, fn
-      {_handle, {:file, :write, _path, backend_handle, _append_offset}} ->
+      {_handle, {:file, :write, _path, backend_handle, _append_offset, _size}} ->
         _ = state.backend.abort_write(backend_handle, state.backend_state)
 
       {_handle,
@@ -108,8 +108,8 @@ defmodule Sftpd.SFTP.Session do
              {:ok, backend_handle} <-
                state.backend.open_write(path, attrs, state.session, state.backend_state) do
           case prepare_write_handle(path, pflags, backend_handle, state) do
-            {:ok, backend_handle, append_offset} ->
-              put_handle(id, {:file, :write, path, backend_handle, append_offset}, state)
+            {:ok, backend_handle, append_offset, size} ->
+              put_handle(id, {:file, :write, path, backend_handle, append_offset, size}, state)
 
             {:error, reason} ->
               _ = state.backend.abort_write(backend_handle, state.backend_state)
@@ -133,7 +133,7 @@ defmodule Sftpd.SFTP.Session do
 
   defp handle_request(%{type: :close, id: id, handle: handle}, state) do
     case Map.pop(state.handles, handle) do
-      {{:file, :write, _path, backend_handle, _append_offset}, handles} ->
+      {{:file, :write, _path, backend_handle, _append_offset, _size}, handles} ->
         response =
           case state.backend.finish_write(backend_handle, state.backend_state) do
             :ok -> Codec.status(id, :ok)
@@ -197,15 +197,21 @@ defmodule Sftpd.SFTP.Session do
 
   defp handle_request(%{type: :write, id: id, handle: handle, offset: offset, data: data}, state) do
     case Map.get(state.handles, handle) do
-      {:file, :write, path, backend_handle, append_offset} ->
+      {:file, :write, path, backend_handle, append_offset, size} ->
         write_offset = append_offset || offset
+        data_size = IO.iodata_length(data)
 
         case state.backend.write_at(backend_handle, write_offset, data, state.backend_state) do
           {:ok, backend_handle} ->
-            append_offset = if append_offset, do: append_offset + IO.iodata_length(data)
+            append_offset = if append_offset, do: append_offset + data_size
+            size = max(size, write_offset + data_size)
 
             handles =
-              Map.put(state.handles, handle, {:file, :write, path, backend_handle, append_offset})
+              Map.put(
+                state.handles,
+                handle,
+                {:file, :write, path, backend_handle, append_offset, size}
+              )
 
             {Codec.status(id, :ok), %{state | handles: handles}}
 
@@ -259,9 +265,7 @@ defmodule Sftpd.SFTP.Session do
   defp handle_request(%{type: :fstat, id: id, handle: handle}, state) do
     case Map.get(state.handles, handle) do
       file_handle when elem(file_handle, 0) == :file ->
-        path = file_handle_path(file_handle)
-
-        case state.backend.file_attrs(path, state.session, state.backend_state) do
+        case file_handle_attrs(file_handle, state) do
           {:ok, attrs} -> {Codec.attrs(id, attrs), state}
           {:error, reason} -> {Codec.status(id, reason), state}
         end
@@ -343,10 +347,13 @@ defmodule Sftpd.SFTP.Session do
   defp prepare_write_handle(path, pflags, backend_handle, state) do
     cond do
       append_open?(pflags) ->
-        seed_append_handle(path, backend_handle, state)
+        with {:ok, backend_handle, append_offset} <-
+               seed_append_handle(path, backend_handle, state) do
+          {:ok, backend_handle, append_offset, append_offset}
+        end
 
       truncate_open?(pflags) ->
-        {:ok, backend_handle, nil}
+        {:ok, backend_handle, nil, 0}
 
       true ->
         seed_write_update_handle(path, backend_handle, state)
@@ -379,7 +386,7 @@ defmodule Sftpd.SFTP.Session do
   defp new_handle({:file, :read, _path, _backend_handle}),
     do: <<"F", :crypto.strong_rand_bytes(16)::binary>>
 
-  defp new_handle({:file, :write, _path, _backend_handle, _append_offset}),
+  defp new_handle({:file, :write, _path, _backend_handle, _append_offset, _size}),
     do: <<"W", :crypto.strong_rand_bytes(16)::binary>>
 
   defp new_handle(
@@ -391,13 +398,30 @@ defmodule Sftpd.SFTP.Session do
   defp new_handle({:dir, _}), do: <<"D", :crypto.strong_rand_bytes(16)::binary>>
 
   defp file_handle_path({:file, :read, path, _backend_handle}), do: path
-  defp file_handle_path({:file, :write, path, _backend_handle, _append_offset}), do: path
 
-  defp file_handle_path(
+  defp file_handle_attrs({:file, :write, path, _backend_handle, _append_offset, size}, state) do
+    pending_file_attrs(path, size, state)
+  end
+
+  defp file_handle_attrs(
          {:file, :read_write, path, _read_handle, _write_handle, _append_offset, _dirty?,
-          _pending_chunks, _size}
-       ),
-       do: path
+          _pending_chunks, size},
+         state
+       ) do
+    pending_file_attrs(path, size, state)
+  end
+
+  defp file_handle_attrs(file_handle, state) do
+    path = file_handle_path(file_handle)
+    state.backend.file_attrs(path, state.session, state.backend_state)
+  end
+
+  defp pending_file_attrs(path, size, state) do
+    case state.backend.file_attrs(path, state.session, state.backend_state) do
+      {:ok, attrs} -> {:ok, Map.put(attrs, :size, size)}
+      {:error, _reason} -> {:ok, %{type: :regular, size: size, permissions: 0o100644}}
+    end
+  end
 
   defp write_open?(pflags),
     do: (pflags &&& (@open_write ||| @open_create ||| @open_truncate)) != 0
@@ -452,9 +476,9 @@ defmodule Sftpd.SFTP.Session do
     with true <- size > 0,
          {:ok, read_handle} <- state.backend.open_read(path, state.session, state.backend_state),
          {:ok, backend_handle} <- seed_handle_chunks(read_handle, backend_handle, state, size, 0) do
-      {:ok, backend_handle, nil}
+      {:ok, backend_handle, nil, size}
     else
-      false -> {:ok, backend_handle, nil}
+      false -> {:ok, backend_handle, nil, size}
       {:error, reason} -> {:error, reason}
       :eof -> {:error, :eof}
     end

@@ -513,12 +513,18 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:status, 3, 0} = decode_response(response)
   end
 
-  test "fstat works for write handles before close", %{session: session} do
+  test "fstat returns pending attrs for write handles before close", %{session: session} do
     {response, session} = handle(open(1, "/open-write.txt", 0x0000_000A), session)
     {:handle, 1, write_handle} = decode_response(response)
 
-    {response, _session} = handle(handle_packet(@ssh_fxp_fstat, 2, write_handle), session)
-    assert {:status, 2, 2} = decode_response(response)
+    {response, session} = handle(handle_packet(@ssh_fxp_fstat, 2, write_handle), session)
+    assert {:attrs, 2, %{size: 0, permissions: 0o100644}} = decode_response(response)
+
+    {response, session} = handle(write(3, write_handle, 2, "abc"), session)
+    assert {:status, 3, 0} = decode_response(response)
+
+    {response, _session} = handle(handle_packet(@ssh_fxp_fstat, 4, write_handle), session)
+    assert {:attrs, 4, %{size: 5, permissions: 0o100644}} = decode_response(response)
   end
 
   test "backend open and file operation errors are returned as SFTP statuses" do
