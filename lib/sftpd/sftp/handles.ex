@@ -1,8 +1,22 @@
 defmodule Sftpd.SFTP.Handles do
   @moduledoc false
 
+  alias Sftpd.Backend
   alias Sftpd.SFTP.Codec
 
+  @type state :: Sftpd.SFTP.Session.state()
+  @type cleanup_fun :: (term() -> term())
+  @type read_handle :: {:file, :read, Backend.path(), Backend.read_handle()}
+  @type write_handle ::
+          {:file, :write, Backend.path(), Backend.write_handle(), non_neg_integer() | nil,
+           non_neg_integer()}
+  @type read_write_handle ::
+          {:file, :read_write, Backend.path(), Backend.read_handle() | nil,
+           Backend.write_handle(), non_neg_integer() | nil, boolean(), term(), non_neg_integer()}
+  @type dir_handle :: {:dir, Backend.dir_handle() | :closed}
+  @type handle_value :: read_handle() | write_handle() | read_write_handle() | dir_handle()
+
+  @spec cleanup_open_handles(state(), cleanup_fun()) :: state()
   def cleanup_open_handles(state, cleanup_overlay_fun) do
     Enum.each(state.handles, fn
       {_handle, {:file, :write, _path, backend_handle, _append_offset, _size}} ->
@@ -27,11 +41,14 @@ defmodule Sftpd.SFTP.Handles do
     %{state | handles: %{}}
   end
 
+  @spec put(non_neg_integer(), handle_value(), state()) ::
+          {Sftpd.SFTP.SerializedPacket.t(), state()}
   def put(id, value, state) do
     handle = new(value)
     {Codec.handle(id, handle), %{state | handles: Map.put(state.handles, handle, value)}}
   end
 
+  @spec file_attrs(handle_value(), state()) :: {:ok, Backend.attrs()} | {:error, atom()}
   def file_attrs({:file, :write, path, _backend_handle, _append_offset, size}, state) do
     pending_file_attrs(path, size, state)
   end

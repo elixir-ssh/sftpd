@@ -4,6 +4,22 @@ defmodule Sftpd.SSH.SFTPBridge do
   alias Sftpd.SFTP.SerializedPacket
   alias Sftpd.SSH.Wire
 
+  @type payload_channel :: %{
+          required(:client_channel) => non_neg_integer(),
+          required(:client_max_packet) => pos_integer(),
+          optional(atom()) => term()
+        }
+
+  @type window_channel :: %{
+          required(:client_window) => non_neg_integer(),
+          required(:client_max_packet) => pos_integer(),
+          optional(atom()) => term()
+        }
+
+  @type window_split ::
+          {[SerializedPacket.t()], [SerializedPacket.t()], non_neg_integer()}
+
+  @spec responses_near_window?(window_channel(), [SerializedPacket.t()]) :: boolean()
   def responses_near_window?(_channel, []), do: false
 
   def responses_near_window?(channel, responses) do
@@ -11,10 +27,12 @@ defmodule Sftpd.SSH.SFTPBridge do
       max(channel.client_window - channel.client_max_packet, 0)
   end
 
+  @spec split_responses_for_window([SerializedPacket.t()], integer()) :: window_split()
   def split_responses_for_window(responses, window) do
     split_responses_for_window(responses, max(window, 0), [], 0)
   end
 
+  @spec response_payloads(payload_channel(), [SerializedPacket.t()]) :: [iodata()]
   def response_payloads(channel, responses) when is_list(responses) do
     max_packet = max(1, channel.client_max_packet)
     client_channel = channel.client_channel
