@@ -1,16 +1,8 @@
 defmodule Sftpd.SFTP.Session do
   @moduledoc false
 
-  import Bitwise
+  alias Sftpd.SFTP.{Codec, Paths, SerializedPacket}
 
-  alias Sftpd.SFTP.{Codec, SerializedPacket}
-
-  @open_read 0x0000_0001
-  @open_write 0x0000_0002
-  @open_append 0x0000_0004
-  @open_create 0x0000_0008
-  @open_truncate 0x0000_0010
-  @open_exclusive 0x0000_0020
   @max_read_len 1_048_576
   @seed_chunk_size 1_048_576
   @replay_chunk_size 1_048_576
@@ -81,8 +73,8 @@ defmodule Sftpd.SFTP.Session do
 
   defp handle_request(%{type: :open, id: id, filename: path, pflags: pflags, attrs: attrs}, state) do
     cond do
-      read_open?(pflags) and write_open?(pflags) ->
-        with :ok <- validate_write_open(path, pflags, state),
+      Paths.read_open?(pflags) and Paths.write_open?(pflags) ->
+        with :ok <- Paths.validate_write_open(path, pflags, state),
              {:ok, write_handle} <-
                state.backend.open_write(path, attrs, state.session, state.backend_state) do
           read_handle =
@@ -93,7 +85,7 @@ defmodule Sftpd.SFTP.Session do
 
           case prepare_read_write_handle(path, pflags, read_handle, write_handle, state) do
             {:ok, write_handle, append_offset, size, overlay} ->
-              dirty? = truncate_open?(pflags)
+              dirty? = Paths.truncate_open?(pflags)
 
               put_handle(
                 id,
@@ -111,8 +103,8 @@ defmodule Sftpd.SFTP.Session do
             {Codec.status(id, reason), state}
         end
 
-      write_open?(pflags) ->
-        with :ok <- validate_write_open(path, pflags, state),
+      Paths.write_open?(pflags) ->
+        with :ok <- Paths.validate_write_open(path, pflags, state),
              {:ok, backend_handle} <-
                state.backend.open_write(path, attrs, state.session, state.backend_state) do
           case prepare_write_handle(path, pflags, backend_handle, state) do
@@ -128,7 +120,7 @@ defmodule Sftpd.SFTP.Session do
             {Codec.status(id, reason), state}
         end
 
-      read_open?(pflags) ->
+      Paths.read_open?(pflags) ->
         case state.backend.open_read(path, state.session, state.backend_state) do
           {:ok, backend_handle} -> put_handle(id, {:file, :read, path, backend_handle}, state)
           {:error, reason} -> {Codec.status(id, reason), state}
@@ -295,7 +287,7 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{type: :opendir, id: id, path: path}, state) do
-    with :ok <- require_directory(path, state),
+    with :ok <- Paths.require_directory(path, state),
          {:ok, backend_handle} <- state.backend.open_dir(path, state.session, state.backend_state) do
       put_handle(id, {:dir, backend_handle}, state)
     else
@@ -331,14 +323,14 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{type: :realpath, id: id, path: path}, state) do
-    path = normalize_realpath(path)
+    path = Paths.normalize_realpath(path)
 
     {Codec.name(id, [%{name: path, attrs: %{type: :directory, size: 0, permissions: 0o040755}}]),
      state}
   end
 
   defp handle_request(%{type: :mkdir, id: id, path: path, attrs: attrs}, state) do
-    case path_exists?(path, state) do
+    case Paths.path_exists?(path, state) do
       false ->
         case state.backend.make_dir(path, attrs, state.session, state.backend_state) do
           :ok -> {Codec.status(id, :ok), state}
@@ -354,7 +346,7 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{type: :rmdir, id: id, path: path}, state) do
-    case require_directory(path, state) do
+    case Paths.require_directory(path, state) do
       :ok ->
         case state.backend.del_dir(path, state.session, state.backend_state) do
           :ok -> {Codec.status(id, :ok), state}
@@ -367,7 +359,7 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{type: :remove, id: id, path: path}, state) do
-    case require_regular(path, state) do
+    case Paths.require_regular(path, state) do
       :ok ->
         case state.backend.delete(path, state.session, state.backend_state) do
           :ok -> {Codec.status(id, :ok), state}
@@ -395,11 +387,11 @@ defmodule Sftpd.SFTP.Session do
 
   defp prepare_write_handle(path, pflags, backend_handle, state) do
     cond do
-      truncate_open?(pflags) ->
-        append_offset = if append_open?(pflags), do: 0
+      Paths.truncate_open?(pflags) ->
+        append_offset = if Paths.append_open?(pflags), do: 0
         {:ok, backend_handle, append_offset, 0}
 
-      append_open?(pflags) ->
+      Paths.append_open?(pflags) ->
         with {:ok, backend_handle, append_offset} <-
                seed_append_handle(path, backend_handle, state) do
           {:ok, backend_handle, append_offset, append_offset}
@@ -407,27 +399,6 @@ defmodule Sftpd.SFTP.Session do
 
       true ->
         seed_write_update_handle(path, backend_handle, state)
-    end
-  end
-
-  defp validate_write_open(path, pflags, state) do
-    case state.backend.file_attrs(path, state.session, state.backend_state) do
-      {:ok, %{type: :directory}} ->
-        {:error, :eisdir}
-
-      {:ok, _attrs} ->
-        if create_open?(pflags) and exclusive_open?(pflags) do
-          {:error, :eexist}
-        else
-          :ok
-        end
-
-      {:error, reason} ->
-        if create_open?(pflags) do
-          :ok
-        else
-          {:error, reason}
-        end
     end
   end
 
@@ -476,14 +447,6 @@ defmodule Sftpd.SFTP.Session do
     end
   end
 
-  defp write_open?(pflags), do: (pflags &&& @open_write) != 0
-
-  defp read_open?(pflags), do: (pflags &&& @open_read) != 0
-  defp append_open?(pflags), do: (pflags &&& @open_append) != 0
-  defp create_open?(pflags), do: (pflags &&& @open_create) != 0
-  defp truncate_open?(pflags), do: (pflags &&& @open_truncate) != 0
-  defp exclusive_open?(pflags), do: (pflags &&& @open_exclusive) != 0
-
   defp clamp_read_len(len), do: min(len, @max_read_len)
 
   defp append_offset(path, state) do
@@ -495,11 +458,11 @@ defmodule Sftpd.SFTP.Session do
 
   defp prepare_read_write_handle(path, pflags, read_handle, write_handle, state) do
     cond do
-      truncate_open?(pflags) ->
-        append_offset = if append_open?(pflags), do: 0
+      Paths.truncate_open?(pflags) ->
+        append_offset = if Paths.append_open?(pflags), do: 0
         with {:ok, overlay} <- new_overlay(), do: {:ok, write_handle, append_offset, 0, overlay}
 
-      append_open?(pflags) ->
+      Paths.append_open?(pflags) ->
         append_offset = append_offset(path, state)
 
         with {:ok, overlay} <- new_overlay() do
@@ -768,39 +731,5 @@ defmodule Sftpd.SFTP.Session do
     else
       {Codec.data(id, data), state}
     end
-  end
-
-  defp path_exists?(path, state) do
-    case state.backend.file_attrs(path, state.session, state.backend_state) do
-      {:ok, _attrs} -> true
-      {:error, :enoent} -> false
-      {:error, :no_such_file} -> false
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp require_directory(path, state) do
-    case state.backend.file_attrs(path, state.session, state.backend_state) do
-      {:ok, %{type: :directory}} -> :ok
-      {:ok, _attrs} -> {:error, :enotdir}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp require_regular(path, state) do
-    case state.backend.file_attrs(path, state.session, state.backend_state) do
-      {:ok, %{type: :directory}} -> {:error, :eisdir}
-      {:ok, _attrs} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp normalize_realpath(path) do
-    path =
-      path
-      |> to_string()
-      |> String.trim_leading("/")
-
-    if path == "", do: "/", else: "/" <> path
   end
 end
