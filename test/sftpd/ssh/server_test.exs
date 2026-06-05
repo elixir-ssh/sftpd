@@ -55,14 +55,14 @@ defmodule Sftpd.SSH.ServerTest do
     state = %{channels: %{0 => %{sftp_session: sftp_session}}}
 
     assert %{channels: %{0 => %{sftp_session: %{handles: %{}}}}} =
-             Server.__test_abort_open_writes__(state)
+             Server.__test_cleanup_open_handles__(state)
 
     assert_receive {:aborted, "/pending.txt"}
     assert_receive {:closed_dir, "/open-dir"}
   end
 
   test "abort open writes is a no-op before channels are initialized" do
-    assert %{auth_session: nil} = Server.__test_abort_open_writes__(%{auth_session: nil})
+    assert %{auth_session: nil} = Server.__test_cleanup_open_handles__(%{auth_session: nil})
   end
 
   test "splits oversized iodata responses without flattening chunks" do

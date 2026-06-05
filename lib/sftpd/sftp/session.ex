@@ -31,9 +31,6 @@ defmodule Sftpd.SFTP.Session do
     Handles.cleanup_open_handles(state, &cleanup_overlay/1)
   end
 
-  @spec abort_open_writes(state()) :: state()
-  def abort_open_writes(state), do: cleanup_open_handles(state)
-
   @spec handle_packet(binary(), state()) :: {SerializedPacket.t(), state()}
   def handle_packet(packet, %{initialized?: false} = state) do
     case Codec.decode(packet) do

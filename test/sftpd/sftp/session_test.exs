@@ -359,14 +359,14 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:status, 2, 2} = decode_response(response)
   end
 
-  test "abort_open_writes aborts pending write handles" do
+  test "cleanup_open_handles aborts pending write handles" do
     session =
       AbortBackend |> Session.new(self(), %{username: "test"}) |> Map.put(:initialized?, true)
 
     {response, session} = handle(open(1, "/pending.txt", 0x0000_000A), session)
     {:handle, 1, _handle} = decode_response(response)
 
-    session = Session.abort_open_writes(session)
+    session = Session.cleanup_open_handles(session)
 
     assert session.handles == %{}
     assert_receive {:aborted, "/pending.txt"}

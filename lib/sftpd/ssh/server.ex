@@ -303,12 +303,12 @@ defmodule Sftpd.SSH.Server do
       {:ok, payload, state} ->
         case handle_encrypted_payload(payload, state, socket) do
           {:continue, state} -> encrypted_loop(state, socket)
-          {:stop, state} -> abort_open_writes(state)
+          {:stop, state} -> cleanup_open_handles(state)
         end
 
       {:error, reason} ->
         Logger.debug("pure ssh encrypted receive failed: #{inspect(reason)}")
-        abort_open_writes(state)
+        cleanup_open_handles(state)
     end
   end
 
@@ -962,8 +962,8 @@ defmodule Sftpd.SSH.Server do
     end
 
     @doc false
-    def __test_abort_open_writes__(state) do
-      abort_open_writes(state)
+    def __test_cleanup_open_handles__(state) do
+      cleanup_open_handles(state)
     end
   end
 
@@ -1008,7 +1008,7 @@ defmodule Sftpd.SSH.Server do
     %{state | channels: Map.put(state.channels, server_channel, channel)}
   end
 
-  defp abort_open_writes(%{channels: channels} = state) do
+  defp cleanup_open_handles(%{channels: channels} = state) do
     channels =
       Map.new(channels, fn {server_channel, channel} ->
         {server_channel,
@@ -1018,7 +1018,7 @@ defmodule Sftpd.SSH.Server do
     %{state | channels: channels}
   end
 
-  defp abort_open_writes(state), do: state
+  defp cleanup_open_handles(state), do: state
 
   defp handle_sftp_data(data, channel) do
     buffer = channel.sftp_buffer <> data
