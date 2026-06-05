@@ -474,7 +474,7 @@ defmodule Sftpd.SSH.Server do
       {responses, channel} = handle_sftp_data(data, channel)
       state = put_channel(state, channel)
 
-      {responses_acc, state, channel, bytes_read} =
+      drain_result =
         drain_buffered_sftp_data(
           socket,
           recipient,
@@ -484,21 +484,7 @@ defmodule Sftpd.SSH.Server do
           byte_size(data)
         )
 
-      responses = Enum.reverse(responses_acc)
-      channel = append_pending_responses(channel, responses)
-      state = put_channel(state, channel)
-
-      case flush_sftp_responses(socket, state, channel, bytes_read) do
-        {:ok, state} ->
-          {:continue, state}
-
-        {:closed, state} ->
-          {:continue, state}
-
-        {:error, reason, state} ->
-          Logger.debug("pure ssh failed to flush sftp responses: #{inspect(reason)}")
-          {:stop, state}
-      end
+      finish_channel_data_drain(socket, drain_result)
     else
       _ -> {:continue, state}
     end
@@ -565,7 +551,7 @@ defmodule Sftpd.SSH.Server do
 
   defp drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
     if SFTPBridge.responses_near_window?(channel, responses) do
-      {responses, state, channel, bytes_read}
+      {:open, responses, state, channel, bytes_read}
     else
       drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
     end
@@ -589,7 +575,7 @@ defmodule Sftpd.SSH.Server do
             bytes_read + byte_size(data)
           )
         else
-          _ -> {responses, state, channel, bytes_read}
+          _ -> {:open, responses, state, channel, bytes_read}
         end
 
       {:ok, <<93, ^recipient::32, bytes::32>>, state} ->
@@ -602,10 +588,10 @@ defmodule Sftpd.SSH.Server do
             drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
 
           {:closed, state} ->
-            {responses, state, channel, bytes_read}
+            {:closed, state}
 
           {:error, _reason, state} ->
-            {responses, state, channel, bytes_read}
+            {:error, state}
         end
 
       {:ok, payload, state} ->
@@ -616,20 +602,41 @@ defmodule Sftpd.SSH.Server do
                 drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
 
               _ ->
-                {responses, state, channel, bytes_read}
+                {:closed, state}
             end
 
           {:stop, state} ->
-            {responses, state, channel, bytes_read}
+            {:error, state}
         end
 
       :none ->
-        {responses, state, channel, bytes_read}
+        {:open, responses, state, channel, bytes_read}
 
       {:error, _reason} ->
-        {responses, state, channel, bytes_read}
+        {:error, state}
     end
   end
+
+  defp finish_channel_data_drain(socket, {:open, responses_acc, state, channel, bytes_read}) do
+    responses = Enum.reverse(responses_acc)
+    channel = append_pending_responses(channel, responses)
+    state = put_channel(state, channel)
+
+    case flush_sftp_responses(socket, state, channel, bytes_read) do
+      {:ok, state} ->
+        {:continue, state}
+
+      {:closed, state} ->
+        {:continue, state}
+
+      {:error, reason, state} ->
+        Logger.debug("pure ssh failed to flush sftp responses: #{inspect(reason)}")
+        {:stop, state}
+    end
+  end
+
+  defp finish_channel_data_drain(_socket, {:closed, state}), do: {:continue, state}
+  defp finish_channel_data_drain(_socket, {:error, state}), do: {:stop, state}
 
   defp prepend_reversed([], acc), do: acc
   defp prepend_reversed([response | rest], acc), do: prepend_reversed(rest, [response | acc])
@@ -964,6 +971,11 @@ defmodule Sftpd.SSH.Server do
     @doc false
     def __test_cleanup_open_handles__(state) do
       cleanup_open_handles(state)
+    end
+
+    @doc false
+    def __test_finish_channel_data_drain__(drain_result) do
+      finish_channel_data_drain(nil, drain_result)
     end
   end
 

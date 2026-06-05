@@ -134,6 +134,12 @@ defmodule Sftpd.SSH.ServerTest do
     assert bytes == 1
   end
 
+  test "closed buffered drain does not restore a deleted channel" do
+    state = %{channels: %{}}
+
+    assert {:continue, ^state} = Server.__test_finish_channel_data_drain__({:closed, state})
+  end
+
   defp joined_channel_data(payloads) do
     payloads
     |> Enum.map(fn payload ->
