@@ -15,6 +15,7 @@ defmodule Sftpd.Backends.Benchmark do
   @zero_slab :binary.copy(<<0>>, 1024 * 1024)
 
   @type state :: %{agent: pid()}
+  @impl true
   def init(opts) do
     files =
       opts
@@ -165,6 +166,7 @@ defmodule Sftpd.Backends.Benchmark do
   def begin_write(path, state), do: open_write(path, %{}, %{}, state)
   def write_chunk(handle, offset, data, state), do: write_at(handle, offset, data, state)
 
+  @impl true
   def finish_write(%{path: path, size: size}, %{agent: agent}) do
     Agent.update(agent, fn files ->
       Map.put(files, path, %{size: size, mtime: NaiveDateTime.utc_now()})
@@ -173,8 +175,10 @@ defmodule Sftpd.Backends.Benchmark do
     :ok
   end
 
+  @impl true
   def abort_write(_handle, _state), do: :ok
 
+  @impl true
   def open_read(path, _session, %{agent: agent}) do
     key = copied_normalized_path(path)
 
@@ -186,6 +190,7 @@ defmodule Sftpd.Backends.Benchmark do
     end)
   end
 
+  @impl true
   def read_at(%{size: size}, offset, len, _state) do
     cond do
       offset >= size ->
@@ -196,14 +201,17 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
+  @impl true
   def open_write(path, _attrs, _session, _state) do
     {:ok, %{path: copied_normalized_path(path), size: 0}}
   end
 
+  @impl true
   def write_at(%{size: size} = handle, offset, data, _state) do
     {:ok, %{handle | size: max(size, offset + IO.iodata_length(data))}}
   end
 
+  @impl true
   def open_dir(path, _session, state) do
     with {:ok, names} <- list_dir(path, state) do
       entries =
@@ -223,14 +231,17 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
+  @impl true
   def read_dir(%{read?: true}, _state), do: :eof
 
   def read_dir(%{entries: entries, read?: false} = handle, _state) do
     {:ok, entries, %{handle | read?: true}}
   end
 
+  @impl true
   def close_dir(_handle, _state), do: :ok
 
+  @impl true
   def file_attrs(path, _session, state) do
     case file_info(path, state) do
       {:ok, info} -> {:ok, Backend.attrs_from_file_info(info)}
@@ -238,9 +249,16 @@ defmodule Sftpd.Backends.Benchmark do
     end
   end
 
+  @impl true
   def make_dir(path, _attrs, _session, state), do: make_dir(path, state)
+
+  @impl true
   def del_dir(path, _session, state), do: del_dir(path, state)
+
+  @impl true
   def delete(path, _session, state), do: delete(path, state)
+
+  @impl true
   def rename(src, dst, _session, state), do: rename(src, dst, state)
 
   defp normalize_file(%{size: size, mtime: mtime}) do

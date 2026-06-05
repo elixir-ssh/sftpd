@@ -65,6 +65,7 @@ defmodule Sftpd.Backends.Memory do
               mtime: NaiveDateTime.t()
             }
   @spec init(keyword()) :: {:ok, state()}
+  @impl true
   def init(opts) do
     initial_files = Keyword.get(opts, :files, %{})
     {:ok, agent} = Agent.start_link(fn -> initial_files end)
@@ -200,6 +201,7 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
+  @impl true
   def open_read(path, _session, %{agent: agent}) do
     key = copied_normalized_path(path)
 
@@ -211,6 +213,7 @@ defmodule Sftpd.Backends.Memory do
     end)
   end
 
+  @impl true
   def read_at(%{file: file_data}, offset, len, _state) do
     read_file_data_at(file_data, offset, len)
   end
@@ -236,10 +239,12 @@ defmodule Sftpd.Backends.Memory do
     end
   end
 
+  @impl true
   def open_write(path, _attrs, _session, _state) do
     {:ok, %{path: copied_normalized_path(path), chunks: []}}
   end
 
+  @impl true
   def write_at(%{chunks: chunks} = handle, offset, data, _state) do
     {:ok, %{handle | chunks: [{offset, IO.iodata_to_binary(data)} | chunks]}}
   end
@@ -247,6 +252,7 @@ defmodule Sftpd.Backends.Memory do
   def begin_write(path, state), do: open_write(path, %{}, %{}, state)
   def write_chunk(handle, offset, data, state), do: write_at(handle, offset, data, state)
 
+  @impl true
   def finish_write(%{path: path, chunks: chunks}, %{agent: agent}) do
     file_data = chunks_to_file_data(chunks)
 
@@ -257,21 +263,26 @@ defmodule Sftpd.Backends.Memory do
     :ok
   end
 
+  @impl true
   def abort_write(_handle, _state), do: :ok
 
+  @impl true
   def open_dir(path, _session, state) do
     {:ok, entries} = fast_list_dir(path, state)
     {:ok, %{entries: entries, read?: false}}
   end
 
+  @impl true
   def read_dir(%{read?: true}, _state), do: :eof
 
   def read_dir(%{entries: entries, read?: false} = handle, _state) do
     {:ok, entries, %{handle | read?: true}}
   end
 
+  @impl true
   def close_dir(_handle, _state), do: :ok
 
+  @impl true
   def file_attrs(path, _session, state) do
     case file_info(path, state) do
       {:ok, info} -> {:ok, Backend.attrs_from_file_info(info)}
@@ -279,9 +290,16 @@ defmodule Sftpd.Backends.Memory do
     end
   end
 
+  @impl true
   def make_dir(path, _attrs, _session, state), do: make_dir(path, state)
+
+  @impl true
   def del_dir(path, _session, state), do: del_dir(path, state)
+
+  @impl true
   def delete(path, _session, state), do: delete(path, state)
+
+  @impl true
   def rename(src, dst, _session, state), do: rename(src, dst, state)
 
   # Helpers
