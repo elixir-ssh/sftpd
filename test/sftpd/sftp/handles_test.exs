@@ -14,6 +14,11 @@ defmodule Sftpd.SFTP.HandlesTest do
       :ok
     end
 
+    def close_dir(:closed, _state) do
+      send(self(), :closed_dir_sentinel_closed)
+      :ok
+    end
+
     def file_attrs("/known.txt", _session, _state),
       do: {:ok, %{type: :regular, size: 10, permissions: 0o100644}}
 
@@ -31,7 +36,8 @@ defmodule Sftpd.SFTP.HandlesTest do
         "read" => {:file, :read, "/known.txt", :read_handle},
         "write" =>
           {:file, :write, "/pending.txt", %{test_pid: test_pid, path: "/pending.txt"}, nil, 0},
-        "dir" => {:dir, %{test_pid: test_pid, path: "/dir"}}
+        "dir" => {:dir, %{test_pid: test_pid, path: "/dir"}},
+        "closed-dir" => {:dir, :closed}
       }
     }
 
@@ -40,6 +46,7 @@ defmodule Sftpd.SFTP.HandlesTest do
     assert state.handles == %{}
     assert_receive {:abort, "/pending.txt"}
     assert_receive {:close_dir, "/dir"}
+    refute_receive :closed_dir_sentinel_closed
     refute_receive :overlay
   end
 

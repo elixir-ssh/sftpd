@@ -14,6 +14,9 @@ defmodule Sftpd.SFTP.Handles do
         _ = state.backend.abort_write(write_handle, state.backend_state)
         cleanup_overlay_fun.(overlay)
 
+      {_handle, {:dir, :closed}} ->
+        :ok
+
       {_handle, {:dir, backend_handle}} ->
         _ = state.backend.close_dir(backend_handle, state.backend_state)
 
