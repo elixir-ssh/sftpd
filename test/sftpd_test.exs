@@ -807,6 +807,28 @@ defmodule SftpdTest do
       assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
     end
 
+    test "disconnects on invalid encrypted packet lengths" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{socket: socket} = open_raw_authenticated_session(port)
+
+      assert :ok = :gen_tcp.send(socket, <<0::32>>)
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
+    end
+
     test "disconnects after repeated failed userauth requests" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
@@ -911,6 +933,26 @@ defmodule SftpdTest do
       assert is_pid(pid)
 
       :gen_tcp.close(socket)
+    end
+
+    test "stops active pure transport connections with the listener" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      %{socket: socket} = open_raw_authenticated_session(port)
+
+      assert :ok = Sftpd.stop_server(ref)
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
     end
 
     test "refuses new clients when max_sessions is exhausted" do
@@ -1161,10 +1203,37 @@ defmodule SftpdTest do
                Sftpd.Server.handle_info({:DOWN, monitor_ref, :process, daemon, :killed}, state)
     end
 
+    test "server callback preserves normal daemon exit reasons" do
+      daemon = self()
+      monitor_ref = make_ref()
+      state = %{ref: daemon, monitor_ref: monitor_ref, daemon_down?: false}
+
+      assert {:stop, :normal, %{daemon_down?: true}} =
+               Sftpd.Server.handle_info({:DOWN, monitor_ref, :process, daemon, :normal}, state)
+
+      assert {:stop, :shutdown, %{daemon_down?: true}} =
+               Sftpd.Server.handle_info({:DOWN, monitor_ref, :process, daemon, :shutdown}, state)
+    end
+
     test "server callback ignores unrelated messages" do
       state = %{ref: self(), monitor_ref: make_ref(), daemon_down?: false}
 
       assert {:noreply, ^state} = Sftpd.Server.handle_info(:ignored, state)
+    end
+
+    test "server callback returns start errors from the daemon" do
+      previous_trap_exit = Process.flag(:trap_exit, true)
+
+      on_exit(fn ->
+        Process.flag(:trap_exit, previous_trap_exit)
+      end)
+
+      assert {:error, {:deprecated_option, :users}} =
+               Sftpd.Server.start_link(
+                 backend: Sftpd.Backends.Memory,
+                 system_dir: "/tmp",
+                 users: [{"testuser", "testpass"}]
+               )
     end
 
     test "server callback skips stop when daemon already exited" do
