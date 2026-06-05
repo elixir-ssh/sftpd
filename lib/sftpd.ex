@@ -175,8 +175,12 @@ defmodule Sftpd do
 
   defp start_transport(:elixir, opts) do
     case Sftpd.SSH.Server.start_link(opts) do
-      {:ok, pid} -> {:ok, {:elixir, pid}}
-      {:error, reason} -> {:error, reason}
+      {:ok, pid} ->
+        Process.unlink(pid)
+        {:ok, {:elixir, pid}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

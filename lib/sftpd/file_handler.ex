@@ -188,7 +188,9 @@ defmodule Sftpd.FileHandler do
         result =
           cond do
             :read in modes and :write in modes ->
-              open_device(path, :read_write, backend, backend_state, state)
+              open_device(path, :read_write, backend, backend_state, state,
+                truncate?: :truncate in modes
+              )
 
             :write in modes ->
               open_device(path, :write, backend, backend_state, state)
@@ -307,14 +309,16 @@ defmodule Sftpd.FileHandler do
     instrument(operation, state, %{path: to_string(path)}, fun)
   end
 
-  defp open_device(path, mode, backend, backend_state, state) do
-    DirectIODevice.start(%{
+  defp open_device(path, mode, backend, backend_state, state, opts \\ []) do
+    %{
       path: path,
       mode: mode,
       backend: backend,
       backend_state: backend_state,
       session: session(state)
-    })
+    }
+    |> Map.merge(Map.new(opts))
+    |> DirectIODevice.start()
   end
 
   defp drain_dir_entries(handle, backend, backend_state, entries) do

@@ -354,13 +354,20 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp validate_write_open(path, pflags, state) do
-    if create_open?(pflags) and exclusive_open?(pflags) do
-      case state.backend.file_attrs(path, state.session, state.backend_state) do
-        {:ok, _attrs} -> {:error, :eexist}
-        {:error, _reason} -> :ok
-      end
-    else
-      :ok
+    case state.backend.file_attrs(path, state.session, state.backend_state) do
+      {:ok, _attrs} ->
+        if create_open?(pflags) and exclusive_open?(pflags) do
+          {:error, :eexist}
+        else
+          :ok
+        end
+
+      {:error, reason} ->
+        if create_open?(pflags) do
+          :ok
+        else
+          {:error, reason}
+        end
     end
   end
 

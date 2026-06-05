@@ -244,6 +244,14 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:data, 8, "abXYef"} = decode_response(response)
   end
 
+  test "write opens without create require existing files", %{session: session} do
+    {response, session} = handle(open(1, "/missing-write.txt", 0x0000_0002), session)
+    assert {:status, 1, 2} = decode_response(response)
+
+    {response, _session} = handle(open(2, "/missing-mixed.txt", 0x0000_0003), session)
+    assert {:status, 2, 2} = decode_response(response)
+  end
+
   test "abort_open_writes aborts pending write handles" do
     session =
       AbortBackend |> Session.new(self(), %{username: "test"}) |> Map.put(:initialized?, true)
@@ -561,7 +569,7 @@ defmodule Sftpd.SFTP.SessionTest do
     {response, session} = handle(close(9, write_handle), session)
     assert {:status, 9, 4} = decode_response(response)
 
-    {response, session} = handle(open(19, "/write-error", 0x0000_0003), session)
+    {response, session} = handle(open(19, "/write-error", 0x0000_000B), session)
     {:handle, 19, mixed_error_handle} = decode_response(response)
     {response, session} = handle(write(20, mixed_error_handle, 0, "x"), session)
     assert {:status, 20, 3} = decode_response(response)

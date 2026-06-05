@@ -60,6 +60,7 @@ defmodule Sftpd.DirectIODevice do
       ) do
     session = Map.get(opts, :session, %{})
     path = to_string(path)
+    truncate? = Map.get(opts, :truncate?, false)
 
     with {:ok, writer_handle} <- backend.open_write(path, %{}, session, backend_state),
          {:ok, temp_path, temp_fd} <- open_temp_file(backend, writer_handle, backend_state) do
@@ -75,7 +76,8 @@ defmodule Sftpd.DirectIODevice do
           {:error, _reason} -> 0
         end
 
-      case seed_existing_read_write_content(
+      case maybe_seed_existing_read_write_content(
+             truncate?,
              backend,
              backend_state,
              reader_handle,
@@ -85,6 +87,7 @@ defmodule Sftpd.DirectIODevice do
            ) do
         {:ok, writer_handle} ->
           handle = new_handle()
+          size = if truncate?, do: 0, else: size
 
           put_state(handle, %{
             mode: :read_write,
@@ -94,11 +97,11 @@ defmodule Sftpd.DirectIODevice do
             session: session,
             position: 0,
             size: size,
-            backend_handle: reader_handle,
+            backend_handle: if(truncate?, do: nil, else: reader_handle),
             writer_handle: writer_handle,
             write_strategy: :direct,
             stream_offset: size,
-            dirty?: false,
+            dirty?: truncate?,
             temp_path: temp_path,
             temp_fd: temp_fd
           })
@@ -118,6 +121,36 @@ defmodule Sftpd.DirectIODevice do
           {:error, reason}
       end
     end
+  end
+
+  defp maybe_seed_existing_read_write_content(
+         true,
+         _backend,
+         _backend_state,
+         _reader,
+         writer,
+         _fd,
+         _size
+       ),
+       do: {:ok, writer}
+
+  defp maybe_seed_existing_read_write_content(
+         false,
+         backend,
+         backend_state,
+         reader_handle,
+         writer_handle,
+         temp_fd,
+         size
+       ) do
+    seed_existing_read_write_content(
+      backend,
+      backend_state,
+      reader_handle,
+      writer_handle,
+      temp_fd,
+      size
+    )
   end
 
   defp seed_existing_read_write_content(

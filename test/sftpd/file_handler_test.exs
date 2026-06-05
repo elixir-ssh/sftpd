@@ -168,6 +168,18 @@ defmodule Sftpd.FileHandlerTest do
       assert {:ok, ^state} = FileHandler.close(handle, state)
     end
 
+    test "preserves truncate semantics for mixed read/write opens" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/file.txt", "content", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:ok, handle}, ^state} =
+               FileHandler.open(~c"/file.txt", [:read, :write, :truncate], state)
+
+      assert {:ok, ^state} = FileHandler.close(handle, state)
+      assert {:ok, ""} = Memory.read_file(~c"/file.txt", backend_state)
+    end
+
     test "uses direct handles for memory backend reads and writes" do
       {:ok, backend_state} = Memory.init([])
       :ok = Memory.write_file(~c"/file.txt", "content", backend_state)

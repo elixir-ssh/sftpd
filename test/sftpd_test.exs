@@ -127,6 +127,27 @@ defmodule SftpdTest do
     %{channel: channel, port: port}
   end
 
+  test "pure transport start_server does not link listener to caller" do
+    port = 20_000 + :rand.uniform(10_000)
+    system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+    assert {:ok, {:elixir, pid} = ref} =
+             Sftpd.start_server(
+               port: port,
+               transport: :elixir,
+               backend: Sftpd.Backends.Memory,
+               backend_opts: [],
+               auth: {:passwords, [{"user", "password"}]},
+               system_dir: system_dir
+             )
+
+    on_exit(fn -> Sftpd.stop_server(ref) end)
+
+    assert Process.alive?(pid)
+    {:links, links} = Process.info(self(), :links)
+    refute pid in links
+  end
+
   describe "directory operations" do
     test "list_dir on root returns . and ..", %{channel: ch} do
       assert {:ok, listing} = :ssh_sftp.list_dir(ch, ~c"/")
