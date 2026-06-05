@@ -17,7 +17,7 @@ defmodule Sftpd.FileHandler do
 
   @behaviour :ssh_sftpd_file_api
 
-  alias Sftpd.{Backend, DirectIODevice}
+  alias Sftpd.{Backend, IODevice}
 
   @event_prefix [:sftpd, :sftp]
 
@@ -41,8 +41,8 @@ defmodule Sftpd.FileHandler do
       %{io_device: io_device},
       fn ->
         result =
-          if DirectIODevice.handle?(io_device) do
-            DirectIODevice.close(io_device)
+          if IODevice.handle?(io_device) do
+            IODevice.close(io_device)
           else
             {:error, :einval}
           end
@@ -217,8 +217,8 @@ defmodule Sftpd.FileHandler do
   def position(io_device, offset, state) do
     instrument(:position, state, %{io_device: io_device, offset: offset}, fn ->
       result =
-        if DirectIODevice.handle?(io_device) do
-          DirectIODevice.position(io_device, offset)
+        if IODevice.handle?(io_device) do
+          IODevice.position(io_device, offset)
         else
           {:error, :einval}
         end
@@ -237,8 +237,8 @@ defmodule Sftpd.FileHandler do
       %{io_device: io_device, bytes_requested: len},
       fn ->
         result =
-          if DirectIODevice.handle?(io_device) do
-            DirectIODevice.read(io_device, len)
+          if IODevice.handle?(io_device) do
+            IODevice.read(io_device, len)
           else
             {:error, :einval}
           end
@@ -290,8 +290,8 @@ defmodule Sftpd.FileHandler do
       %{io_device: io_device},
       fn ->
         result =
-          if DirectIODevice.handle?(io_device) do
-            DirectIODevice.write(io_device, data, bytes)
+          if IODevice.handle?(io_device) do
+            IODevice.write(io_device, data, bytes)
           else
             {:error, :einval}
           end
@@ -318,7 +318,7 @@ defmodule Sftpd.FileHandler do
       session: session(state)
     }
     |> Map.merge(Map.new(opts))
-    |> DirectIODevice.start()
+    |> IODevice.start()
   end
 
   defp drain_dir_entries(handle, backend, backend_state, entries) do

@@ -1,7 +1,7 @@
-defmodule Sftpd.DirectIODevice do
+defmodule Sftpd.IODevice do
   @moduledoc false
 
-  @type handle :: {:sftpd_direct_io, reference()}
+  @type handle :: {:sftpd_io, reference()}
 
   @replay_chunk_size 5 * 1024 * 1024
 
@@ -242,7 +242,7 @@ defmodule Sftpd.DirectIODevice do
   end
 
   @spec handle?(term()) :: boolean()
-  def handle?({:sftpd_direct_io, ref}) when is_reference(ref), do: true
+  def handle?({:sftpd_io, ref}) when is_reference(ref), do: true
   def handle?(_handle), do: false
 
   @spec position(handle(), term()) :: {:ok, non_neg_integer()} | {:error, atom()}
@@ -362,9 +362,9 @@ defmodule Sftpd.DirectIODevice do
     end
   end
 
-  defp new_handle, do: {:sftpd_direct_io, make_ref()}
+  defp new_handle, do: {:sftpd_io, make_ref()}
 
-  defp key({:sftpd_direct_io, ref}), do: {:sftpd_direct_io, ref}
+  defp key({:sftpd_io, ref}), do: {:sftpd_io, ref}
 
   defp put_state(handle, state) do
     Process.put(key(handle), state)

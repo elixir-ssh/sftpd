@@ -1,9 +1,9 @@
-defmodule Sftpd.DirectIODeviceTest do
+defmodule Sftpd.IODeviceTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
   alias Sftpd.Backends.Memory
-  alias Sftpd.DirectIODevice
+  alias Sftpd.IODevice
 
   defmodule ErrorBackend do
     @moduledoc false
@@ -111,7 +111,7 @@ defmodule Sftpd.DirectIODeviceTest do
     :ok = Memory.write_file(~c"/file.bin", "abcdefghij", backend_state)
 
     assert {:ok, handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/file.bin",
                mode: :read,
                backend: Memory,
@@ -120,26 +120,26 @@ defmodule Sftpd.DirectIODeviceTest do
              })
 
     refute is_pid(handle)
-    assert DirectIODevice.handle?(handle)
-    assert {:ok, "abcd"} = DirectIODevice.read(handle, 4)
-    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
-    assert {:ok, "cde"} = DirectIODevice.read(handle, 3)
-    assert {:ok, 9} = DirectIODevice.position(handle, {:eof, -1})
-    assert {:ok, "j"} = DirectIODevice.read(handle, 4)
-    assert :eof = DirectIODevice.read(handle, 4)
-    assert :ok = DirectIODevice.close(handle)
+    assert IODevice.handle?(handle)
+    assert {:ok, "abcd"} = IODevice.read(handle, 4)
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert {:ok, "cde"} = IODevice.read(handle, 3)
+    assert {:ok, 9} = IODevice.position(handle, {:eof, -1})
+    assert {:ok, "j"} = IODevice.read(handle, 4)
+    assert :eof = IODevice.read(handle, 4)
+    assert :ok = IODevice.close(handle)
   end
 
   test "normalizes backend iodata reads to binaries" do
     assert {:ok, handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/iodata",
                mode: :read,
                backend: ErrorBackend,
                backend_state: %{}
              })
 
-    assert {:ok, "iodata"} = DirectIODevice.read(handle, 6)
+    assert {:ok, "iodata"} = IODevice.read(handle, 6)
   end
 
   property "read/write seeding accepts iodata without flattening backend replay" do
@@ -152,7 +152,7 @@ defmodule Sftpd.DirectIODeviceTest do
       expected = IO.iodata_to_binary(data)
 
       assert {:ok, handle} =
-               DirectIODevice.start(%{
+               IODevice.start(%{
                  path: "/nested-iodata",
                  mode: :read_write,
                  backend: ErrorBackend,
@@ -160,14 +160,14 @@ defmodule Sftpd.DirectIODeviceTest do
                })
 
       assert_receive {:seed_write, 0, ^data, ^bytes, false}
-      assert {:ok, ^expected} = DirectIODevice.read(handle, bytes)
-      assert :ok = DirectIODevice.close(handle)
+      assert {:ok, ^expected} = IODevice.read(handle, bytes)
+      assert :ok = IODevice.close(handle)
     end
   end
 
   test "writes iodata and finalizes on close", %{backend_state: backend_state} do
     assert {:ok, handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/out.bin",
                mode: :write,
                backend: Memory,
@@ -175,10 +175,10 @@ defmodule Sftpd.DirectIODeviceTest do
                session: %{}
              })
 
-    assert :ok = DirectIODevice.write(handle, ["abc", "def"], 6)
-    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
-    assert :ok = DirectIODevice.write(handle, "XY", 2)
-    assert :ok = DirectIODevice.close(handle)
+    assert :ok = IODevice.write(handle, ["abc", "def"], 6)
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert :ok = IODevice.close(handle)
 
     assert {:ok, "abXYef"} = Memory.read_file(~c"/out.bin", backend_state)
   end
@@ -187,7 +187,7 @@ defmodule Sftpd.DirectIODeviceTest do
     {:ok, state} = Agent.start_link(fn -> %{} end)
 
     assert {:ok, handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/sized.bin",
                mode: :write,
                backend: SequentialBackend,
@@ -195,12 +195,12 @@ defmodule Sftpd.DirectIODeviceTest do
                session: %{}
              })
 
-    assert :ok = DirectIODevice.write(handle, "abcdef", 6)
-    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
-    assert :ok = DirectIODevice.write(handle, "XY", 2)
-    assert {:ok, 4} = DirectIODevice.position(handle, 4)
-    assert :ok = DirectIODevice.write(handle, "Z", 1)
-    assert :ok = DirectIODevice.close(handle)
+    assert :ok = IODevice.write(handle, "abcdef", 6)
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert {:ok, 4} = IODevice.position(handle, 4)
+    assert :ok = IODevice.write(handle, "Z", 1)
+    assert :ok = IODevice.close(handle)
 
     assert Agent.get(state, & &1) == %{aborts: 1, content: "abXYZf", opens: 2}
   end
@@ -209,7 +209,7 @@ defmodule Sftpd.DirectIODeviceTest do
     {:ok, state} = Agent.start_link(fn -> %{} end)
 
     assert {:error, :eio} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/sized.bin",
                mode: :read_write,
                backend: SequentialBackend,
@@ -224,7 +224,7 @@ defmodule Sftpd.DirectIODeviceTest do
     :ok = Memory.write_file(~c"/file.bin", "content", backend_state)
 
     assert {:ok, handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/file.bin",
                mode: :read_write,
                backend: Memory,
@@ -232,8 +232,8 @@ defmodule Sftpd.DirectIODeviceTest do
                session: %{}
              })
 
-    assert {:ok, "content"} = DirectIODevice.read(handle, 16)
-    assert :ok = DirectIODevice.close(handle)
+    assert {:ok, "content"} = IODevice.read(handle, 16)
+    assert :ok = IODevice.close(handle)
     assert {:ok, "content"} = Memory.read_file(~c"/file.bin", backend_state)
   end
 
@@ -252,7 +252,7 @@ defmodule Sftpd.DirectIODeviceTest do
       :ok = Memory.write_file(~c"/file.bin", original, backend_state)
 
       assert {:ok, handle} =
-               DirectIODevice.start(%{
+               IODevice.start(%{
                  path: ~c"/file.bin",
                  mode: :read_write,
                  backend: Memory,
@@ -260,9 +260,9 @@ defmodule Sftpd.DirectIODeviceTest do
                  session: %{}
                })
 
-      assert {:ok, ^offset} = DirectIODevice.position(handle, {:bof, offset})
-      assert :ok = DirectIODevice.write(handle, replacement, byte_size(replacement))
-      assert :ok = DirectIODevice.close(handle)
+      assert {:ok, ^offset} = IODevice.position(handle, {:bof, offset})
+      assert :ok = IODevice.write(handle, replacement, byte_size(replacement))
+      assert :ok = IODevice.close(handle)
       assert {:ok, ^expected} = Memory.read_file(~c"/file.bin", backend_state)
     end
   end
@@ -271,7 +271,7 @@ defmodule Sftpd.DirectIODeviceTest do
     backend_state: backend_state
   } do
     assert {:ok, handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/new.bin",
                mode: :read_write,
                backend: Memory,
@@ -279,10 +279,10 @@ defmodule Sftpd.DirectIODeviceTest do
                session: %{}
              })
 
-    assert :ok = DirectIODevice.write(handle, "abc", 3)
-    assert {:ok, 0} = DirectIODevice.position(handle, {:bof, 0})
-    assert {:ok, "abc"} = DirectIODevice.read(handle, 3)
-    assert :ok = DirectIODevice.close(handle)
+    assert :ok = IODevice.write(handle, "abc", 3)
+    assert {:ok, 0} = IODevice.position(handle, {:bof, 0})
+    assert {:ok, "abc"} = IODevice.read(handle, 3)
+    assert :ok = IODevice.close(handle)
   end
 
   test "read/write handles read partial overwrites before close", %{
@@ -291,7 +291,7 @@ defmodule Sftpd.DirectIODeviceTest do
     :ok = Memory.write_file(~c"/file.bin", "abcdef", backend_state)
 
     assert {:ok, handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/file.bin",
                mode: :read_write,
                backend: Memory,
@@ -299,18 +299,18 @@ defmodule Sftpd.DirectIODeviceTest do
                session: %{}
              })
 
-    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
-    assert :ok = DirectIODevice.write(handle, "XY", 2)
-    assert {:ok, 0} = DirectIODevice.position(handle, {:bof, 0})
-    assert {:ok, "abXYef"} = DirectIODevice.read(handle, 6)
-    assert :ok = DirectIODevice.close(handle)
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert {:ok, 0} = IODevice.position(handle, {:bof, 0})
+    assert {:ok, "abXYef"} = IODevice.read(handle, 6)
+    assert :ok = IODevice.close(handle)
   end
 
   test "aborts replay writer when replay finalize fails" do
     {:ok, state} = Agent.start_link(fn -> %{finish_error_on_open: 2} end)
 
     assert {:ok, handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/out.bin",
                mode: :write,
                backend: SequentialBackend,
@@ -318,21 +318,21 @@ defmodule Sftpd.DirectIODeviceTest do
                session: %{}
              })
 
-    assert :ok = DirectIODevice.write(handle, "abcdef", 6)
-    assert {:ok, 2} = DirectIODevice.position(handle, {:bof, 2})
-    assert :ok = DirectIODevice.write(handle, "XY", 2)
-    assert {:error, :eio} = DirectIODevice.close(handle)
+    assert :ok = IODevice.write(handle, "abcdef", 6)
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert {:error, :eio} = IODevice.close(handle)
 
     assert Agent.get(state, &Map.take(&1, [:aborts, :opens])) == %{aborts: 2, opens: 2}
   end
 
   test "returns einval for stale handles" do
-    handle = {:sftpd_direct_io, make_ref()}
+    handle = {:sftpd_io, make_ref()}
 
-    assert {:error, :einval} = DirectIODevice.position(handle, 0)
-    assert {:error, :einval} = DirectIODevice.read(handle, 1)
-    assert {:error, :einval} = DirectIODevice.write(handle, "x", 1)
-    assert :ok = DirectIODevice.close(handle)
+    assert {:error, :einval} = IODevice.position(handle, 0)
+    assert {:error, :einval} = IODevice.read(handle, 1)
+    assert {:error, :einval} = IODevice.write(handle, "x", 1)
+    assert :ok = IODevice.close(handle)
   end
 
   test "rejects invalid positions and operations for the handle mode", %{
@@ -341,34 +341,34 @@ defmodule Sftpd.DirectIODeviceTest do
     :ok = Memory.write_file(~c"/file.bin", "abcd", backend_state)
 
     assert {:ok, read_handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/file.bin",
                mode: :read,
                backend: Memory,
                backend_state: backend_state
              })
 
-    assert {:error, :einval} = DirectIODevice.position(read_handle, {:bof, -1})
-    assert {:error, :einval} = DirectIODevice.position(read_handle, {:cur, -1})
-    assert {:error, :einval} = DirectIODevice.position(read_handle, {:eof, -5})
-    assert {:ok, 0} = DirectIODevice.position(read_handle, 0)
-    assert {:error, :einval} = DirectIODevice.position(read_handle, :bad)
-    assert {:error, :einval} = DirectIODevice.write(read_handle, "x", 1)
+    assert {:error, :einval} = IODevice.position(read_handle, {:bof, -1})
+    assert {:error, :einval} = IODevice.position(read_handle, {:cur, -1})
+    assert {:error, :einval} = IODevice.position(read_handle, {:eof, -5})
+    assert {:ok, 0} = IODevice.position(read_handle, 0)
+    assert {:error, :einval} = IODevice.position(read_handle, :bad)
+    assert {:error, :einval} = IODevice.write(read_handle, "x", 1)
 
     assert {:ok, write_handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: ~c"/out.bin",
                mode: :write,
                backend: Memory,
                backend_state: backend_state
              })
 
-    assert {:error, :einval} = DirectIODevice.read(write_handle, 1)
+    assert {:error, :einval} = IODevice.read(write_handle, 1)
   end
 
   test "propagates backend start, read, write, and close errors" do
     assert {:error, :enoent} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/attrs-error",
                mode: :read,
                backend: ErrorBackend,
@@ -376,7 +376,7 @@ defmodule Sftpd.DirectIODeviceTest do
              })
 
     assert {:error, :eacces} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/open-read-error",
                mode: :read,
                backend: ErrorBackend,
@@ -384,7 +384,7 @@ defmodule Sftpd.DirectIODeviceTest do
              })
 
     assert {:error, :eacces} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/open-write-error",
                mode: :write,
                backend: ErrorBackend,
@@ -392,74 +392,74 @@ defmodule Sftpd.DirectIODeviceTest do
              })
 
     assert {:ok, read_handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/read-error",
                mode: :read,
                backend: ErrorBackend,
                backend_state: %{}
              })
 
-    assert {:error, :eio} = DirectIODevice.read(read_handle, 1)
+    assert {:error, :eio} = IODevice.read(read_handle, 1)
 
     assert {:ok, eof_handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/backend-eof",
                mode: :read,
                backend: ErrorBackend,
                backend_state: %{}
              })
 
-    assert :eof = DirectIODevice.read(eof_handle, 1)
+    assert :eof = IODevice.read(eof_handle, 1)
 
     assert {:ok, empty_handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/empty-read",
                mode: :read,
                backend: ErrorBackend,
                backend_state: %{}
              })
 
-    assert :eof = DirectIODevice.read(empty_handle, 0)
+    assert :eof = IODevice.read(empty_handle, 0)
 
     assert {:ok, write_handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/write-error",
                mode: :write,
                backend: ErrorBackend,
                backend_state: %{test_pid: self()}
              })
 
-    assert {:error, :eio} = DirectIODevice.write(write_handle, "x", 1)
+    assert {:error, :eio} = IODevice.write(write_handle, "x", 1)
     assert_receive :aborted
-    assert :ok = DirectIODevice.close(write_handle)
+    assert :ok = IODevice.close(write_handle)
 
     assert {:ok, close_handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/finish-error",
                mode: :write,
                backend: ErrorBackend,
                backend_state: %{}
              })
 
-    assert {:error, :eio} = DirectIODevice.close(close_handle)
+    assert {:error, :eio} = IODevice.close(close_handle)
   end
 
   test "read/write start falls back to zero size when attrs are unavailable" do
     assert {:ok, handle} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/attrs-error",
                mode: :read_write,
                backend: ErrorBackend,
                backend_state: %{}
              })
 
-    assert :eof = DirectIODevice.read(handle, 1)
-    assert :ok = DirectIODevice.close(handle)
+    assert :eof = IODevice.read(handle, 1)
+    assert :ok = IODevice.close(handle)
   end
 
   test "read/write start rejects existing files that cannot be seeded" do
     assert {:error, :eio} =
-             DirectIODevice.start(%{
+             IODevice.start(%{
                path: "/open-read-error",
                mode: :read_write,
                backend: ErrorBackend,

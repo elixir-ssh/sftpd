@@ -1,7 +1,7 @@
 defmodule Sftpd.FileHandlerTest do
   use ExUnit.Case, async: false
 
-  alias Sftpd.{DirectIODevice, FileHandler}
+  alias Sftpd.{IODevice, FileHandler}
   alias Sftpd.Backends.Memory
   alias Sftpd.Test.TelemetryHelper
 
@@ -146,7 +146,7 @@ defmodule Sftpd.FileHandlerTest do
     test "falls back to read mode when no modes specified" do
       state = %{backend: MockBackend, backend_state: %{}}
       {{:ok, handle}, _state} = FileHandler.open(~c"/file.txt", [], state)
-      assert DirectIODevice.handle?(handle)
+      assert IODevice.handle?(handle)
       assert {:ok, _state} = FileHandler.close(handle, state)
     end
 
@@ -160,7 +160,7 @@ defmodule Sftpd.FileHandlerTest do
       state = %{backend: MockBackend, backend_state: %{}}
 
       assert {{:ok, handle}, ^state} = FileHandler.open(~c"/file.txt", [:read, :write], state)
-      assert DirectIODevice.handle?(handle)
+      assert IODevice.handle?(handle)
       assert {{:ok, "content"}, ^state} = FileHandler.read(handle, 16, state)
 
       assert {{:ok, 0}, ^state} = FileHandler.position(handle, {:bof, 0}, state)
@@ -186,12 +186,12 @@ defmodule Sftpd.FileHandlerTest do
       state = %{backend: Memory, backend_state: backend_state}
 
       assert {{:ok, read_handle}, ^state} = FileHandler.open(~c"/file.txt", [:read], state)
-      assert DirectIODevice.handle?(read_handle)
+      assert IODevice.handle?(read_handle)
       assert {{:ok, "content"}, ^state} = FileHandler.read(read_handle, 16, state)
       assert {:ok, ^state} = FileHandler.close(read_handle, state)
 
       assert {{:ok, write_handle}, ^state} = FileHandler.open(~c"/out.txt", [:write], state)
-      assert DirectIODevice.handle?(write_handle)
+      assert IODevice.handle?(write_handle)
       assert {:ok, ^state} = FileHandler.write(write_handle, ["fast", "-", "path"], state)
       assert {:ok, ^state} = FileHandler.close(write_handle, state)
       assert {:ok, "fast-path"} = Memory.read_file(~c"/out.txt", backend_state)

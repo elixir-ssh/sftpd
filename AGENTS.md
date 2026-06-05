@@ -18,7 +18,7 @@ for a broader SSH daemon API.
 - `lib/sftpd.ex` - Main module, starts the SSH daemon with configurable backend
 - `lib/sftpd/backend.ex` - Behaviour definition for storage backends
 - `lib/sftpd/file_handler.ex` - Adapts the handle-first backend API to OTP's `:ssh_sftpd_file_api`
-- `lib/sftpd/direct_io_device.ex` - Opaque open-file handles used by the OTP file-handler adapter
+- `lib/sftpd/io_device.ex` - Opaque open-file handles used by the OTP file-handler adapter
 - `lib/sftpd/ssh/` - Experimental pure-Elixir SSH transport
 - `lib/sftpd/sftp/` - Pure-Elixir SFTP v3 parser and dispatcher
 - `lib/sftpd/backends/s3.ex` - S3 storage backend
