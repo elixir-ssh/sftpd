@@ -101,8 +101,11 @@ defmodule Sftpd.SFTP.Session do
         end
 
       Paths.read_open?(pflags) ->
-        case state.backend.open_read(path, state.session, state.backend_state) do
-          {:ok, backend_handle} -> Handles.put(id, {:file, :read, path, backend_handle}, state)
+        with :ok <- Paths.reject_directory(path, state),
+             {:ok, backend_handle} <-
+               state.backend.open_read(path, state.session, state.backend_state) do
+          Handles.put(id, {:file, :read, path, backend_handle}, state)
+        else
           {:error, reason} -> {Codec.status(id, reason), state}
         end
 

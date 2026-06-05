@@ -482,7 +482,8 @@ defmodule Sftpd.SFTP.SessionTest do
           {mkdir(7, "/file.txt"), 7},
           {mkdir(8, "/dir"), 8},
           {path_packet(@ssh_fxp_rmdir, 9, "/file.txt"), 9},
-          {path_packet(@ssh_fxp_remove, 10, "/dir"), 10}
+          {path_packet(@ssh_fxp_remove, 10, "/dir"), 10},
+          {open(11, "/dir", 0x0000_0001), 11}
         ] do
       {response, _session} = handle(packet, session)
       assert {:status, ^id, 4} = decode_response(response)

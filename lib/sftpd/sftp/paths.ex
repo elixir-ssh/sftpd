@@ -71,4 +71,11 @@ defmodule Sftpd.SFTP.Paths do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  def reject_directory(path, state) do
+    case state.backend.file_attrs(path, state.session, state.backend_state) do
+      {:ok, %{type: :directory}} -> {:error, :eisdir}
+      _ -> :ok
+    end
+  end
 end
