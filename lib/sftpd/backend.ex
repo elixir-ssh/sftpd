@@ -45,18 +45,34 @@ defmodule Sftpd.Backend do
   @callback rename(path(), path(), session(), state()) :: :ok | {:error, atom()}
 
   @doc """
-  Normalize an SFTP path to a binary without leading slashes.
+  Normalize an SFTP path to a canonical binary without leading slashes.
   """
   @spec normalize_path(path() | charlist()) :: String.t()
   def normalize_path(path) do
-    path |> to_string() |> String.trim_leading("/")
+    path
+    |> to_string()
+    |> canonical_segments()
+    |> Enum.join("/")
   end
 
   @doc """
   Return true if the path refers to the root directory.
   """
   @spec root_path?(path() | charlist()) :: boolean()
-  def root_path?(path), do: to_string(path) in ["/", "/.", "/..", "..", ".", ""]
+  def root_path?(path), do: normalize_path(path) == ""
+
+  defp canonical_segments(path) do
+    path
+    |> String.split("/")
+    |> Enum.reduce([], fn
+      "", acc -> acc
+      ".", acc -> acc
+      "..", [] -> []
+      "..", [_segment | rest] -> rest
+      segment, acc -> [segment | acc]
+    end)
+    |> Enum.reverse()
+  end
 
   @doc """
   Build a file_info tuple for a regular file.

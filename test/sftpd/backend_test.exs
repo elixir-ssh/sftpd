@@ -5,9 +5,9 @@ defmodule Sftpd.BackendTest do
   alias Sftpd.Backend
 
   describe "path helpers" do
-    property "normalize_path removes leading slash runs and preserves the rest" do
+    property "normalize_path removes slash runs and confines dot segments to root" do
       check all(path <- path_string()) do
-        expected = String.trim_leading(path, "/")
+        expected = canonical_path(path)
 
         assert Backend.normalize_path(path) == expected
         assert Backend.normalize_path(String.to_charlist(path)) == expected
@@ -15,13 +15,19 @@ defmodule Sftpd.BackendTest do
       end
     end
 
-    property "root_path? recognizes only documented root forms among generated paths" do
-      root_forms = ["/", "/.", "/..", "..", ".", ""]
-
+    property "root_path? recognizes canonical root forms among generated paths" do
       check all(path <- path_string()) do
-        assert Backend.root_path?(path) == path in root_forms
-        assert Backend.root_path?(String.to_charlist(path)) == path in root_forms
+        expected = canonical_path(path) == ""
+
+        assert Backend.root_path?(path) == expected
+        assert Backend.root_path?(String.to_charlist(path)) == expected
       end
+    end
+
+    test "normalize_path collapses traversal and repeated separators" do
+      assert Backend.normalize_path("/tenant/./a//../file.txt") == "tenant/file.txt"
+      assert Backend.normalize_path("/../../file.txt") == "file.txt"
+      assert Backend.normalize_path("/a/b/../../..") == ""
     end
   end
 
@@ -110,9 +116,27 @@ defmodule Sftpd.BackendTest do
   defp path_string do
     gen all(
           slash_count <- integer(0..4),
-          segments <- list_of(string(:alphanumeric, min_length: 1), max_length: 4)
+          segments <-
+            list_of(
+              one_of([constant("."), constant(".."), string(:alphanumeric, min_length: 1)]),
+              max_length: 4
+            )
         ) do
       String.duplicate("/", slash_count) <> Enum.join(segments, "/")
     end
+  end
+
+  defp canonical_path(path) do
+    path
+    |> String.split("/")
+    |> Enum.reduce([], fn
+      "", acc -> acc
+      ".", acc -> acc
+      "..", [] -> []
+      "..", [_segment | rest] -> rest
+      segment, acc -> [segment | acc]
+    end)
+    |> Enum.reverse()
+    |> Enum.join("/")
   end
 end

@@ -272,6 +272,37 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:status, 7, 0} = decode_response(response)
   end
 
+  test "normalizes traversal paths before backend operations", %{session: session} do
+    {response, session} = handle(open(1, "/dir/../safe.txt", 0x0000_000A), session)
+    assert {:handle, 1, write_handle} = decode_response(response)
+
+    {_response, session} = handle(write(2, write_handle, 0, "safe"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(open(4, "/safe.txt", 0x0000_0001), session)
+    assert {:handle, 4, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(5, read_handle, 0, 16), session)
+    assert {:data, 5, "safe"} = decode_response(response)
+  end
+
+  test "rejects new handles after the session handle limit is reached" do
+    {:ok, backend_state} = Memory.init([])
+
+    session =
+      Memory
+      |> Session.new(backend_state, %{username: "test"}, max_handles: 1)
+      |> Map.put(:initialized?, true)
+
+    {response, session} = handle(open(1, "/first.txt", 0x0000_000A), session)
+    assert {:handle, 1, _write_handle} = decode_response(response)
+
+    {response, session} = handle(open(2, "/second.txt", 0x0000_000A), session)
+
+    assert {:status, 2, 4} = decode_response(response)
+    assert map_size(session.handles) == 1
+  end
+
   test "writes sparse offsets without discarding earlier chunks", %{session: session} do
     {response, session} = handle(open(1, "/sparse.bin", 0x0000_000A), session)
     {:handle, 1, handle} = decode_response(response)

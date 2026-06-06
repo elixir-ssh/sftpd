@@ -6,23 +6,26 @@ defmodule Sftpd.SFTP.Session do
   @max_read_len 1_048_576
   @seed_chunk_size 1_048_576
   @replay_chunk_size 1_048_576
+  @default_max_handles 256
 
   @type state :: %{
           backend: module(),
           backend_state: term(),
           session: map(),
           handles: %{binary() => term()},
-          initialized?: boolean()
+          initialized?: boolean(),
+          max_handles: pos_integer()
         }
 
-  @spec new(module(), term(), map()) :: state()
-  def new(backend, backend_state, session \\ %{}) do
+  @spec new(module(), term(), map(), keyword()) :: state()
+  def new(backend, backend_state, session \\ %{}, opts \\ []) do
     %{
       backend: backend,
       backend_state: backend_state,
       session: session,
       handles: %{},
-      initialized?: false
+      initialized?: false,
+      max_handles: Keyword.get(opts, :max_handles, @default_max_handles)
     }
   end
 
@@ -42,7 +45,7 @@ defmodule Sftpd.SFTP.Session do
 
   def handle_packet(packet, state) do
     case Codec.decode(packet) do
-      {:ok, request} -> handle_request(request, state)
+      {:ok, request} -> request |> normalize_request_paths() |> handle_request(state)
       {:error, reason} -> {Codec.status(0, reason), state}
     end
   end
@@ -53,6 +56,9 @@ defmodule Sftpd.SFTP.Session do
 
   defp handle_request(%{type: :open, id: id, filename: path, pflags: pflags, attrs: attrs}, state) do
     cond do
+      max_handles_reached?(state) ->
+        {Codec.status(id, :failure), state}
+
       Paths.read_open?(pflags) and Paths.write_open?(pflags) ->
         with :ok <- Paths.validate_write_open(path, pflags, state),
              {:ok, write_handle} <-
@@ -270,10 +276,12 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{type: :opendir, id: id, path: path}, state) do
-    with :ok <- Paths.require_directory(path, state),
+    with false <- max_handles_reached?(state),
+         :ok <- Paths.require_directory(path, state),
          {:ok, backend_handle} <- state.backend.open_dir(path, state.session, state.backend_state) do
       Handles.put(id, {:dir, backend_handle}, state)
     else
+      true -> {Codec.status(id, :failure), state}
       {:error, reason} -> {Codec.status(id, reason), state}
     end
   end
@@ -367,6 +375,28 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{id: id}, state), do: {Codec.status(id, :unsupported), state}
+
+  defp normalize_request_paths(%{filename: path} = request) do
+    %{request | filename: Paths.normalize_request_path(path)}
+  end
+
+  defp normalize_request_paths(%{oldpath: oldpath, newpath: newpath} = request) do
+    %{
+      request
+      | oldpath: Paths.normalize_request_path(oldpath),
+        newpath: Paths.normalize_request_path(newpath)
+    }
+  end
+
+  defp normalize_request_paths(%{path: path} = request) do
+    %{request | path: Paths.normalize_request_path(path)}
+  end
+
+  defp normalize_request_paths(request), do: request
+
+  defp max_handles_reached?(state) do
+    map_size(state.handles) >= state.max_handles
+  end
 
   defp prepare_write_handle(path, pflags, backend_handle, state) do
     cond do

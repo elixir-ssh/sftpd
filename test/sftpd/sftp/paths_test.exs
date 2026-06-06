@@ -36,6 +36,12 @@ defmodule Sftpd.SFTP.PathsTest do
     end
   end
 
+  test "request path normalization confines traversal to root" do
+    assert Paths.normalize_request_path("/tenant/./a//../file.txt") == "/tenant/file.txt"
+    assert Paths.normalize_request_path("/../../file.txt") == "/file.txt"
+    assert Paths.normalize_request_path("/a/b/../../..") == "/"
+  end
+
   test "read-open directory rejection only blocks known directories" do
     state = %{backend: Backend, session: %{}, backend_state: %{}}
 

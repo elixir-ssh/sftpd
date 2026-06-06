@@ -36,13 +36,13 @@ defmodule Sftpd.SFTP.Paths do
 
   @spec normalize_realpath(Backend.path() | charlist()) :: Backend.path()
   def normalize_realpath(path) do
-    path =
-      path
-      |> to_string()
-      |> String.trim_leading("/")
+    path = Backend.normalize_path(path)
 
     if path == "", do: "/", else: "/" <> path
   end
+
+  @spec normalize_request_path(Backend.path() | charlist()) :: Backend.path()
+  def normalize_request_path(path), do: normalize_realpath(path)
 
   @spec validate_write_open(Backend.path(), non_neg_integer(), state()) :: path_check()
   def validate_write_open(path, pflags, state) do
