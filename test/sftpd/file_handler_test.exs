@@ -258,6 +258,22 @@ defmodule Sftpd.FileHandlerTest do
   end
 
   describe "path operation telemetry" do
+    test "rejects traversal-normalized root mutation targets" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/file.txt", "safe", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:error, :eacces}, ^state} = FileHandler.make_dir(~c"/dir/..", state)
+      assert {{:error, :eacces}, ^state} = FileHandler.del_dir(~c"/dir/..", state)
+      assert {{:error, :eacces}, ^state} = FileHandler.delete(~c"/dir/..", state)
+      assert {{:error, :eacces}, ^state} = FileHandler.rename(~c"/file.txt", ~c"/dir/..", state)
+
+      assert {{:error, :eacces}, ^state} =
+               FileHandler.rename(~c"/dir/..", ~c"/renamed.txt", state)
+
+      assert {:ok, "safe"} = Memory.read_file(~c"/file.txt", backend_state)
+    end
+
     test "emits telemetry for backend path operations" do
       handler_id =
         TelemetryHelper.attach(self(), [

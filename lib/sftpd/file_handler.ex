@@ -62,7 +62,11 @@ defmodule Sftpd.FileHandler do
     state = ensure_session(state)
 
     instrument_path_call(:delete, path, state, fn ->
-      {backend.delete(to_string(path), session(state), backend_state), state}
+      if root_mutation_path?(path) do
+        {{:error, :eacces}, state}
+      else
+        {backend.delete(to_string(path), session(state), backend_state), state}
+      end
     end)
   end
 
@@ -72,7 +76,11 @@ defmodule Sftpd.FileHandler do
     state = ensure_session(state)
 
     instrument_path_call(:del_dir, path, state, fn ->
-      {backend.del_dir(to_string(path), session(state), backend_state), state}
+      if root_mutation_path?(path) do
+        {{:error, :eacces}, state}
+      else
+        {backend.del_dir(to_string(path), session(state), backend_state), state}
+      end
     end)
   end
 
@@ -135,7 +143,11 @@ defmodule Sftpd.FileHandler do
     state = ensure_session(state)
 
     instrument_path_call(:make_dir, path, state, fn ->
-      {backend.make_dir(to_string(path), %{}, session(state), backend_state), state}
+      if root_mutation_path?(path) do
+        {{:error, :eacces}, state}
+      else
+        {backend.make_dir(to_string(path), %{}, session(state), backend_state), state}
+      end
     end)
   end
 
@@ -276,7 +288,11 @@ defmodule Sftpd.FileHandler do
     state = ensure_session(state)
 
     instrument(:rename, state, %{src_path: to_string(src), dst_path: to_string(dst)}, fn ->
-      {backend.rename(to_string(src), to_string(dst), session(state), backend_state), state}
+      if root_mutation_path?(src) or root_mutation_path?(dst) do
+        {{:error, :eacces}, state}
+      else
+        {backend.rename(to_string(src), to_string(dst), session(state), backend_state), state}
+      end
     end)
   end
 
@@ -309,6 +325,8 @@ defmodule Sftpd.FileHandler do
   defp instrument_path_call(operation, path, state, fun) do
     instrument(operation, state, %{path: to_string(path)}, fun)
   end
+
+  defp root_mutation_path?(path), do: Backend.root_path?(path)
 
   defp open_device(path, mode, backend, backend_state, state, opts \\ []) do
     %{
