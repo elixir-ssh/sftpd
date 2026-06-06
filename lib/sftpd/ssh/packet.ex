@@ -56,7 +56,8 @@ defmodule Sftpd.SSH.Packet do
         <<padding_len, payload_and_padding::binary>> = packet_body
         payload_len = packet_len - padding_len - 1
 
-        if payload_len < 0 or byte_size(payload_and_padding) < payload_len do
+        if invalid_padding?(padding_len, payload_len) or
+             byte_size(payload_and_padding) < payload_len do
           {:error, :bad_packet}
         else
           {payload, _padding} = :erlang.split_binary(payload_and_padding, payload_len)
@@ -73,7 +74,8 @@ defmodule Sftpd.SSH.Packet do
       <<padding_len, payload_and_padding::binary>> ->
         payload_len = packet_len - padding_len - 1
 
-        if payload_len < 0 or byte_size(payload_and_padding) < payload_len do
+        if invalid_padding?(padding_len, payload_len) or
+             byte_size(payload_and_padding) < payload_len do
           {:error, :bad_packet}
         else
           {payload, _padding} = :erlang.split_binary(payload_and_padding, payload_len)
@@ -116,4 +118,6 @@ defmodule Sftpd.SSH.Packet do
       padding
     end
   end
+
+  defp invalid_padding?(padding_len, payload_len), do: padding_len < 4 or payload_len < 0
 end
