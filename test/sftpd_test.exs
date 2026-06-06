@@ -684,11 +684,14 @@ defmodule SftpdTest do
         "UserKnownHostsFile=/dev/null",
         "-o",
         "IdentitiesOnly=yes",
+        "-o",
+        "RekeyLimit=1K",
         "key-user@127.0.0.1"
       ]
 
       assert {openssh_output, 0} = System.cmd(sftp, args, stderr_to_stdout: true)
       assert openssh_output =~ "debug1:"
+      assert openssh_output =~ "rekey"
       assert File.read!(download_path) == payload
     end
 
@@ -844,7 +847,42 @@ defmodule SftpdTest do
       :gen_tcp.close(socket)
     end
 
-    test "disconnects on encrypted rekey requests" do
+    test "rejects channel opens after the per-connection channel limit" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: Sftpd.Backends.Memory,
+                 backend_opts: [],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]},
+                 max_channels: 1
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{socket: socket, c2s: c2s, s2c: s2c} = open_raw_authenticated_session(port)
+      client_channel = 8
+
+      {packet, _c2s} =
+        encrypt_client_packet(c2s, [
+          <<90>>,
+          Sftpd.SSH.Wire.string("session"),
+          <<client_channel::32, 2_097_152::32, 262_144::32>>
+        ])
+
+      assert :ok = :gen_tcp.send(socket, packet)
+
+      assert {:ok, <<92, ^client_channel::32, 4::32, _rest::binary>>, _s2c} =
+               recv_encrypted_server_packet(socket, s2c)
+
+      :gen_tcp.close(socket)
+    end
+
+    test "supports encrypted rekey requests" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
 
@@ -860,13 +898,22 @@ defmodule SftpdTest do
 
       on_exit(fn -> Sftpd.stop_server(ref) end)
 
-      %{socket: socket, c2s: c2s, s2c: s2c} = open_raw_authenticated_session(port)
+      %{socket: socket, c2s: c2s, s2c: s2c, session_id: session_id} =
+        open_raw_authenticated_session(port)
 
-      {packet, _c2s} = encrypt_client_packet(c2s, <<20, 0::128, 0::32>>)
+      {c2s, s2c} = rekey(socket, c2s, s2c, session_id)
+
+      {packet, _c2s} =
+        encrypt_client_packet(c2s, [
+          <<80>>,
+          Sftpd.SSH.Wire.string("keepalive@openssh.com"),
+          Sftpd.SSH.Wire.boolean(true)
+        ])
 
       assert :ok = :gen_tcp.send(socket, packet)
-      assert {:ok, <<1, 3::32, _rest::binary>>, _s2c} = recv_encrypted_server_packet(socket, s2c)
-      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
+      assert {:ok, <<82>>, _s2c} = recv_encrypted_server_packet(socket, s2c)
+
+      :gen_tcp.close(socket)
     end
 
     test "disconnects on invalid encrypted packet lengths" do

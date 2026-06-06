@@ -7,7 +7,9 @@ defmodule Sftpd.Test.PureSSHClient do
   @pure_ssh_channel_max_packet_size 1_048_576
 
   def open_raw_authenticated_session(port, opts \\ []) do
-    %{socket: socket, c2s: c2s, s2c: s2c} = open_raw_userauth_session(port)
+    %{socket: socket, c2s: c2s, s2c: s2c, session_id: session_id} =
+      open_raw_userauth_session(port)
+
     {c2s, s2c} = assert_password_auth_success(socket, c2s, s2c)
 
     client_channel = 7
@@ -32,6 +34,7 @@ defmodule Sftpd.Test.PureSSHClient do
       socket: socket,
       c2s: c2s,
       s2c: s2c,
+      session_id: session_id,
       client_channel: client_channel,
       server_channel: server_channel
     }
@@ -96,7 +99,7 @@ defmodule Sftpd.Test.PureSSHClient do
 
     assert :ok = :gen_tcp.send(socket, Sftpd.SSH.Packet.encode_clear(<<21>>))
     {c2s, s2c} = assert_service_accept(socket, c2s, s2c)
-    %{socket: socket, c2s: c2s, s2c: s2c}
+    %{socket: socket, c2s: c2s, s2c: s2c, session_id: exchange_hash}
   end
 
   def start_raw_sftp(socket, c2s, s2c, client_channel, server_channel) do
@@ -249,6 +252,69 @@ defmodule Sftpd.Test.PureSSHClient do
       <<94, server_channel::32>>,
       Sftpd.SSH.Wire.string([<<len::32>>, sftp_payload])
     ])
+  end
+
+  def rekey(socket, c2s, s2c, session_id) do
+    {client_kexinit, _parsed} = Sftpd.SSH.Algorithms.server_kexinit()
+    {client_public, client_private} = Sftpd.SSH.Kex.generate_keypair()
+
+    {packet, c2s} = encrypt_client_packet(c2s, client_kexinit)
+    assert :ok = :gen_tcp.send(socket, packet)
+
+    assert {:ok, <<20, _rest::binary>> = server_kexinit, s2c} =
+             recv_encrypted_server_packet(socket, s2c)
+
+    {packet, c2s} =
+      encrypt_client_packet(c2s, [<<30>>, Sftpd.SSH.Wire.string(client_public)])
+
+    assert :ok = :gen_tcp.send(socket, packet)
+
+    assert {:ok, <<31, reply::binary>>, s2c, buffer} =
+             recv_encrypted_server_packet_with_rest(socket, s2c, "")
+
+    assert {:ok, host_key_blob, reply} = Sftpd.SSH.Wire.take_string(reply)
+    assert {:ok, server_public, reply} = Sftpd.SSH.Wire.take_string(reply)
+    assert {:ok, _signature_blob, ""} = Sftpd.SSH.Wire.take_string(reply)
+
+    assert {:ok, <<21>>, _old_s2c, _buffer} =
+             recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+
+    {:ok, shared_secret} = Sftpd.SSH.Kex.shared_secret(server_public, client_private)
+
+    exchange_hash =
+      Sftpd.SSH.Kex.exchange_hash(%{
+        client_version: "SSH-2.0-test-client",
+        server_version: "SSH-2.0-sftpd-elixir",
+        client_kexinit: client_kexinit,
+        server_kexinit: server_kexinit,
+        host_key_blob: host_key_blob,
+        client_public: client_public,
+        server_public: server_public,
+        shared_secret: shared_secret
+      })
+
+    {packet, _old_c2s} = encrypt_client_packet(c2s, <<21>>)
+    assert :ok = :gen_tcp.send(socket, packet)
+
+    c2s =
+      Sftpd.SSH.Cipher.new(
+        "aes256-gcm@openssh.com",
+        :client_to_server,
+        shared_secret,
+        exchange_hash,
+        session_id
+      )
+
+    s2c =
+      Sftpd.SSH.Cipher.new(
+        "aes256-gcm@openssh.com",
+        :server_to_client,
+        shared_secret,
+        exchange_hash,
+        session_id
+      )
+
+    {c2s, s2c}
   end
 
   def recv_encrypted_server_packet(socket, cipher, buffer \\ "") do

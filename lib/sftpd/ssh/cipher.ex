@@ -158,6 +158,6 @@ defmodule Sftpd.SSH.Cipher do
   defp validate_packet_length(_packet_length), do: {:error, :invalid_packet_length}
 
   defp increment_sequence(%{sequence: sequence} = state) do
-    %{state | sequence: rem(sequence + 1, 0x1_0000_0000)}
+    %{state | sequence: sequence + 1}
   end
 end

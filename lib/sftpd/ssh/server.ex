@@ -12,6 +12,8 @@ defmodule Sftpd.SSH.Server do
   @handshake_timeout 30_000
   @encrypted_idle_timeout :infinity
   @max_auth_failures 6
+  @default_max_channels 4
+  @default_max_handles 256
   @channel_window_size 64 * 1024 * 1024
   @channel_max_packet_size 1_048_576
   @aead_tag_size 16
@@ -47,6 +49,8 @@ defmodule Sftpd.SSH.Server do
         host_key: host_key,
         auth: Keyword.fetch!(opts, :auth),
         max_sessions: Keyword.fetch!(opts, :max_sessions),
+        max_channels: positive_integer_option(opts, :max_channels, @default_max_channels),
+        max_handles: positive_integer_option(opts, :max_handles, @default_max_handles),
         acceptor: nil,
         connections: %{}
       }
@@ -126,6 +130,13 @@ defmodule Sftpd.SSH.Server do
 
   defp validate_backend(backend), do: {:error, {:unsupported_backend, backend}}
 
+  defp positive_integer_option(opts, key, default) do
+    case Keyword.get(opts, key) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> default
+    end
+  end
+
   defp start_acceptor(%{socket: socket}) do
     owner = self()
 
@@ -146,7 +157,9 @@ defmodule Sftpd.SSH.Server do
       backend: state.backend,
       backend_state: state.backend_state,
       host_key: state.host_key,
-      auth: state.auth
+      auth: state.auth,
+      max_channels: state.max_channels,
+      max_handles: state.max_handles
     }
 
     pid =
@@ -222,6 +235,8 @@ defmodule Sftpd.SSH.Server do
          negotiated: negotiated,
          exchange_hash: exchange_hash,
          session_id: exchange_hash,
+         client_version: client_version,
+         server_version: server_version,
          buffer: buffer,
          c2s_cipher:
            Cipher.new(
@@ -261,6 +276,93 @@ defmodule Sftpd.SSH.Server do
 
   defp maybe_skip_wrong_kex_guess(_socket, buffer, _client_algorithms, _negotiated),
     do: {:ok, buffer}
+
+  defp handle_rekey(socket, client_kexinit, state) do
+    {server_kexinit, _parsed} = Algorithms.server_kexinit()
+
+    with {:ok, client_algorithms} <- Algorithms.decode_kexinit(client_kexinit),
+         {:ok, server_algorithms} <- Algorithms.decode_kexinit(server_kexinit),
+         {:ok, negotiated} <- Algorithms.negotiate(client_algorithms, server_algorithms),
+         {:ok, state} <- send_encrypted_payload(socket, state, server_kexinit),
+         {:ok, state} <-
+           maybe_skip_wrong_encrypted_kex_guess(socket, state, client_algorithms, negotiated),
+         {:ok, <<30, rest::binary>>, state} <- recv_encrypted_payload(socket, state),
+         {:ok, client_public, ""} <- Wire.take_string(rest),
+         :ok <- validate_curve25519_public_key(client_public),
+         {:ok, server_public, shared_secret} <- curve25519_shared_secret(client_public) do
+      exchange_hash =
+        Kex.exchange_hash(%{
+          client_version: state.client_version,
+          server_version: state.server_version,
+          client_kexinit: client_kexinit,
+          server_kexinit: server_kexinit,
+          host_key_blob: state.host_key.blob,
+          client_public: client_public,
+          server_public: server_public,
+          shared_secret: shared_secret
+        })
+
+      reply = Kex.ecdh_reply(state.host_key, server_public, exchange_hash)
+
+      with {:ok, state} <- send_encrypted_payload(socket, state, reply),
+           {:ok, state} <- send_encrypted_payload(socket, state, <<21>>),
+           state <- install_rekey_s2c(state, negotiated, shared_secret, exchange_hash),
+           {:ok, <<21>>, state} <- recv_encrypted_payload(socket, state) do
+        {:ok, install_rekey_c2s(state, negotiated, shared_secret, exchange_hash)}
+      end
+    end
+  end
+
+  defp maybe_skip_wrong_encrypted_kex_guess(
+         socket,
+         state,
+         %{first_kex_packet_follows: true} = client_algorithms,
+         negotiated
+       ) do
+    if kex_guess_matches?(client_algorithms, negotiated) do
+      {:ok, state}
+    else
+      case recv_encrypted_payload(socket, state) do
+        {:ok, _ignored_payload, state} -> {:ok, state}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp maybe_skip_wrong_encrypted_kex_guess(_socket, state, _client_algorithms, _negotiated),
+    do: {:ok, state}
+
+  defp install_rekey_s2c(state, negotiated, shared_secret, exchange_hash) do
+    %{
+      state
+      | negotiated: negotiated,
+        exchange_hash: exchange_hash,
+        s2c_cipher:
+          Cipher.new(
+            negotiated.cipher_s2c,
+            :server_to_client,
+            shared_secret,
+            exchange_hash,
+            state.session_id
+          )
+    }
+  end
+
+  defp install_rekey_c2s(state, negotiated, shared_secret, exchange_hash) do
+    %{
+      state
+      | negotiated: negotiated,
+        exchange_hash: exchange_hash,
+        c2s_cipher:
+          Cipher.new(
+            negotiated.cipher_c2s,
+            :client_to_server,
+            shared_secret,
+            exchange_hash,
+            state.session_id
+          )
+    }
+  end
 
   defp kex_guess_matches?(client_algorithms, negotiated) do
     first(client_algorithms.kex_algorithms) == negotiated.kex and
@@ -353,16 +455,16 @@ defmodule Sftpd.SSH.Server do
     {:stop, state}
   end
 
-  defp handle_encrypted_payload(<<20, _rest::binary>>, state, socket) do
-    Logger.debug("pure ssh rejecting encrypted rekey request")
+  defp handle_encrypted_payload(<<20, _rest::binary>> = client_kexinit, state, socket) do
+    Logger.debug("pure ssh received encrypted rekey request")
 
-    case send_encrypted_payload(socket, state, [
-           <<1, 3::32>>,
-           Wire.string("encrypted rekey is not supported"),
-           Wire.string("")
-         ]) do
-      {:ok, state} -> {:stop, state}
-      {:error, _reason} -> {:stop, state}
+    case handle_rekey(socket, client_kexinit, state) do
+      {:ok, state} ->
+        {:continue, state}
+
+      {:error, reason} ->
+        Logger.debug("pure ssh rekey failed: #{inspect(reason)}")
+        {:stop, state}
     end
   end
 
@@ -395,12 +497,15 @@ defmodule Sftpd.SSH.Server do
        when is_map(auth_session) do
     Logger.debug("pure ssh received channel open")
 
-    with {:ok, "session", rest} <- Wire.take_string(rest),
+    with false <- max_channels_reached?(state),
+         {:ok, "session", rest} <- Wire.take_string(rest),
          <<client_channel::32, client_window::32, client_max_packet::32, ""::binary>> <- rest do
       server_channel = state.next_channel_id
 
       sftp_session =
-        SFTP.Session.new(state.backend, state.backend_state, auth_session)
+        SFTP.Session.new(state.backend, state.backend_state, auth_session,
+          max_handles: state.max_handles
+        )
 
       channel = %{
         client_channel: client_channel,
@@ -428,7 +533,21 @@ defmodule Sftpd.SSH.Server do
       {:ok, state} = send_encrypted_payload(socket, state, payload)
       {:continue, state}
     else
-      _ -> {:stop, state}
+      true ->
+        with {:ok, client_channel} <- parse_channel_open_sender(rest),
+             {:ok, state} <-
+               send_encrypted_payload(socket, state, [
+                 <<92, client_channel::32, 4::32>>,
+                 Wire.string("too many open channels"),
+                 Wire.string("")
+               ]) do
+          {:continue, state}
+        else
+          _ -> {:stop, state}
+        end
+
+      _ ->
+        {:stop, state}
     end
   end
 
@@ -1013,6 +1132,19 @@ defmodule Sftpd.SSH.Server do
     case Map.fetch(state.channels, server_channel) do
       {:ok, channel} -> {:ok, channel}
       :error -> :error
+    end
+  end
+
+  defp max_channels_reached?(state) do
+    map_size(state.channels) >= state.max_channels
+  end
+
+  defp parse_channel_open_sender(rest) do
+    with {:ok, "session", rest} <- Wire.take_string(rest),
+         <<client_channel::32, _client_window::32, _client_max_packet::32, ""::binary>> <- rest do
+      {:ok, client_channel}
+    else
+      _ -> {:error, :bad_message}
     end
   end
 

@@ -129,11 +129,11 @@ defmodule Sftpd.SSH.CipherTest do
              Cipher.decrypt_packet_payload(state, 2_097_153, "")
   end
 
-  test "wraps sequence numbers at the SSH uint32 boundary" do
+  test "does not wrap sequence numbers at the SSH uint32 boundary" do
     state = state(:server_to_client) |> Cipher.set_sequence(0xFFFF_FFFF)
     {_encrypted, state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))
 
-    assert state.sequence == 0
+    assert state.sequence == 0x1_0000_0000
   end
 
   property "decrypts multiple encrypted packets with sequence increments" do

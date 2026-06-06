@@ -58,6 +58,8 @@ defmodule Sftpd do
   - `:auth` - Authentication config, either `{:passwords, list}` or `{Module, opts}` (required)
   - `:system_dir` - Directory containing SSH host keys (required)
   - `:max_sessions` - Maximum concurrent sessions (default: 10)
+  - `:max_channels` - Maximum SSH channels per pure-Elixir connection (default: 4)
+  - `:max_handles` - Maximum SFTP handles per pure-Elixir channel (default: 256)
   - `:transport` - `:otp` for Erlang SSH/SFTP, or `:elixir` for the
     experimental pure-Elixir SSH/SFTP transport (default: `:otp`)
   ## Telemetry
@@ -127,6 +129,8 @@ defmodule Sftpd do
     system_dir = Keyword.fetch!(opts, :system_dir)
     transport = Keyword.get(opts, :transport, :otp)
     max_sessions = Keyword.get(opts, :max_sessions, @default_max_sessions)
+    max_channels = Keyword.get(opts, :max_channels)
+    max_handles = Keyword.get(opts, :max_handles)
 
     metadata = %{
       port: port,
@@ -145,6 +149,8 @@ defmodule Sftpd do
           start_transport(transport,
             port: port,
             max_sessions: max_sessions,
+            max_channels: max_channels,
+            max_handles: max_handles,
             auth: auth,
             system_dir: system_dir,
             backend: backend,
