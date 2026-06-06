@@ -286,6 +286,26 @@ defmodule Sftpd.SFTP.SessionTest do
     assert {:data, 5, "safe"} = decode_response(response)
   end
 
+  test "rejects traversal-normalized root mutation targets", %{session: session} do
+    {response, session} = handle(open(1, "/file.txt", 0x0000_000A), session)
+    assert {:handle, 1, write_handle} = decode_response(response)
+
+    {_response, session} = handle(write(2, write_handle, 0, "safe"), session)
+    {_response, session} = handle(close(3, write_handle), session)
+
+    {response, session} = handle(path_packet(@ssh_fxp_rmdir, 4, "/dir/.."), session)
+    assert {:status, 4, 4} = decode_response(response)
+
+    {response, session} = handle(rename(5, "/file.txt", "/dir/.."), session)
+    assert {:status, 5, 4} = decode_response(response)
+
+    {response, session} = handle(open(6, "/file.txt", 0x0000_0001), session)
+    assert {:handle, 6, read_handle} = decode_response(response)
+
+    {response, _session} = handle(read(7, read_handle, 0, 16), session)
+    assert {:data, 7, "safe"} = decode_response(response)
+  end
+
   test "rejects new handles after the session handle limit is reached" do
     {:ok, backend_state} = Memory.init([])
 

@@ -309,7 +309,13 @@ defmodule Sftpd.SSH.Server do
            state <- install_rekey_s2c(state, negotiated, shared_secret, exchange_hash),
            {:ok, <<21>>, state} <- recv_encrypted_payload(socket, state) do
         {:ok, install_rekey_c2s(state, negotiated, shared_secret, exchange_hash)}
+      else
+        {:error, reason} -> {:error, reason}
+        _ -> {:error, :bad_message}
       end
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :bad_message}
     end
   end
 

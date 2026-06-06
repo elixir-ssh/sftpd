@@ -916,6 +916,67 @@ defmodule SftpdTest do
       :gen_tcp.close(socket)
     end
 
+    test "malformed encrypted rekey closes through SFTP cleanup" do
+      port = 20_000 + :rand.uniform(10_000)
+      system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+      assert {:ok, ref} =
+               Sftpd.start_server(
+                 port: port,
+                 transport: :elixir,
+                 backend: AbortRecordingBackend,
+                 backend_opts: [test_pid: self()],
+                 system_dir: system_dir,
+                 auth: {:passwords, [{"user", "password"}]}
+               )
+
+      on_exit(fn -> Sftpd.stop_server(ref) end)
+
+      %{
+        socket: socket,
+        c2s: c2s,
+        s2c: s2c,
+        client_channel: client_channel,
+        server_channel: server_channel
+      } = open_raw_authenticated_session(port)
+
+      {c2s, s2c, buffer} = start_raw_sftp(socket, c2s, s2c, client_channel, server_channel)
+
+      open_packet = [
+        <<3, 1::32>>,
+        Sftpd.SSH.Wire.string("/pending.txt"),
+        <<0x0000_000A::32>>,
+        <<0::32>>
+      ]
+
+      {packet, c2s} = encrypt_client_channel_data(c2s, server_channel, open_packet)
+      assert :ok = :gen_tcp.send(socket, packet)
+
+      assert {:ok, <<93, ^client_channel::32, _bytes::32>>, s2c, buffer} =
+               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+
+      assert {:ok, <<94, ^client_channel::32, rest::binary>>, _s2c, _buffer} =
+               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+
+      assert {:ok, <<_len::32, 102, 1::32, _rest::binary>>, ""} =
+               Sftpd.SSH.Wire.take_string(rest)
+
+      {client_kexinit, _parsed} = Sftpd.SSH.Algorithms.server_kexinit()
+      {packet, c2s} = encrypt_client_packet(c2s, client_kexinit)
+      assert :ok = :gen_tcp.send(socket, packet)
+
+      {packet, _c2s} =
+        encrypt_client_packet(c2s, [
+          <<80>>,
+          Sftpd.SSH.Wire.string("keepalive@openssh.com"),
+          Sftpd.SSH.Wire.boolean(true)
+        ])
+
+      assert :ok = :gen_tcp.send(socket, packet)
+      assert_socket_closed(socket)
+      assert_receive {:aborted_write, "/pending.txt"}
+    end
+
     test "disconnects on invalid encrypted packet lengths" do
       port = 20_000 + :rand.uniform(10_000)
       system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
@@ -1634,6 +1695,18 @@ defmodule SftpdTest do
       timeout ->
         Port.close(port)
         flunk("timed out waiting for sftp to exit; output: #{output}")
+    end
+  end
+
+  defp assert_socket_closed(socket, attempts \\ 10)
+
+  defp assert_socket_closed(_socket, 0), do: flunk("socket stayed open after malformed rekey")
+
+  defp assert_socket_closed(socket, attempts) do
+    case :gen_tcp.recv(socket, 0, 1_000) do
+      {:error, :closed} -> :ok
+      {:ok, _data} -> assert_socket_closed(socket, attempts - 1)
+      {:error, reason} -> flunk("expected socket close, got #{inspect(reason)}")
     end
   end
 end

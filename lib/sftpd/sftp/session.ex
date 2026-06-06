@@ -321,51 +321,67 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{type: :mkdir, id: id, path: path, attrs: attrs}, state) do
-    case Paths.path_exists?(path, state) do
-      false ->
-        case state.backend.make_dir(path, attrs, state.session, state.backend_state) do
-          :ok -> {Codec.status(id, :ok), state}
-          {:error, reason} -> {Codec.status(id, reason), state}
-        end
+    if root_path?(path) do
+      {Codec.status(id, :failure), state}
+    else
+      case Paths.path_exists?(path, state) do
+        false ->
+          case state.backend.make_dir(path, attrs, state.session, state.backend_state) do
+            :ok -> {Codec.status(id, :ok), state}
+            {:error, reason} -> {Codec.status(id, reason), state}
+          end
 
-      true ->
-        {Codec.status(id, :eexist), state}
+        true ->
+          {Codec.status(id, :eexist), state}
 
-      {:error, reason} ->
-        {Codec.status(id, reason), state}
+        {:error, reason} ->
+          {Codec.status(id, reason), state}
+      end
     end
   end
 
   defp handle_request(%{type: :rmdir, id: id, path: path}, state) do
-    case Paths.require_directory(path, state) do
-      :ok ->
-        case state.backend.del_dir(path, state.session, state.backend_state) do
-          :ok -> {Codec.status(id, :ok), state}
-          {:error, reason} -> {Codec.status(id, reason), state}
-        end
+    if root_path?(path) do
+      {Codec.status(id, :failure), state}
+    else
+      case Paths.require_directory(path, state) do
+        :ok ->
+          case state.backend.del_dir(path, state.session, state.backend_state) do
+            :ok -> {Codec.status(id, :ok), state}
+            {:error, reason} -> {Codec.status(id, reason), state}
+          end
 
-      {:error, reason} ->
-        {Codec.status(id, reason), state}
+        {:error, reason} ->
+          {Codec.status(id, reason), state}
+      end
     end
   end
 
   defp handle_request(%{type: :remove, id: id, path: path}, state) do
-    case Paths.require_regular(path, state) do
-      :ok ->
-        case state.backend.delete(path, state.session, state.backend_state) do
-          :ok -> {Codec.status(id, :ok), state}
-          {:error, reason} -> {Codec.status(id, reason), state}
-        end
+    if root_path?(path) do
+      {Codec.status(id, :failure), state}
+    else
+      case Paths.require_regular(path, state) do
+        :ok ->
+          case state.backend.delete(path, state.session, state.backend_state) do
+            :ok -> {Codec.status(id, :ok), state}
+            {:error, reason} -> {Codec.status(id, reason), state}
+          end
 
-      {:error, reason} ->
-        {Codec.status(id, reason), state}
+        {:error, reason} ->
+          {Codec.status(id, reason), state}
+      end
     end
   end
 
   defp handle_request(%{type: :rename, id: id, oldpath: oldpath, newpath: newpath}, state) do
-    case state.backend.rename(oldpath, newpath, state.session, state.backend_state) do
-      :ok -> {Codec.status(id, :ok), state}
-      {:error, reason} -> {Codec.status(id, reason), state}
+    if root_path?(oldpath) or root_path?(newpath) do
+      {Codec.status(id, :failure), state}
+    else
+      case state.backend.rename(oldpath, newpath, state.session, state.backend_state) do
+        :ok -> {Codec.status(id, :ok), state}
+        {:error, reason} -> {Codec.status(id, reason), state}
+      end
     end
   end
 
@@ -375,6 +391,8 @@ defmodule Sftpd.SFTP.Session do
   end
 
   defp handle_request(%{id: id}, state), do: {Codec.status(id, :unsupported), state}
+
+  defp root_path?(path), do: path == "/"
 
   defp normalize_request_paths(%{filename: path} = request) do
     %{request | filename: Paths.normalize_request_path(path)}
