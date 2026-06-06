@@ -103,6 +103,60 @@ defmodule Sftpd.IODeviceTest do
     end
   end
 
+  defmodule SeedReplayBackend do
+    @moduledoc false
+
+    @content "abcdef"
+
+    def file_attrs("/large-existing.bin", _session, _state),
+      do: {:ok, %{size: byte_size(@content)}}
+
+    def open_read("/large-existing.bin", _session, _state), do: {:ok, @content}
+
+    def read_at(content, offset, len, _state) do
+      if offset >= byte_size(content) do
+        :eof
+      else
+        {:ok, binary_part(content, offset, min(len, byte_size(content) - offset))}
+      end
+    end
+
+    def open_write(_path, _attrs, _session, state) do
+      open_index =
+        Agent.get_and_update(state, fn data ->
+          open_index = Map.get(data, :opens, 0) + 1
+          {open_index, Map.put(data, :opens, open_index)}
+        end)
+
+      {:ok, %{offset: 0, chunks: [], open_index: open_index}}
+    end
+
+    def write_at(%{offset: offset} = handle, offset, data, _state) do
+      data = IO.iodata_to_binary(data)
+
+      {:ok,
+       %{handle | offset: offset + byte_size(data), chunks: [{offset, data} | handle.chunks]}}
+    end
+
+    def write_at(_handle, _offset, _data, _state), do: {:error, :einval}
+
+    def finish_write(handle, state) do
+      content =
+        handle.chunks
+        |> Enum.reverse()
+        |> Enum.map(fn {_offset, data} -> data end)
+        |> IO.iodata_to_binary()
+
+      Agent.update(state, &Map.put(&1, :content, content))
+    end
+
+    def abort_write(_handle, state) do
+      Agent.update(state, fn data ->
+        Map.update(data, :aborts, 1, fn aborts -> aborts + 1 end)
+      end)
+    end
+  end
+
   setup do
     {:ok, state} = Memory.init([])
     %{backend_state: state}
@@ -143,7 +197,7 @@ defmodule Sftpd.IODeviceTest do
     assert {:ok, "iodata"} = IODevice.read(handle, 6)
   end
 
-  property "read/write seeding accepts iodata without flattening backend replay" do
+  property "read/write seeding accepts iodata without writing it to the backend" do
     check all(
             head <- binary(min_length: 1, max_length: 16),
             tail <- binary(max_length: 16)
@@ -160,7 +214,7 @@ defmodule Sftpd.IODeviceTest do
                  backend_state: %{test_pid: self(), seed_data: data}
                })
 
-      assert_receive {:seed_write, 0, ^data, ^bytes, false}
+      refute_receive {:seed_write, _offset, _data, _bytes, _binary?}
       assert {:ok, ^expected} = IODevice.read(handle, bytes)
       assert :ok = IODevice.close(handle)
     end
@@ -364,6 +418,29 @@ defmodule Sftpd.IODeviceTest do
     assert :ok = IODevice.close(handle)
 
     assert {:ok, "new"} = Memory.read_file(~c"/file.bin", backend_state)
+  end
+
+  test "read/write handles replay seeded content before earlier range updates" do
+    {:ok, state} = Agent.start_link(fn -> %{} end)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/large-existing.bin",
+               mode: :read_write,
+               backend: SeedReplayBackend,
+               backend_state: state,
+               session: %{}
+             })
+
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert :ok = IODevice.close(handle)
+
+    assert Agent.get(state, &Map.take(&1, [:aborts, :content, :opens])) == %{
+             aborts: 1,
+             content: "abXYef",
+             opens: 2
+           }
   end
 
   test "aborts replay writer when replay finalize fails" do

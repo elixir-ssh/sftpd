@@ -110,31 +110,45 @@ defmodule Sftpd.IODevice do
              backend,
              backend_state,
              reader_handle,
-             writer_handle,
              temp_fd,
              size
            ) do
-        {:ok, writer_handle} ->
+        :ok ->
           handle = new_handle()
           size = if truncate?, do: 0, else: size
+          write_strategy = if size > 0, do: :replay, else: :direct
 
-          Store.put(handle, %{
-            mode: :read_write,
-            path: path,
-            backend: backend,
-            backend_state: backend_state,
-            session: session,
-            position: 0,
-            size: size,
-            backend_handle: if(truncate?, do: nil, else: reader_handle),
-            writer_handle: writer_handle,
-            write_strategy: :direct,
-            stream_offset: size,
-            dirty?: truncate?,
-            append?: append?,
-            temp_path: temp_path,
-            temp_fd: temp_fd
-          })
+          if write_strategy == :replay do
+            _ = backend.abort_write(writer_handle, backend_state)
+          end
+
+          writer_state =
+            case write_strategy do
+              :direct -> %{writer_handle: writer_handle, stream_offset: size}
+              :replay -> %{}
+            end
+
+          Store.put(
+            handle,
+            Map.merge(
+              %{
+                mode: :read_write,
+                path: path,
+                backend: backend,
+                backend_state: backend_state,
+                session: session,
+                position: 0,
+                size: size,
+                backend_handle: if(truncate?, do: nil, else: reader_handle),
+                write_strategy: write_strategy,
+                dirty?: truncate?,
+                append?: append?,
+                temp_path: temp_path,
+                temp_fd: temp_fd
+              },
+              writer_state
+            )
+          )
 
           {:ok, handle}
 
@@ -203,29 +217,94 @@ defmodule Sftpd.IODevice do
          _backend,
          _backend_state,
          _reader,
-         writer,
          _fd,
          _size
        ),
-       do: {:ok, writer}
+       do: :ok
 
   defp maybe_seed_existing_read_write_content(
          false,
          backend,
          backend_state,
          reader_handle,
-         writer_handle,
          temp_fd,
          size
        ) do
-    seed_existing_read_write_content(
+    seed_existing_read_write_temp_content(
       backend,
       backend_state,
       reader_handle,
-      writer_handle,
       temp_fd,
       size
     )
+  end
+
+  defp seed_existing_read_write_temp_content(_backend, _backend_state, nil, _temp_fd, 0) do
+    :ok
+  end
+
+  defp seed_existing_read_write_temp_content(_backend, _backend_state, nil, _temp_fd, _size),
+    do: {:error, :eio}
+
+  defp seed_existing_read_write_temp_content(_backend, _backend_state, _reader, _fd, 0),
+    do: :ok
+
+  defp seed_existing_read_write_temp_content(
+         backend,
+         backend_state,
+         reader_handle,
+         temp_fd,
+         size
+       ) do
+    seed_existing_read_write_temp_content(
+      backend,
+      backend_state,
+      reader_handle,
+      temp_fd,
+      size,
+      0
+    )
+  end
+
+  defp seed_existing_read_write_temp_content(
+         _backend,
+         _backend_state,
+         _reader_handle,
+         _temp_fd,
+         size,
+         offset
+       )
+       when offset >= size do
+    :ok
+  end
+
+  defp seed_existing_read_write_temp_content(
+         backend,
+         backend_state,
+         reader_handle,
+         temp_fd,
+         size,
+         offset
+       ) do
+    len = min(@replay_chunk_size, size - offset)
+
+    with {:ok, data} <- backend.read_at(reader_handle, offset, len, backend_state),
+         bytes = IO.iodata_length(data),
+         true <- bytes > 0,
+         :ok <- persist_to_tempfile(temp_fd, offset, data) do
+      seed_existing_read_write_temp_content(
+        backend,
+        backend_state,
+        reader_handle,
+        temp_fd,
+        size,
+        offset + bytes
+      )
+    else
+      false -> {:error, :eof}
+      :eof -> {:error, :eof}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp seed_existing_read_write_content(
