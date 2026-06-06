@@ -163,8 +163,13 @@ defmodule Sftpd.SFTP.Session do
         {Codec.status(id, :ok), %{state | handles: handles}}
 
       {{:dir, backend_handle}, handles} ->
-        :ok = state.backend.close_dir(backend_handle, state.backend_state)
-        {Codec.status(id, :ok), %{state | handles: handles}}
+        response =
+          case state.backend.close_dir(backend_handle, state.backend_state) do
+            :ok -> Codec.status(id, :ok)
+            {:error, reason} -> Codec.status(id, reason)
+          end
+
+        {response, %{state | handles: handles}}
 
       {nil, _handles} ->
         {Codec.status(id, :failure), state}
@@ -298,12 +303,18 @@ defmodule Sftpd.SFTP.Session do
             {Codec.name(id, entries), %{state | handles: handles}}
 
           :eof ->
-            :ok = state.backend.close_dir(backend_handle, state.backend_state)
-            handles = Map.put(state.handles, handle, {:dir, :closed})
-            {Codec.status(id, :eof), %{state | handles: handles}}
+            case state.backend.close_dir(backend_handle, state.backend_state) do
+              :ok ->
+                handles = Map.put(state.handles, handle, {:dir, :closed})
+                {Codec.status(id, :eof), %{state | handles: handles}}
+
+              {:error, reason} ->
+                handles = Map.delete(state.handles, handle)
+                {Codec.status(id, reason), %{state | handles: handles}}
+            end
 
           {:error, reason} ->
-            :ok = state.backend.close_dir(backend_handle, state.backend_state)
+            _ = state.backend.close_dir(backend_handle, state.backend_state)
             handles = Map.delete(state.handles, handle)
             {Codec.status(id, reason), %{state | handles: handles}}
         end

@@ -92,7 +92,13 @@ defmodule Sftpd.SFTP.SessionTest do
     def file_attrs("/no-such-file-error", _session, _state), do: {:error, :no_such_file}
 
     def file_attrs(path, _session, _state)
-        when path in ["/open-dir-error", "/read-dir-error", "/close-on-cleanup"],
+        when path in [
+               "/open-dir-error",
+               "/read-dir-error",
+               "/close-on-cleanup",
+               "/close-dir-error",
+               "/readdir-close-error"
+             ],
         do: {:ok, %{type: :directory, size: 0, permissions: 0o040755}}
 
     def file_attrs(_path, _session, _state),
@@ -105,6 +111,11 @@ defmodule Sftpd.SFTP.SessionTest do
 
     def open_dir("/read-dir-error", _session, _state), do: {:ok, %{read_error?: true}}
     def open_dir("/close-on-cleanup", _session, test_pid), do: {:ok, %{test_pid: test_pid}}
+    def open_dir("/close-dir-error", _session, _state), do: {:ok, %{close_error?: true}}
+
+    def open_dir("/readdir-close-error", _session, _state),
+      do: {:ok, %{eof?: true, close_error?: true}}
+
     def open_dir(_path, _session, _state), do: {:ok, %{}}
 
     def read_dir(%{read_error?: true, test_pid: test_pid} = handle, _state) do
@@ -113,7 +124,10 @@ defmodule Sftpd.SFTP.SessionTest do
     end
 
     def read_dir(%{read_error?: true}, _state), do: {:error, :eacces}
+    def read_dir(%{eof?: true}, _state), do: :eof
     def read_dir(handle, _state), do: {:ok, [], handle}
+
+    def close_dir(%{close_error?: true}, _state), do: {:error, :eio}
 
     def close_dir(%{test_pid: test_pid} = handle, _state) do
       send(test_pid, {:closed_dir, handle})
@@ -451,6 +465,28 @@ defmodule Sftpd.SFTP.SessionTest do
     assert session.handles == %{}
     assert_receive {:aborted, "/mixed.txt"}
     assert_receive {:closed_dir, "/close-on-cleanup"}
+  end
+
+  test "directory close backend failures return status instead of crashing" do
+    session =
+      ErrorBackend |> Session.new(%{}, %{username: "test"}) |> Map.put(:initialized?, true)
+
+    {response, session} = handle(opendir(1, "/close-dir-error"), session)
+    assert {:handle, 1, dir_handle} = decode_response(response)
+
+    {response, _session} = handle(close(2, dir_handle), session)
+    assert {:status, 2, 4} = decode_response(response)
+  end
+
+  test "readdir eof close backend failures return status instead of crashing" do
+    session =
+      ErrorBackend |> Session.new(%{}, %{username: "test"}) |> Map.put(:initialized?, true)
+
+    {response, session} = handle(opendir(1, "/readdir-close-error"), session)
+    assert {:handle, 1, dir_handle} = decode_response(response)
+
+    {response, _session} = handle(readdir(2, dir_handle), session)
+    assert {:status, 2, 4} = decode_response(response)
   end
 
   test "directory handles return one listing and then eof", %{session: session} do
