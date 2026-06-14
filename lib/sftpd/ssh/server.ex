@@ -1013,8 +1013,32 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
+  defp recv_encrypted_payload(socket, %{buffer: buffer, c2s_cipher: cipher} = state)
+       when buffer in [nil, ""] do
+    case :gen_tcp.recv(socket, 4, @encrypted_idle_timeout) do
+      {:ok, <<packet_length::32>>}
+      when packet_length > 0 and packet_length <= @max_encrypted_packet_length ->
+        with {:ok, encrypted_body} <-
+               :gen_tcp.recv(socket, packet_length + @aead_tag_size, @encrypted_idle_timeout) do
+          case Cipher.decrypt_packet_payload(cipher, packet_length, encrypted_body) do
+            {:ok, payload, cipher} ->
+              {:ok, payload, %{state | buffer: "", c2s_cipher: cipher}}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+        end
+
+      {:ok, <<_packet_length::32>>} ->
+        {:error, :invalid_packet_length}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp recv_encrypted_payload(socket, %{buffer: buffer, c2s_cipher: cipher} = state) do
-    case recv_encrypted_packet(socket, buffer || "", @encrypted_idle_timeout) do
+    case recv_encrypted_packet(socket, buffer, @encrypted_idle_timeout) do
       {:ok, packet_length, encrypted_body, rest} ->
         case Cipher.decrypt_packet_payload(cipher, packet_length, encrypted_body) do
           {:ok, payload, cipher} ->
