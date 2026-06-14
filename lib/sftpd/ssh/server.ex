@@ -1061,19 +1061,27 @@ defmodule Sftpd.SSH.Server do
 
     case payloads do
       [] ->
-        case maybe_close_eof_channel(socket, state, channel) do
-          {:ok, state} -> {:ok, state, channel}
-          {:closed, state} -> {:closed, state}
-          {:error, reason, state} -> {:error, reason, state}
+        if channel.eof_received? do
+          case maybe_close_eof_channel(socket, state, channel) do
+            {:ok, state} -> {:ok, state, channel}
+            {:closed, state} -> {:closed, state}
+            {:error, reason, state} -> {:error, reason, state}
+          end
+        else
+          {:ok, state, channel}
         end
 
       payloads ->
         case send_encrypted_payloads(socket, state, payloads) do
           {:ok, state} ->
-            case maybe_close_eof_channel(socket, state, channel) do
-              {:ok, state} -> {:ok, state, channel}
-              {:closed, state} -> {:closed, state}
-              {:error, reason, state} -> {:error, reason, state}
+            if channel.eof_received? do
+              case maybe_close_eof_channel(socket, state, channel) do
+                {:ok, state} -> {:ok, state, channel}
+                {:closed, state} -> {:closed, state}
+                {:error, reason, state} -> {:error, reason, state}
+              end
+            else
+              {:ok, state, channel}
             end
 
           {:error, reason} ->

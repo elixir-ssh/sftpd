@@ -311,3 +311,31 @@ Interpretation:
 - This is a small call-count cleanup on the window-adjust path.
 - It removes an avoidable helper call from hundreds of thousands of download-side packets.
 - The fundamental download limit remains encrypted send count and OpenSSH channel packet/window cadence.
+
+## Follow-up: Skip EOF Close Checks During Normal Flushes
+
+After guarding `maybe_close_eof_channel/3` behind a direct `channel.eof_received?` branch in the response flush path, the full cprof matrix was:
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29441 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29442 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction download --port 29443 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction upload --port 29444 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29445 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction upload --port 29446 --limit 25
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 64 MiB | Download | 0.797 s | 80.3 MiB/s | `maybe_close_eof_channel/3` removed from hot rows |
+| 64 MiB | Upload | 0.163 s | 393.7 MiB/s | upload mostly unaffected |
+| 1 GiB | Download | 8.071 s | 126.9 MiB/s | close helper removed from hot rows |
+| 1 GiB | Upload | 2.152 s | 475.8 MiB/s | noisy strong run |
+| 10 GiB | Download | 77.244 s | 132.6 MiB/s | close helper removed from hot rows |
+| 10 GiB | Upload | 23.615 s | 433.6 MiB/s | neutral/noisy |
+
+Interpretation:
+- This removes a no-op EOF close check from every ordinary SFTP response flush.
+- It is a call-count cleanup; the remaining transfer limit is still packet count and crypto/socket work.
