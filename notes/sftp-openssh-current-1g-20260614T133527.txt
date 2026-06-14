@@ -1,0 +1,17 @@
+# OpenSSH SFTP current 1GiB spot benchmark
+date=2026-06-14T19:35:30Z
+branch=mjc/pure-elixir-ssh-sftp
+commit=6d602fb74a7e52f33dfee4e47f59aa4e238d1d1e
+worktree_status=?? notes/sftp-openssh-current-1g-20260614T133527.txt;
+--- size=1073741824 iter=1 port=29901 ---
+size=1073741824 chunk=262080 requests=64 port=29901 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.827s 560.3 MiB/s
+openssh sftp get: 2.201s 465.3 MiB/s
+--- size=1073741824 iter=2 port=29902 ---
+size=1073741824 chunk=262080 requests=64 port=29902 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.795s 570.4 MiB/s
+openssh sftp get: 2.15s 476.4 MiB/s
+--- size=1073741824 iter=3 port=29903 ---
+size=1073741824 chunk=262080 requests=64 port=29903 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.81s 565.7 MiB/s
+openssh sftp get: 2.12s 483.1 MiB/s
