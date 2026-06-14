@@ -63,6 +63,32 @@ defmodule Sftpd.SSH.SFTPBridge do
     |> Enum.reverse()
   end
 
+  @spec payloads_for_window(window_channel(), [response_part()]) ::
+          {[iodata()], [response_part()], non_neg_integer()}
+  def payloads_for_window(channel, responses) when is_list(responses) do
+    max_packet = max(1, channel.client_max_packet)
+    window = max(channel.client_window, 0)
+
+    {payloads, pending, bytes, parts, size} =
+      payloads_for_window(
+        responses,
+        window,
+        channel.client_channel,
+        max_packet,
+        [],
+        [],
+        0,
+        0
+      )
+
+    payloads =
+      payloads
+      |> flush_channel_data_payload(channel.client_channel, parts, size)
+      |> Enum.reverse()
+
+    {payloads, pending, bytes}
+  end
+
   defp split_responses_for_window([], _window, ready, bytes) do
     {Enum.reverse(ready), [], bytes}
   end
@@ -85,6 +111,111 @@ defmodule Sftpd.SSH.SFTPBridge do
         pending = [{:iodata, suffix, response_size - remaining_window} | rest]
 
         {Enum.reverse(ready), pending, window}
+    end
+  end
+
+  defp payloads_for_window(
+         [],
+         _window,
+         _client_channel,
+         _max_packet,
+         payloads,
+         parts,
+         size,
+         bytes
+       ) do
+    {payloads, [], bytes, parts, size}
+  end
+
+  defp payloads_for_window(
+         [response | rest] = responses,
+         window,
+         client_channel,
+         max_packet,
+         payloads,
+         parts,
+         size,
+         bytes
+       ) do
+    {response_size, response_data} = response_iodata(response)
+    remaining_window = window - bytes
+
+    cond do
+      remaining_window <= 0 ->
+        {payloads, responses, bytes, parts, size}
+
+      response_size <= remaining_window ->
+        {payloads, parts, size} =
+          add_channel_response_payload(
+            payloads,
+            parts,
+            size,
+            client_channel,
+            max_packet,
+            response_data,
+            response_size
+          )
+
+        payloads_for_window(
+          rest,
+          window,
+          client_channel,
+          max_packet,
+          payloads,
+          parts,
+          size,
+          bytes + response_size
+        )
+
+      true ->
+        {prefix, suffix} = split_iodata(response_data, remaining_window)
+
+        {payloads, parts, size} =
+          add_channel_response_payload(
+            payloads,
+            parts,
+            size,
+            client_channel,
+            max_packet,
+            prefix,
+            remaining_window
+          )
+
+        pending = [{:iodata, suffix, response_size - remaining_window} | rest]
+        {payloads, pending, window, parts, size}
+    end
+  end
+
+  defp add_channel_response_payload(
+         payloads,
+         parts,
+         size,
+         client_channel,
+         max_packet,
+         response_data,
+         response_size
+       ) do
+    cond do
+      response_size > max_packet ->
+        payloads = flush_channel_data_payload(payloads, client_channel, parts, size)
+
+        payloads =
+          Enum.reverse(
+            channel_data_payloads(client_channel, response_data, max_packet, response_size, []),
+            payloads
+          )
+
+        {payloads, [], 0}
+
+      size == 0 and response_size <= max_packet ->
+        {payloads, response_data, response_size}
+
+      size + response_size <= max_packet ->
+        {payloads, [parts, response_data], size + response_size}
+
+      true ->
+        payloads = flush_channel_data_payload(payloads, client_channel, parts, size)
+        {payloads, response_data, response_size}
     end
   end
 

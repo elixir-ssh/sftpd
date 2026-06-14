@@ -758,3 +758,28 @@ Top rows:
 Interpretation:
 - This batches a small number of already-arrived OpenSSH requests before emitting responses, reducing receive-loop and flush/send turns without changing SSH packet sizes or channel windows.
 - The low call count for the new probe means the extra nonblocking receive does not become a hot-path tax.
+
+## Fuse SFTP window split and payload encoding
+
+After replacing separate `split_responses_for_window/2` and `response_payloads/2` calls in the flush path with one fused bridge pass, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29878 --limit 40
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 66.497 s | 154.0 MiB/s | fused window split and channel-data payload build |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 718429 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 718429 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 718056 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 677156 |
+
+Interpretation:
+- This removes one response-list pass in the ordinary flush path while preserving split/payload equivalence with property coverage.
+- The remaining dominant costs are still receive/decrypt, the flush function itself, and encrypted send.

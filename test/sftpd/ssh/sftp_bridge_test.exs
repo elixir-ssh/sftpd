@@ -21,6 +21,27 @@ defmodule Sftpd.SSH.SFTPBridgeTest do
     end
   end
 
+  property "fused window payloads match split then payload encoding" do
+    check all(
+            first <- binary(min_length: 1, max_length: 64),
+            second <- binary(max_length: 64),
+            window <- integer(0..128),
+            max_packet <- integer(1..64)
+          ) do
+      channel = %{client_channel: 7, client_window: window, client_max_packet: max_packet}
+      responses = [SerializedPacket.iodata(first), SerializedPacket.iodata(second)]
+
+      {ready, pending, bytes} = SFTPBridge.split_responses_for_window(responses, window)
+      expected_payloads = SFTPBridge.response_payloads(channel, ready)
+
+      {payloads, fused_pending, fused_bytes} = SFTPBridge.payloads_for_window(channel, responses)
+
+      assert fused_bytes == bytes
+      assert packet_bytes(fused_pending) == packet_bytes(pending)
+      assert IO.iodata_to_binary(payloads) == IO.iodata_to_binary(expected_payloads)
+    end
+  end
+
   test "response payloads split data packets without flattening file data" do
     channel = %{client_channel: 7, client_max_packet: 12}
     header = "header..."

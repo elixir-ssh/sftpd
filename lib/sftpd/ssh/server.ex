@@ -1178,16 +1178,14 @@ defmodule Sftpd.SSH.Server do
     channel = %{channel | recv_window_adjust: channel.recv_window_adjust + bytes_read}
     adjust_sent? = channel.recv_window_adjust >= @window_adjust_batch_size
 
-    {ready, pending, response_bytes} =
-      SFTPBridge.split_responses_for_window(channel.pending_responses, channel.client_window)
+    {response_payloads, pending, response_bytes} =
+      SFTPBridge.payloads_for_window(channel, channel.pending_responses)
 
     channel = %{
       channel
       | pending_responses: pending,
         client_window: channel.client_window - response_bytes
     }
-
-    response_payloads = SFTPBridge.response_payloads(channel, ready)
 
     payloads =
       if adjust_sent? do
