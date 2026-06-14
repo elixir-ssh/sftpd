@@ -1047,7 +1047,12 @@ defmodule Sftpd.SSH.Server do
         channel
       end
 
-    state = cache_channel(state, channel)
+    state =
+      if state.active_channel_id in [nil, channel.server_channel] do
+        %{state | active_channel_id: channel.server_channel, active_channel: channel}
+      else
+        cache_channel(state, channel)
+      end
 
     case payloads do
       [] ->
