@@ -902,7 +902,7 @@ defmodule Sftpd.SFTP.SessionTest do
 
     {response, _session} = handle(read(2, read_handle, 0, 0xFFFF_FFFF), session)
     assert {:status, 2, 1} = decode_response(response)
-    assert_receive {:read_len, 1_048_576}
+    assert_receive {:read_len, 262_080}
   end
 
   test "mixed append opens missing files without crashing", %{session: session} do

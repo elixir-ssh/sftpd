@@ -3,7 +3,7 @@ defmodule Sftpd.SFTP.Session do
 
   alias Sftpd.SFTP.{Codec, Handles, Paths, SerializedPacket}
 
-  @max_read_len 1_048_576
+  @max_read_len 256 * 1024 - 64
   @seed_chunk_size 1_048_576
   @replay_chunk_size 1_048_576
   @default_max_handles 256
