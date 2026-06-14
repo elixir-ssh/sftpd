@@ -2,7 +2,6 @@ defmodule Sftpd.SSH.SFTPBridge do
   @moduledoc false
 
   alias Sftpd.SFTP.SerializedPacket
-  alias Sftpd.SSH.Wire
 
   @type payload_channel :: %{
           required(:client_channel) => non_neg_integer(),
@@ -146,8 +145,8 @@ defmodule Sftpd.SSH.SFTPBridge do
 
   defp flush_channel_data_payload(payloads, _client_channel, _parts, 0), do: payloads
 
-  defp flush_channel_data_payload(payloads, client_channel, parts, _size) do
-    [channel_data_payload(client_channel, parts) | payloads]
+  defp flush_channel_data_payload(payloads, client_channel, parts, size) do
+    [channel_data_payload(client_channel, parts, size) | payloads]
   end
 
   defp response_iodata(%SerializedPacket{kind: :iodata, iodata: data, size: size}) do
@@ -180,7 +179,7 @@ defmodule Sftpd.SSH.SFTPBridge do
   defp channel_data_payloads(client_channel, data, max_packet, acc) do
     bytes = min(byte_size(data), max_packet)
     {chunk, rest} = :erlang.split_binary(data, bytes)
-    payload = channel_data_payload(client_channel, chunk)
+    payload = channel_data_payload(client_channel, chunk, bytes)
     channel_data_payloads(client_channel, rest, max_packet, [payload | acc])
   end
 
@@ -190,12 +189,12 @@ defmodule Sftpd.SSH.SFTPBridge do
   defp channel_data_payloads(client_channel, data, max_packet, data_size, acc) do
     bytes = min(data_size, max_packet)
     {chunk, rest} = split_iodata(data, bytes)
-    payload = channel_data_payload(client_channel, chunk)
+    payload = channel_data_payload(client_channel, chunk, bytes)
     channel_data_payloads(client_channel, rest, max_packet, data_size - bytes, [payload | acc])
   end
 
-  defp channel_data_payload(client_channel, data) do
-    [<<94, client_channel::32>>, Wire.string(data)]
+  defp channel_data_payload(client_channel, data, size) do
+    [<<94, client_channel::32, size::32>>, data]
   end
 
   defp channel_data_pair_payloads(channel, header, data) do
@@ -218,7 +217,12 @@ defmodule Sftpd.SSH.SFTPBridge do
     first_data_size = min(byte_size(data), max_packet - byte_size(header))
     {first_data, rest} = :erlang.split_binary(data, first_data_size)
 
-    first_payload = channel_data_payload(client_channel, [header, first_data])
+    first_payload =
+      channel_data_payload(
+        client_channel,
+        [header, first_data],
+        byte_size(header) + first_data_size
+      )
 
     [first_payload | channel_data_payloads(client_channel, rest, max_packet, [])]
   end
@@ -226,7 +230,13 @@ defmodule Sftpd.SSH.SFTPBridge do
   defp channel_data_pair_payloads(client_channel, header, data, max_packet) do
     first_data_size = min(IO.iodata_length(data), max_packet - byte_size(header))
     {first_data, rest} = split_iodata(data, first_data_size)
-    first_payload = channel_data_payload(client_channel, [header, first_data])
+
+    first_payload =
+      channel_data_payload(
+        client_channel,
+        [header, first_data],
+        byte_size(header) + first_data_size
+      )
 
     [
       first_payload

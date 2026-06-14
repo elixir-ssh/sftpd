@@ -30,8 +30,8 @@ defmodule Sftpd.SSH.SFTPBridgeTest do
     payloads = SFTPBridge.response_payloads(channel, [response])
 
     assert [
-             [<<94, 7::32>>, [<<12::32>>, [^header, ["abc"]]]],
-             [<<94, 7::32>>, [<<3::32>>, [["def"]]]]
+             [<<94, 7::32, 12::32>>, [^header, ["abc"]]],
+             [<<94, 7::32, 3::32>>, [["def"]]]
            ] = payloads
   end
 

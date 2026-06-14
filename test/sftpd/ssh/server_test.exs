@@ -73,8 +73,8 @@ defmodule Sftpd.SSH.ServerTest do
     payloads = Server.__test_sftp_response_payloads__(channel, [response])
 
     assert [
-             [<<94, 7::32>>, [<<4::32>>, ["ab", ["cd"]]]],
-             [<<94, 7::32>>, [<<2::32>>, ["ef"]]]
+             [<<94, 7::32, 4::32>>, ["ab", ["cd"]]],
+             [<<94, 7::32, 2::32>>, ["ef"]]
            ] = payloads
 
     assert "abcdef" = joined_channel_data(payloads)
@@ -99,8 +99,8 @@ defmodule Sftpd.SSH.ServerTest do
     payloads = Server.__test_sftp_response_payloads__(channel, [response])
 
     assert [
-             [<<94, 7::32>>, [<<12::32>>, [^header, ["abc"]]]],
-             [<<94, 7::32>>, [<<3::32>>, [["def"]]]]
+             [<<94, 7::32, 12::32>>, [^header, ["abc"]]],
+             [<<94, 7::32, 3::32>>, [["def"]]]
            ] = payloads
 
     assert joined_channel_data(payloads) == header <> "abcdef"
@@ -115,8 +115,8 @@ defmodule Sftpd.SSH.ServerTest do
     payloads = Server.__test_sftp_response_payloads__(channel, [response])
 
     assert [
-             [<<94, 7::32>>, [<<4::32>>, "head"]],
-             [<<94, 7::32>>, [<<4::32>>, ["body"]]]
+             [<<94, 7::32, 4::32>>, "head"],
+             [<<94, 7::32, 4::32>>, ["body"]]
            ] = payloads
 
     assert joined_channel_data(payloads) == "headbody"

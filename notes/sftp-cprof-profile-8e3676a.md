@@ -117,3 +117,23 @@ Interpretation:
 - The map-update and map-fetch functions dropped out of the top rows for the profiled 64 MiB OpenSSH workload.
 - The remaining channel helper calls are state-slot updates, not full channel map rewrites.
 - Download is still dominated by response flushing and encrypted packet send count; upload is now mostly the receive/decode/drain loop.
+
+## Follow-up: Sized Channel Data Payloads
+
+After threading known fragment sizes through `SFTPBridge.response_payloads/2`, channel-data packet emission no longer calls `Wire.string/1` for every outgoing data fragment.
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29249 --limit 20
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29250 --limit 20
+```
+
+| Direction | Elapsed | Profiled Throughput | Notable call-count change |
+| --- | ---: | ---: | --- |
+| Download | 0.704 s | 90.8 MiB/s | `Wire.string/1` dropped below the top 20; `SerializedPacket.iodata/2` from window splitting is now visible at 9,671 calls |
+| Upload | 0.158 s | 405.4 MiB/s | unchanged hot shape: receive/decode/drain plus 324 response flushes |
+
+Interpretation:
+- This removes one avoidable per-fragment iodata length calculation in the send path.
+- It does not solve download packet count. The remaining work is in window splitting/flush behavior and the OpenSSH-advertised channel packet limit.
