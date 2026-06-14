@@ -651,3 +651,31 @@ Top rows:
 Interpretation:
 - This removes the active-channel cache helper from the ordinary single-channel flush path.
 - The remaining dominant per-packet helper is now `fetch_active_channel/2`.
+
+## Fast-path active channel data and window packets
+
+After adding active-channel clauses for channel-data and channel-window-adjust packets, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29870 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 67.248 s | 152.3 MiB/s | `fetch_active_channel/2` removed from hot rows |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 719767 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 719767 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 719767 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 719767 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 719305 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 678401 |
+| `Sftpd.SSH.Server.cache_channel/2` | 451 |
+
+Interpretation:
+- This removes active-channel lookup from ordinary SFTP data and window-adjust packets while preserving fallback lookup for non-active or unknown recipients.
+- The remaining top rows are the core encrypted receive loop, SFTP flush, and encrypted send.

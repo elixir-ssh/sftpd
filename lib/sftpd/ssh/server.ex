@@ -595,6 +595,36 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
+  defp handle_encrypted_payload(
+         <<94, recipient::32, rest::binary>>,
+         %{
+           active_channel_id: active_channel_id,
+           active_channel: %{sftp?: true} = channel
+         } = state,
+         socket
+       )
+       when active_channel_id == recipient do
+    Logger.debug("pure ssh received channel data")
+
+    with <<data_len::32, data::binary-size(data_len)>> <- rest do
+      {responses, channel} = handle_sftp_data(data, channel)
+
+      drain_result =
+        drain_buffered_sftp_data(
+          socket,
+          recipient,
+          state,
+          channel,
+          Enum.reverse(responses),
+          byte_size(data)
+        )
+
+      finish_channel_data_drain(socket, drain_result)
+    else
+      _ -> {:continue, state}
+    end
+  end
+
   defp handle_encrypted_payload(<<94, recipient::32, rest::binary>>, state, socket) do
     Logger.debug("pure ssh received channel data")
 
@@ -615,6 +645,26 @@ defmodule Sftpd.SSH.Server do
       finish_channel_data_drain(socket, drain_result)
     else
       _ -> {:continue, state}
+    end
+  end
+
+  defp handle_encrypted_payload(
+         <<93, recipient::32, bytes::32>>,
+         %{active_channel_id: active_channel_id, active_channel: channel} = state,
+         socket
+       )
+       when active_channel_id == recipient and not is_nil(channel) do
+    channel = %{channel | client_window: channel.client_window + bytes}
+
+    if channel.pending_responses == [] do
+      state = cache_channel(state, channel)
+      {:continue, state}
+    else
+      case flush_sftp_responses_with_channel(socket, state, channel, 0) do
+        {:ok, state, _channel} -> {:continue, state}
+        {:closed, state} -> {:continue, state}
+        {:error, _reason, state} -> {:stop, state}
+      end
     end
   end
 
