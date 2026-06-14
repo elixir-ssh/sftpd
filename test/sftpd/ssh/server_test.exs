@@ -227,6 +227,23 @@ defmodule Sftpd.SSH.ServerTest do
     assert {:ok, %{recv_window_adjust: 133}} = Server.__test_fetch_active_channel__(state, 3)
   end
 
+  test "open buffered drain caches deferred client window updates when no flush is needed" do
+    channel = %{
+      server_channel: 3,
+      client_channel: 7,
+      pending_responses: [],
+      recv_window_adjust: 0,
+      client_window: 12
+    }
+
+    state = %{channels: %{}, active_channel_id: nil, active_channel: nil}
+
+    assert {:continue, state} =
+             Server.__test_finish_channel_data_drain__({:open, [], state, channel, 0})
+
+    assert {:ok, %{client_window: 12}} = Server.__test_fetch_active_channel__(state, 3)
+  end
+
   test "appends pending responses without changing empty appends" do
     first = SerializedPacket.iodata("a")
     second = SerializedPacket.iodata("b")
@@ -303,7 +320,7 @@ defmodule Sftpd.SSH.ServerTest do
                drain_available_until_adjusts(server, state, channel)
 
       assert %{client_window: 12, pending_responses: ^pending} = channel
-      assert %{active_channel_id: 3, active_channel: ^channel} = state
+      assert %{active_channel_id: nil, active_channel: nil} = state
     after
       :gen_tcp.close(client)
       :gen_tcp.close(server)

@@ -1,0 +1,123 @@
+commit=1f3744c-dirty
+message=Drain active window adjusts before SFTP flushes
+started_utc=20260614T205515Z
+change=defer cache_channel during buffered WINDOW_ADJUST drain
+profile_shape=OpenSSH download profiles, pure Elixir transport, aes256-gcm, 1GiB/10GiB
+
+BEGIN profile size_label=1GiB size=1073741824 port=30950 utc=2026-06-14T20:55:15Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+Compiling 1 file (.ex)
+direction=download
+size_bytes=1073741824
+elapsed_seconds=6.113
+throughput_mib_s=167.5
+chunk=262080
+requests=64
+cipher=aes256-gcm@openssh.com
+
+profile=beam_call_count
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.drain_buffered_sftp_data/6` | 101985 |
+| `Sftpd.SSH.Server.recv_buffered_encrypted_payload/1` | 101268 |
+| `Sftpd.SSH.Server.recv_buffered_or_available_encrypted_payload/2` | 99158 |
+| `Sftpd.SSH.Server.drain_more_buffered_sftp_data/6` | 99158 |
+| `Sftpd.SSH.Server.split_complete_sftp_packets/2` | 8153 |
+| `Sftpd.SSH.Server.prepend_reversed/2` | 8013 |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 4613 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 4613 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 4240 |
+| `Sftpd.SSH.Server.finish_open_channel_data_drain/5` | 4239 |
+| `Sftpd.SSH.Server.finish_channel_data_drain/2` | 4239 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 4183 |
+| `Sftpd.SSH.Server.-handle_sftp_data/2-fun-0-/2` | 4105 |
+| `SftpdProfile.Backend.read_at/4` | 4099 |
+| `SftpdProfile.Backend.zeroes/1` | 4098 |
+| `Sftpd.SSH.Server.split_sftp_packets/2` | 4048 |
+| `Sftpd.SSH.Server.handle_sftp_data/2` | 4048 |
+| `Sftpd.SSH.Server.recv_available_encrypted_payload/2` | 3522 |
+| `Sftpd.SSH.Server.append_pending_responses/2` | 3010 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 2545 |
+| `Sftpd.SSH.Server.encrypted_packet_missing_bytes/1` | 2545 |
+| `Sftpd.SSH.Server.cache_channel/2` | 362 |
+| `Sftpd.SSH.Wire.take_string/1` | 70 |
+| `Sftpd.SSH.Wire.string/1` | 37 |
+| `Sftpd.SSH.Wire.take_name_list/1` | 30 |
+| `Sftpd.SSH.Server.recv_identification/2` | 22 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 12 |
+| `Sftpd.SSH.Wire.name_list/1` | 11 |
+| `Sftpd.Backend.-canonical_segments/1-fun-0-/2` | 9 |
+| `Sftpd.SSH.Wire.take_boolean/1` | 9 |
+| `SftpdProfile.Backend.normalize_path/1` | 8 |
+| `Sftpd.SSH.Server.send_encrypted_payload/3` | 7 |
+| `Sftpd.Backend.unix_time/1` | 6 |
+| `Sftpd.SSH.Server.recv_clear_packet/2` | 6 |
+| `Sftpd.Backend.normalize_path/1` | 5 |
+| `Sftpd.Backend.canonical_segments/1` | 5 |
+| `Sftpd.SSH.Wire.strip_leading_zeroes/1` | 5 |
+| `Sftpd.SSH.Wire.mpint/1` | 5 |
+| `Sftpd.Backend.file_info/3` | 3 |
+| `Sftpd.Backend.attrs_from_file_info/1` | 3 |
+END profile size_label=1GiB utc=2026-06-14T20:55:24Z
+
+BEGIN profile size_label=10GiB size=10737418240 port=30951 utc=2026-06-14T20:55:26Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+direction=download
+size_bytes=10737418240
+elapsed_seconds=60.704
+throughput_mib_s=168.7
+chunk=262080
+requests=64
+cipher=aes256-gcm@openssh.com
+
+profile=beam_call_count
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.drain_buffered_sftp_data/6` | 1019200 |
+| `Sftpd.SSH.Server.recv_buffered_encrypted_payload/1` | 1005510 |
+| `Sftpd.SSH.Server.recv_buffered_or_available_encrypted_payload/2` | 990731 |
+| `Sftpd.SSH.Server.drain_more_buffered_sftp_data/6` | 990731 |
+| `Sftpd.SSH.Server.split_complete_sftp_packets/2` | 81894 |
+| `Sftpd.SSH.Server.prepend_reversed/2` | 81282 |
+| `Sftpd.SSH.Server.-handle_sftp_data/2-fun-0-/2` | 40978 |
+| `SftpdProfile.Backend.read_at/4` | 40972 |
+| `SftpdProfile.Backend.zeroes/1` | 40971 |
+| `Sftpd.SSH.Server.split_sftp_packets/2` | 40916 |
+| `Sftpd.SSH.Server.handle_sftp_data/2` | 40916 |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 36595 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 36595 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 36228 |
+| `Sftpd.SSH.Server.finish_open_channel_data_drain/5` | 36227 |
+| `Sftpd.SSH.Server.finish_channel_data_drain/2` | 36227 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 35935 |
+| `Sftpd.SSH.Server.append_pending_responses/2` | 30256 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 26084 |
+| `Sftpd.SSH.Server.encrypted_packet_missing_bytes/1` | 26084 |
+| `Sftpd.SSH.Server.recv_available_encrypted_payload/2` | 22537 |
+| `Sftpd.SSH.Server.cache_channel/2` | 356 |
+| `Sftpd.SSH.Wire.take_string/1` | 70 |
+| `Sftpd.SSH.Wire.string/1` | 37 |
+| `Sftpd.SSH.Wire.take_name_list/1` | 30 |
+| `Sftpd.SSH.Server.recv_identification/2` | 22 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 12 |
+| `Sftpd.SSH.Wire.name_list/1` | 11 |
+| `Sftpd.Backend.-canonical_segments/1-fun-0-/2` | 9 |
+| `Sftpd.SSH.Wire.take_boolean/1` | 9 |
+| `SftpdProfile.Backend.normalize_path/1` | 8 |
+| `Sftpd.SSH.Server.send_encrypted_payload/3` | 7 |
+| `Sftpd.Backend.unix_time/1` | 6 |
+| `Sftpd.SSH.Server.recv_clear_packet/2` | 6 |
+| `Sftpd.Backend.normalize_path/1` | 5 |
+| `Sftpd.Backend.canonical_segments/1` | 5 |
+| `Sftpd.SSH.Wire.strip_leading_zeroes/1` | 5 |
+| `Sftpd.SSH.Wire.mpint/1` | 5 |
+| `Sftpd.Backend.file_info/3` | 3 |
+| `Sftpd.Backend.attrs_from_file_info/1` | 3 |
+END profile size_label=10GiB utc=2026-06-14T20:56:29Z
+
+finished_utc=20260614T205631Z
+RAW_PROFILE=notes/sftp-cprof-profile-defer-drain-cache-20260614T205515Z.txt

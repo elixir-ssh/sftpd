@@ -810,7 +810,6 @@ defmodule Sftpd.SSH.Server do
 
       {:ok, <<93, ^recipient::32, bytes::32>>, state} ->
         channel = %{channel | client_window: channel.client_window + bytes}
-        state = cache_channel(state, channel)
         drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
 
       {:ok, payload, state} ->
