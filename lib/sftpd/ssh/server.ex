@@ -855,7 +855,13 @@ defmodule Sftpd.SSH.Server do
 
     if responses == [] and channel.pending_responses == [] and
          channel.recv_window_adjust < @window_adjust_batch_size do
-      state = cache_channel(state, channel)
+      state =
+        if state.active_channel_id in [nil, channel.server_channel] do
+          %{state | active_channel_id: channel.server_channel, active_channel: channel}
+        else
+          cache_channel(state, channel)
+        end
+
       {:continue, state}
     else
       case flush_sftp_responses_with_channel(socket, state, channel, 0) do
