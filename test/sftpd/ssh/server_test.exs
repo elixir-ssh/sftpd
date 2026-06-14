@@ -4,7 +4,7 @@ defmodule Sftpd.SSH.ServerTest do
   alias Sftpd.Backends.Memory
   alias Sftpd.SFTP
   alias Sftpd.SFTP.SerializedPacket
-  alias Sftpd.SSH.Server
+  alias Sftpd.SSH.{Cipher, Packet, Server}
   alias Sftpd.SSH.Wire
 
   defmodule AbortBackend do
@@ -243,6 +243,30 @@ defmodule Sftpd.SSH.ServerTest do
              |> Server.__test_append_pending_responses__([second])
   end
 
+  test "nonblocking encrypted drain preserves empty buffers and consumes available packets" do
+    {client, server} = connected_sockets()
+
+    try do
+      cipher = cipher_state()
+      state = %{buffer: "", c2s_cipher: cipher}
+
+      assert {:none, ^state} =
+               Server.__test_recv_buffered_or_available_encrypted_payload__(server, state)
+
+      payload = <<94, 3::32, 1::32, 0>>
+      {encrypted, _cipher} = Cipher.encrypt_packet(cipher, Packet.encode_aead_packet(payload))
+      :ok = :gen_tcp.send(client, encrypted)
+
+      assert {:ok, ^payload, %{buffer: "", c2s_cipher: next_cipher}} =
+               recv_available_until_packet(server, state)
+
+      assert next_cipher.sequence == 1
+    after
+      :gen_tcp.close(client)
+      :gen_tcp.close(server)
+    end
+  end
+
   defp joined_channel_data(payloads) do
     payloads
     |> Enum.map(fn payload ->
@@ -258,5 +282,48 @@ defmodule Sftpd.SSH.ServerTest do
 
   defp response_iodata({:iodata, iodata, size}) do
     {size, iodata}
+  end
+
+  defp connected_sockets do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, packet: :raw, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen)
+    parent = self()
+
+    _acceptor =
+      spawn_link(fn ->
+        {:ok, socket} = :gen_tcp.accept(listen)
+        :ok = :gen_tcp.controlling_process(socket, parent)
+        send(parent, {:accepted, socket})
+      end)
+
+    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, packet: :raw, active: false])
+    assert_receive {:accepted, server}, 1_000
+    :gen_tcp.close(listen)
+
+    {client, server}
+  end
+
+  defp recv_available_until_packet(socket, state, attempts \\ 10)
+  defp recv_available_until_packet(_socket, _state, 0), do: flunk("encrypted packet not available")
+
+  defp recv_available_until_packet(socket, state, attempts) do
+    case Server.__test_recv_buffered_or_available_encrypted_payload__(socket, state) do
+      {:none, ^state} ->
+        Process.sleep(10)
+        recv_available_until_packet(socket, state, attempts - 1)
+
+      result ->
+        result
+    end
+  end
+
+  defp cipher_state do
+    Cipher.new(
+      "aes256-gcm@openssh.com",
+      :client_to_server,
+      :binary.copy(<<1>>, 32),
+      :binary.copy(<<2>>, 32),
+      :binary.copy(<<3>>, 32)
+    )
   end
 end

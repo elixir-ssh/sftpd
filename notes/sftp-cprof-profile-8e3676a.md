@@ -731,3 +731,30 @@ Top rows:
 Interpretation:
 - This avoids the encrypted packet wrapper call for ordinary packets that arrive without buffered tail data.
 - Remaining dominant work is now the top-level encrypted receive, loop, response flush, and encrypted send.
+
+## Drain immediately available encrypted packets before flushing
+
+After adding a zero-timeout TCP drain probe before flushing SFTP responses, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29873 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 66.668 s | 153.6 MiB/s | loop/flush/send counts dropped by about 18K packets |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 713596 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 713596 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 713220 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 672321 |
+| `Sftpd.SSH.Server.recv_buffered_or_available_encrypted_payload/2` | 116 |
+| `Sftpd.SSH.Server.recv_available_encrypted_payload/2` | 12 |
+
+Interpretation:
+- This batches a small number of already-arrived OpenSSH requests before emitting responses, reducing receive-loop and flush/send turns without changing SSH packet sizes or channel windows.
+- The low call count for the new probe means the extra nonblocking receive does not become a hot-path tax.

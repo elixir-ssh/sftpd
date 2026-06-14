@@ -793,7 +793,7 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
-    case recv_buffered_encrypted_payload(state) do
+    case recv_buffered_or_available_encrypted_payload(socket, state) do
       {:ok, <<94, ^recipient::32, rest::binary>>, state} ->
         with <<data_len::32, data::binary-size(data_len)>> <- rest do
           {new_responses, channel} = handle_sftp_data(data, channel)
@@ -845,7 +845,7 @@ defmodule Sftpd.SSH.Server do
             {:error, state}
         end
 
-      :none ->
+      {:none, state} ->
         {:open, responses, state, channel, bytes_read}
 
       {:error, _reason} ->
@@ -1081,6 +1081,34 @@ defmodule Sftpd.SSH.Server do
 
   defp recv_buffered_encrypted_payload(_state), do: :none
 
+  defp recv_buffered_or_available_encrypted_payload(socket, state) do
+    case recv_buffered_encrypted_payload(state) do
+      :none -> recv_available_encrypted_payload(socket, state)
+      result -> result
+    end
+  end
+
+  defp recv_available_encrypted_payload(socket, %{buffer: buffer} = state)
+       when buffer in [nil, ""] do
+    case :gen_tcp.recv(socket, 0, 0) do
+      {:ok, data} ->
+        state = %{state | buffer: data}
+
+        case recv_buffered_encrypted_payload(state) do
+          :none -> {:none, state}
+          result -> result
+        end
+
+      {:error, :timeout} ->
+        {:none, state}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp recv_available_encrypted_payload(_socket, state), do: {:none, state}
+
   defp recv_encrypted_packet(socket, "", timeout) do
     case :gen_tcp.recv(socket, 4, timeout) do
       {:ok, <<packet_length::32>>}
@@ -1304,6 +1332,11 @@ defmodule Sftpd.SSH.Server do
     @doc false
     def __test_append_pending_responses__(channel, responses) do
       append_pending_responses(channel, responses)
+    end
+
+    @doc false
+    def __test_recv_buffered_or_available_encrypted_payload__(socket, state) do
+      recv_buffered_or_available_encrypted_payload(socket, state)
     end
 
     @doc false
