@@ -224,3 +224,32 @@ Interpretation:
 - This is a call-count cleanup, not a fundamental packet-count fix.
 - It removes `Wire.take_string/1` from the hot channel-data path.
 - The remaining large-transfer bottleneck is still one encrypted-loop pass per OpenSSH channel-data/window packet.
+
+## Follow-up: Skip Empty Response Append
+
+After splitting the empty-response drain path, fragmented upload packets no longer call `append_pending_responses/2` unless an SFTP request completed and produced a response.
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29351 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction upload --port 29352 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction upload --port 29353 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29354 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction download --port 29355 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29356 --limit 25
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 64 MiB | Upload | 0.254 s | 252.4 MiB/s | `append_pending_responses/2`: 262 calls |
+| 1 GiB | Upload | 3.071 s | 333.4 MiB/s | `append_pending_responses/2`: 4,103 calls |
+| 10 GiB | Upload | 21.055 s | 486.3 MiB/s | best large-upload cprof result in this series |
+| 64 MiB | Download | 0.706 s | 90.7 MiB/s | neutral/noisy |
+| 1 GiB | Download | 7.328 s | 139.7 MiB/s | no regression |
+| 10 GiB | Download | 69.694 s | 146.9 MiB/s | best large-download cprof result in this series |
+
+Interpretation:
+- This removes one no-op function from every incomplete upload fragment.
+- `append_pending_responses/2` now scales with completed SFTP requests rather than SSH channel-data fragments on upload.
+- The remaining upload cost is the unavoidable receive/decrypt/dispatch loop per OpenSSH channel packet plus partial-packet bookkeeping.

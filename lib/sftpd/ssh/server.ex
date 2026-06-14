@@ -750,10 +750,20 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
+  defp finish_channel_data_drain(socket, {:open, [], state, channel, bytes_read}) do
+    finish_open_channel_data_drain(socket, [], state, channel, bytes_read)
+  end
+
   defp finish_channel_data_drain(socket, {:open, responses_acc, state, channel, bytes_read}) do
     responses = Enum.reverse(responses_acc)
     channel = append_pending_responses(channel, responses)
+    finish_open_channel_data_drain(socket, responses, state, channel, bytes_read)
+  end
 
+  defp finish_channel_data_drain(_socket, {:closed, state}), do: {:continue, state}
+  defp finish_channel_data_drain(_socket, {:error, state}), do: {:stop, state}
+
+  defp finish_open_channel_data_drain(socket, responses, state, channel, bytes_read) do
     channel = %{channel | recv_window_adjust: channel.recv_window_adjust + bytes_read}
 
     state = cache_channel(state, channel)
@@ -775,9 +785,6 @@ defmodule Sftpd.SSH.Server do
       end
     end
   end
-
-  defp finish_channel_data_drain(_socket, {:closed, state}), do: {:continue, state}
-  defp finish_channel_data_drain(_socket, {:error, state}), do: {:stop, state}
 
   defp prepend_reversed([], acc), do: acc
   defp prepend_reversed([response | rest], acc), do: prepend_reversed(rest, [response | acc])
