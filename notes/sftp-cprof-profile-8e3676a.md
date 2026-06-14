@@ -679,3 +679,30 @@ Top rows:
 Interpretation:
 - This removes active-channel lookup from ordinary SFTP data and window-adjust packets while preserving fallback lookup for non-active or unknown recipients.
 - The remaining top rows are the core encrypted receive loop, SFTP flush, and encrypted send.
+
+## Dispatch active channel packets in encrypted loop
+
+After handling active-channel data and window-adjust packets directly in `encrypted_loop/2`, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29871 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 67.089 s | 152.6 MiB/s | `handle_encrypted_payload/3` dropped from about 720K calls to 12 |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 727806 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 727806 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 727806 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 727381 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 686482 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 12 |
+
+Interpretation:
+- This bypasses generic SSH message dispatch for the two dominant OpenSSH SFTP packet types while preserving the generic fallback for setup, close, rekey, and non-active recipients.
+- The remaining dominant calls are receive/decrypt, flush, and encrypted send.

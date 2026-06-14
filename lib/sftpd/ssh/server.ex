@@ -411,6 +411,60 @@ defmodule Sftpd.SSH.Server do
 
   defp encrypted_loop(state, socket) do
     case recv_encrypted_payload(socket, state) do
+      {:ok, <<94, recipient::32, rest::binary>>,
+       %{
+         active_channel_id: active_channel_id,
+         active_channel: %{sftp?: true} = channel
+       } = state}
+      when active_channel_id == recipient ->
+        Logger.debug("pure ssh received channel data")
+
+        result =
+          with <<data_len::32, data::binary-size(data_len)>> <- rest do
+            {responses, channel} = handle_sftp_data(data, channel)
+
+            drain_result =
+              drain_buffered_sftp_data(
+                socket,
+                recipient,
+                state,
+                channel,
+                Enum.reverse(responses),
+                byte_size(data)
+              )
+
+            finish_channel_data_drain(socket, drain_result)
+          else
+            _ -> {:continue, state}
+          end
+
+        case result do
+          {:continue, state} -> encrypted_loop(state, socket)
+          {:stop, state} -> cleanup_open_handles(state)
+        end
+
+      {:ok, <<93, recipient::32, bytes::32>>,
+       %{active_channel_id: active_channel_id, active_channel: channel} = state}
+      when active_channel_id == recipient and not is_nil(channel) ->
+        channel = %{channel | client_window: channel.client_window + bytes}
+
+        result =
+          if channel.pending_responses == [] do
+            state = cache_channel(state, channel)
+            {:continue, state}
+          else
+            case flush_sftp_responses_with_channel(socket, state, channel, 0) do
+              {:ok, state, _channel} -> {:continue, state}
+              {:closed, state} -> {:continue, state}
+              {:error, _reason, state} -> {:stop, state}
+            end
+          end
+
+        case result do
+          {:continue, state} -> encrypted_loop(state, socket)
+          {:stop, state} -> cleanup_open_handles(state)
+        end
+
       {:ok, payload, state} ->
         case handle_encrypted_payload(payload, state, socket) do
           {:continue, state} -> encrypted_loop(state, socket)
