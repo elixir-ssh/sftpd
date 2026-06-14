@@ -1031,7 +1031,14 @@ defmodule Sftpd.SSH.Server do
         client_window: channel.client_window - response_bytes
     }
 
-    payloads = sftp_flush_payloads(channel, ready, adjust_sent?)
+    response_payloads = SFTPBridge.response_payloads(channel, ready)
+
+    payloads =
+      if adjust_sent? do
+        [<<93, channel.client_channel::32, channel.recv_window_adjust::32>> | response_payloads]
+      else
+        response_payloads
+      end
 
     channel =
       if adjust_sent? do
@@ -1095,16 +1102,6 @@ defmodule Sftpd.SSH.Server do
 
   defp maybe_close_eof_channel(_socket, state, _channel), do: {:ok, state}
 
-  defp sftp_flush_payloads(channel, ready, adjust_sent?) do
-    response_payloads = SFTPBridge.response_payloads(channel, ready)
-
-    if adjust_sent? do
-      [<<93, channel.client_channel::32, channel.recv_window_adjust::32>> | response_payloads]
-    else
-      response_payloads
-    end
-  end
-
   defp append_pending_responses(channel, []), do: channel
 
   defp append_pending_responses(%{pending_responses: []} = channel, responses) do
@@ -1154,7 +1151,13 @@ defmodule Sftpd.SSH.Server do
 
     @doc false
     def __test_sftp_flush_payloads__(channel, ready, adjust_sent?) do
-      sftp_flush_payloads(channel, ready, adjust_sent?)
+      response_payloads = SFTPBridge.response_payloads(channel, ready)
+
+      if adjust_sent? do
+        [<<93, channel.client_channel::32, channel.recv_window_adjust::32>> | response_payloads]
+      else
+        response_payloads
+      end
     end
 
     @doc false

@@ -593,3 +593,32 @@ Top rows:
 Interpretation:
 - This removes a pure return-shape wrapper from every ordinary SFTP flush.
 - Remaining cost is the packet receive/dispatch loop and the real flush implementation.
+
+## Inline SFTP flush payload assembly
+
+After inlining the `sftp_flush_payloads/3` helper into `flush_sftp_responses_with_channel/4`, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29868 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 66.853 s | 153.2 MiB/s | `sftp_flush_payloads/3` removed from hot rows |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 723552 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 723552 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 723552 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 723552 |
+| `Sftpd.SSH.Server.fetch_active_channel/2` | 723542 |
+| `Sftpd.SSH.Server.cache_channel/2` | 723541 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 723099 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 682199 |
+
+Interpretation:
+- This removes one more helper call from every ordinary SFTP flush while preserving the window-adjust-before-data payload order in tests.
+- Remaining top rows are now the core receive/dispatch loop, channel cache access, the flush implementation, and encrypted send.
