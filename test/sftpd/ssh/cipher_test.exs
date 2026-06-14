@@ -156,6 +156,36 @@ defmodule Sftpd.SSH.CipherTest do
     end
   end
 
+  property "batched payload encryption matches sequential packet encryption" do
+    check all(payloads <- list_of(binary(max_length: 128), max_length: 8)) do
+      state = state(:server_to_client)
+      block_size = Cipher.block_size(state)
+
+      {_expected, expected_state} =
+        Enum.map_reduce(payloads, state, fn payload, state ->
+          Cipher.encrypt_packet(state, Packet.encode_aead_packet(payload, block_size))
+        end)
+
+      {actual, actual_state} = Cipher.encrypt_payloads(state, payloads, block_size)
+
+      assert actual_state.sequence == expected_state.sequence
+
+      encrypted = IO.iodata_to_binary(actual)
+
+      {rest, _decrypt_state} =
+        Enum.reduce(payloads, {encrypted, state(:server_to_client)}, fn payload,
+                                                                        {encrypted, decrypt_state} ->
+          {:ok, clear, rest, decrypt_state} = Cipher.decrypt_packet(decrypt_state, encrypted)
+
+          assert {:ok, ^payload, ""} = Packet.decode_clear(clear)
+
+          {rest, decrypt_state}
+        end)
+
+      assert rest == ""
+    end
+  end
+
   defp state(direction) do
     Cipher.new(
       @algorithm,

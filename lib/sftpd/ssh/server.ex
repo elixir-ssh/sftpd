@@ -1005,16 +1005,9 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp send_encrypted_payloads(socket, state, payloads) do
-    {encrypted, state} =
-      Enum.map_reduce(payloads, state, fn payload, %{s2c_cipher: cipher} = state ->
-        {encrypted, cipher} =
-          Cipher.encrypt_packet(
-            cipher,
-            Packet.encode_aead_packet(payload, Cipher.block_size(cipher))
-          )
-
-        {encrypted, %{state | s2c_cipher: cipher}}
-      end)
+    %{s2c_cipher: cipher} = state
+    {encrypted, cipher} = Cipher.encrypt_payloads(cipher, payloads, Cipher.block_size(cipher))
+    state = %{state | s2c_cipher: cipher}
 
     case :gen_tcp.send(socket, encrypted) do
       :ok -> {:ok, state}
