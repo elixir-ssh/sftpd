@@ -1540,10 +1540,15 @@ defmodule Sftpd.SSH.Server do
        %{packet_length: packet_length, parts: [data | parts], size: size + byte_size(data)}}
     else
       <<part::binary-size(^needed), rest::binary>> = data
-      packet = IO.iodata_to_binary(Enum.reverse([part | parts]))
+      packet = maybe_fragmented_write_packet(packet_length, Enum.reverse([part | parts]))
       split_complete_sftp_packets(rest, [packet | packets])
     end
   end
+
+  defp maybe_fragmented_write_packet(packet_length, [<<6, _::binary>> | _] = parts),
+    do: {:iodata, parts, packet_length}
+
+  defp maybe_fragmented_write_packet(_packet_length, parts), do: IO.iodata_to_binary(parts)
 
   defp sftp_buffer_empty?(""), do: true
   defp sftp_buffer_empty?(_buffer), do: false

@@ -60,6 +60,25 @@ defmodule Sftpd.SFTP.CodecTest do
              Codec.decode(<<4, 4::32, string("h")::binary>>)
   end
 
+  test "decodes fragmented write packets without flattening write data" do
+    prefix = <<6, 3::32, string("h")::binary, 7::64, 7::32>>
+    packet = {:iodata, [prefix, "pay", ["load"]], IO.iodata_length([prefix, "pay", ["load"]])}
+
+    assert {:ok, %{type: :write, id: 3, handle: "h", offset: 7, data: data}} =
+             Codec.decode(packet)
+
+    assert IO.iodata_to_binary(data) == "payload"
+    refute is_binary(data)
+  end
+
+  test "rejects malformed fragmented write packets" do
+    truncated = {:iodata, [<<6, 3::32, 1::32>>, "h", <<7::64, 8::32>>, "payload"], 25}
+    trailing = {:iodata, [<<6, 3::32, 1::32>>, "h", <<7::64, 7::32>>, "payload", "x"], 26}
+
+    assert {:error, :bad_message} = Codec.decode(truncated)
+    assert {:error, :bad_message} = Codec.decode(trailing)
+  end
+
   test "decodes path, handle, pair, and attrs requests" do
     for {wire_type, type} <- [
           {7, :lstat},

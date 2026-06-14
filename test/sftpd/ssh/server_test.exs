@@ -165,6 +165,20 @@ defmodule Sftpd.SSH.ServerTest do
              Server.__test_split_sftp_packets__(buffer, <<2, 3, 0, 0, 0, 2, second::binary>>)
   end
 
+  test "SFTP packet splitter preserves fragmented write packets as iodata" do
+    first = <<6, 1, 2>>
+    second = <<4, 5>>
+
+    assert {:ok, [], %{packet_length: 3} = buffer} =
+             Server.__test_split_sftp_packets__("", <<0, 0, 0, 3, 6>>)
+
+    assert {:ok, [fragmented, ^second], ""} =
+             Server.__test_split_sftp_packets__(buffer, <<1, 2, 0, 0, 0, 2, second::binary>>)
+
+    assert {:iodata, fragmented_parts, 3} = fragmented
+    assert IO.iodata_to_binary(fragmented_parts) == first
+  end
+
   test "SFTP packet splitter rejects oversized packets before buffering payload" do
     oversized = 64 * 1024 * 1024 + 1
 

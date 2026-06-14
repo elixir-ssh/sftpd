@@ -46,6 +46,7 @@ defmodule Sftpd.SFTP.Codec do
   @ssh_filexfer_attr_acmodtime 0x0000_0008
 
   @type request :: map()
+  @type packet :: binary() | {:iodata, iodata(), non_neg_integer()}
 
   @spec split_packets(binary()) :: {[binary()], binary()}
   def split_packets(buffer), do: split_packets(buffer, [])
@@ -59,7 +60,15 @@ defmodule Sftpd.SFTP.Codec do
 
   defp split_packets(buffer, packets), do: {Enum.reverse(packets), buffer}
 
-  @spec decode(binary()) :: {:ok, request()} | {:error, :bad_message}
+  @spec decode(packet()) :: {:ok, request()} | {:error, :bad_message}
+  def decode({:iodata, iodata, size}) when is_integer(size) and size >= 0 do
+    case decode_iodata_write(iodata, size) do
+      {:ok, request} -> {:ok, request}
+      :not_write -> decode(IO.iodata_to_binary(iodata))
+      :error -> {:error, :bad_message}
+    end
+  end
+
   def decode(<<@ssh_fxp_init, version::32, extensions::binary>>) do
     with {:ok, extensions} <- decode_extensions(extensions) do
       {:ok, %{type: :init, version: version, extensions: extensions}}
@@ -254,6 +263,75 @@ defmodule Sftpd.SFTP.Codec do
   end
 
   defp take_string(_), do: {:error, :bad_message}
+
+  defp decode_iodata_write(iodata, size) do
+    with true <- size >= 21,
+         {:ok, <<@ssh_fxp_write, id::32, handle_len::32>>, rest} <- take_iodata_binary(iodata, 9),
+         {:ok, handle, rest} <- take_iodata_binary(rest, handle_len),
+         {:ok, <<offset::64, data_len::32>>, rest} <- take_iodata_binary(rest, 12),
+         {:ok, data, rest} <- take_iodata(rest, data_len),
+         true <- iodata_empty?(rest) do
+      {:ok, %{type: :write, id: id, handle: handle, offset: offset, data: data}}
+    else
+      {:ok, <<_other_type, _rest::binary>>, _rest_iodata} -> :not_write
+      false -> :error
+      :error -> :error
+    end
+  end
+
+  defp take_iodata_binary(iodata, size) do
+    with {:ok, value, rest} <- take_iodata(iodata, size) do
+      {:ok, IO.iodata_to_binary(value), rest}
+    end
+  end
+
+  defp take_iodata(iodata, size) when size >= 0 do
+    case split_iodata(iodata, size, []) do
+      {:ok, prefix, rest} -> {:ok, prefix, rest}
+      :error -> :error
+    end
+  end
+
+  defp split_iodata(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
+  defp split_iodata([], _size, _acc), do: :error
+
+  defp split_iodata([part | rest], size, acc) when is_binary(part) do
+    split_iodata_binary(part, rest, size, acc)
+  end
+
+  defp split_iodata([part | rest], size, acc) when is_list(part) do
+    split_iodata(part ++ rest, size, acc)
+  end
+
+  defp split_iodata(part, size, acc) when is_binary(part) do
+    split_iodata_binary(part, [], size, acc)
+  end
+
+  defp split_iodata(_iodata, _size, _acc), do: :error
+
+  defp split_iodata_binary(part, rest, size, acc) do
+    part_size = byte_size(part)
+
+    cond do
+      part_size == 0 ->
+        split_iodata(rest, size, acc)
+
+      part_size < size ->
+        split_iodata(rest, size - part_size, [part | acc])
+
+      part_size == size ->
+        {:ok, Enum.reverse([part | acc]), rest}
+
+      true ->
+        <<prefix::binary-size(^size), suffix::binary>> = part
+        {:ok, Enum.reverse([prefix | acc]), [suffix | rest]}
+    end
+  end
+
+  defp iodata_empty?([]), do: true
+  defp iodata_empty?(<<>>), do: true
+  defp iodata_empty?([part | rest]), do: iodata_empty?(part) and iodata_empty?(rest)
+  defp iodata_empty?(_), do: false
 
   defp decode_extensions(data), do: decode_extensions(data, %{})
 
