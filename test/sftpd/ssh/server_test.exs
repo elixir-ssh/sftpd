@@ -267,6 +267,49 @@ defmodule Sftpd.SSH.ServerTest do
     end
   end
 
+  test "buffered drain accumulates available window adjustments before flushing" do
+    {client, server} = connected_sockets()
+
+    try do
+      cipher = cipher_state()
+
+      state = %{
+        buffer: "",
+        c2s_cipher: cipher,
+        channels: %{},
+        active_channel_id: nil,
+        active_channel: nil
+      }
+
+      pending = [SerializedPacket.iodata("abcdef")]
+
+      channel = %{
+        server_channel: 3,
+        client_channel: 7,
+        client_window: 0,
+        client_max_packet: 12,
+        pending_responses: pending
+      }
+
+      {first, cipher} =
+        Cipher.encrypt_packet(cipher, Packet.encode_aead_packet(<<93, 3::32, 5::32>>))
+
+      {second, _cipher} =
+        Cipher.encrypt_packet(cipher, Packet.encode_aead_packet(<<93, 3::32, 7::32>>))
+
+      :ok = :gen_tcp.send(client, [first, second])
+
+      assert {:open, [], state, channel, 0} =
+               drain_available_until_adjusts(server, state, channel)
+
+      assert %{client_window: 12, pending_responses: ^pending} = channel
+      assert %{active_channel_id: 3, active_channel: ^channel} = state
+    after
+      :gen_tcp.close(client)
+      :gen_tcp.close(server)
+    end
+  end
+
   defp joined_channel_data(payloads) do
     payloads
     |> Enum.map(fn payload ->
@@ -304,13 +347,31 @@ defmodule Sftpd.SSH.ServerTest do
   end
 
   defp recv_available_until_packet(socket, state, attempts \\ 10)
-  defp recv_available_until_packet(_socket, _state, 0), do: flunk("encrypted packet not available")
+
+  defp recv_available_until_packet(_socket, _state, 0),
+    do: flunk("encrypted packet not available")
 
   defp recv_available_until_packet(socket, state, attempts) do
     case Server.__test_recv_buffered_or_available_encrypted_payload__(socket, state) do
       {:none, ^state} ->
         Process.sleep(10)
         recv_available_until_packet(socket, state, attempts - 1)
+
+      result ->
+        result
+    end
+  end
+
+  defp drain_available_until_adjusts(socket, state, channel, attempts \\ 10)
+
+  defp drain_available_until_adjusts(_socket, _state, _channel, 0),
+    do: flunk("window adjusts not available")
+
+  defp drain_available_until_adjusts(socket, state, channel, attempts) do
+    case Server.__test_drain_buffered_sftp_data__(socket, 3, state, channel, [], 0) do
+      {:open, [], _state, %{client_window: 0}, 0} ->
+        Process.sleep(10)
+        drain_available_until_adjusts(socket, state, channel, attempts - 1)
 
       result ->
         result

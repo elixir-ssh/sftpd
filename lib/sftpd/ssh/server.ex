@@ -814,21 +814,7 @@ defmodule Sftpd.SSH.Server do
       {:ok, <<93, ^recipient::32, bytes::32>>, state} ->
         channel = %{channel | client_window: channel.client_window + bytes}
         state = cache_channel(state, channel)
-
-        if channel.pending_responses == [] do
-          drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
-        else
-          case flush_sftp_responses_with_channel(socket, state, channel, 0) do
-            {:ok, state, channel} ->
-              drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
-
-            {:closed, state} ->
-              {:closed, state}
-
-            {:error, _reason, state} ->
-              {:error, state}
-          end
-        end
+        drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
 
       {:ok, payload, state} ->
         case handle_encrypted_payload(payload, state, socket) do
@@ -1335,6 +1321,18 @@ defmodule Sftpd.SSH.Server do
     @doc false
     def __test_recv_buffered_or_available_encrypted_payload__(socket, state) do
       recv_buffered_or_available_encrypted_payload(socket, state)
+    end
+
+    @doc false
+    def __test_drain_buffered_sftp_data__(
+          socket,
+          recipient,
+          state,
+          channel,
+          responses,
+          bytes_read
+        ) do
+      drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
     end
 
     @doc false
