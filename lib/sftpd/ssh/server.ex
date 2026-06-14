@@ -453,11 +453,8 @@ defmodule Sftpd.SSH.Server do
             state = cache_channel(state, channel)
             {:continue, state}
           else
-            case flush_sftp_responses_with_channel(socket, state, channel, 0) do
-              {:ok, state, _channel} -> {:continue, state}
-              {:closed, state} -> {:continue, state}
-              {:error, _reason, state} -> {:stop, state}
-            end
+            drain_result = drain_buffered_sftp_data(socket, recipient, state, channel, [], 0)
+            finish_channel_data_drain(socket, drain_result)
           end
 
         case result do
