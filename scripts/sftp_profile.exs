@@ -18,245 +18,6 @@ defmodule SftpdProfile.Auth do
   def authorize_public_key(_username, _public_key, _opts), do: :error
 end
 
-defmodule SftpdProfile.Backend do
-  @behaviour Sftpd.Backend
-
-  @keep_marker ".keep"
-
-  @impl true
-  def init(opts) do
-    {:ok, agent} = Agent.start_link(fn -> Keyword.get(opts, :files, %{}) end)
-    {:ok, %{agent: agent}}
-  end
-
-  def list_dir(path, %{agent: agent}) do
-    prefix = normalize_prefix(path)
-
-    entries =
-      Agent.get(agent, fn files ->
-        files
-        |> Map.keys()
-        |> Enum.reduce(MapSet.new(), fn key, entries ->
-          if String.starts_with?(key, prefix) do
-            case key |> String.replace_prefix(prefix, "") |> first_path_segment() do
-              "" -> entries
-              @keep_marker -> entries
-              entry -> MapSet.put(entries, entry)
-            end
-          else
-            entries
-          end
-        end)
-        |> MapSet.to_list()
-        |> Enum.sort()
-        |> Enum.map(&to_charlist/1)
-      end)
-
-    {:ok, [~c".", ~c".." | entries]}
-  end
-
-  def file_info(path, %{agent: agent}) do
-    key = normalize_path(path)
-    dir_prefix = normalize_prefix(path)
-
-    cond do
-      key == "" ->
-        {:ok, Sftpd.Backend.directory_info()}
-
-      true ->
-        Agent.get(agent, fn files ->
-          case Map.get(files, key) do
-            %{size: size, mtime: mtime} ->
-              {:ok, Sftpd.Backend.file_info(size, NaiveDateTime.to_erl(mtime), :read_write)}
-
-            nil ->
-              if Enum.any?(Map.keys(files), &String.starts_with?(&1, dir_prefix)) do
-                {:ok, Sftpd.Backend.directory_info()}
-              else
-                {:error, :enoent}
-              end
-          end
-        end)
-    end
-  end
-
-  def make_dir(path, %{agent: agent}) do
-    Agent.update(agent, &Map.put(&1, normalize_prefix(path) <> @keep_marker, file(0)))
-    :ok
-  end
-
-  def del_dir(path, %{agent: agent}) do
-    Agent.update(agent, &Map.delete(&1, normalize_prefix(path) <> @keep_marker))
-    :ok
-  end
-
-  def delete(path, %{agent: agent}) do
-    Agent.update(agent, &Map.delete(&1, normalize_path(path)))
-    :ok
-  end
-
-  def rename(src, dst, %{agent: agent}) do
-    Agent.update(agent, fn files ->
-      case Map.pop(files, normalize_path(src)) do
-        {nil, files} -> files
-        {data, files} -> Map.put(files, normalize_path(dst), data)
-      end
-    end)
-
-    :ok
-  end
-
-  def read_file(path, state) do
-    case file_size(path, state) do
-      {:ok, size} when size <= 128 * 1024 * 1024 -> {:ok, zeroes(size)}
-      {:ok, _size} -> {:error, :enotsup}
-      error -> error
-    end
-  end
-
-  def read_file_range(path, offset, len, state) do
-    case file_size(path, state) do
-      {:ok, size} when offset >= size -> :eof
-      {:ok, size} -> {:ok, zeroes(min(len, size - offset))}
-      error -> error
-    end
-  end
-
-  @impl true
-  def open_read(path, _session, state) do
-    with {:ok, size} <- file_size(path, state) do
-      {:ok, %{path: normalize_path(path), size: size}}
-    end
-  end
-
-  @impl true
-  def read_at(%{size: size}, offset, len, _state) do
-    if offset >= size do
-      :eof
-    else
-      {:ok, zeroes(min(len, size - offset))}
-    end
-  end
-
-  def write_file(path, content, %{agent: agent}) do
-    Agent.update(agent, &Map.put(&1, normalize_path(path), file(IO.iodata_length(content))))
-    :ok
-  end
-
-  def begin_write(path, _state), do: {:ok, %{path: path, size: 0}}
-
-  @impl true
-  def open_write(path, _attrs, _session, _state), do: {:ok, %{path: path, size: 0}}
-
-  def write_chunk(handle, offset, chunk, _state) do
-    {:ok, %{handle | size: max(handle.size, offset + IO.iodata_length(chunk))}}
-  end
-
-  @impl true
-  def write_at(handle, offset, data, state), do: write_chunk(handle, offset, data, state)
-
-  @impl true
-  def finish_write(%{path: path, size: size}, %{agent: agent}) do
-    Agent.update(agent, &Map.put(&1, normalize_path(path), file(size)))
-    :ok
-  end
-
-  @impl true
-  def abort_write(_handle, _state), do: :ok
-
-  @impl true
-  def open_dir(path, _session, state) do
-    with {:ok, names} <- list_dir(path, state) do
-      {:ok, %{entries: Enum.map(names, &dir_entry(path, &1, state)), read?: false}}
-    end
-  end
-
-  @impl true
-  def read_dir(%{read?: true}, _state), do: :eof
-
-  def read_dir(%{entries: entries, read?: false} = handle, _state),
-    do: {:ok, entries, %{handle | read?: true}}
-
-  @impl true
-  def close_dir(_handle, _state), do: :ok
-
-  @impl true
-  def file_attrs(path, _session, state) do
-    case file_info(path, state) do
-      {:ok, info} -> {:ok, Sftpd.Backend.attrs_from_file_info(info)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @impl true
-  def make_dir(path, _attrs, _session, state), do: make_dir(path, state)
-
-  @impl true
-  def del_dir(path, _session, state), do: del_dir(path, state)
-
-  @impl true
-  def delete(path, _session, state), do: delete(path, state)
-
-  @impl true
-  def rename(src, dst, _session, state), do: rename(src, dst, state)
-
-  defp dir_entry(path, name, state) do
-    child_path = child_path(path, name)
-
-    attrs =
-      case file_attrs(child_path, %{}, state) do
-        {:ok, attrs} -> attrs
-        {:error, _reason} -> %{type: :directory, size: 0, permissions: 0o040755}
-      end
-
-    %{name: to_string(name), attrs: attrs}
-  end
-
-  defp file_size(path, %{agent: agent}) do
-    Agent.get(agent, fn files ->
-      case Map.get(files, normalize_path(path)) do
-        %{size: size} -> {:ok, size}
-        nil -> {:error, :enoent}
-      end
-    end)
-  end
-
-  defp zeroes(size), do: :binary.copy(<<0>>, size)
-  defp file(size), do: %{size: size, mtime: NaiveDateTime.utc_now()}
-  defp child_path(_path, name) when name in [~c".", ~c".."], do: to_string(name)
-
-  defp child_path(path, name) do
-    path = normalize_path(path)
-    name = to_string(name)
-
-    case path do
-      "" -> name
-      "/" -> name
-      _ -> path <> "/" <> name
-    end
-  end
-
-  defp normalize_path(path) do
-    path
-    |> to_string()
-    |> String.trim_leading("/")
-    |> String.trim_trailing("/")
-  end
-
-  defp normalize_prefix(path) do
-    case normalize_path(path) do
-      "" -> ""
-      key -> key <> "/"
-    end
-  end
-
-  defp first_path_segment(path) do
-    path
-    |> String.split("/", parts: 2)
-    |> hd()
-  end
-end
-
 defmodule SftpdProfile do
   @openssh_sftp_block_size 256 * 1024 - 64
 
@@ -285,25 +46,24 @@ defmodule SftpdProfile do
   end
 
   defp ensure_tools_code_path! do
-    case Code.ensure_loaded(:cprof) do
-      {:module, :cprof} ->
-        :ok
+    if Code.ensure_loaded?(:cprof) and Code.ensure_loaded?(:eprof) do
+      :ok
+    else
+      tools_ebin =
+        :code.root_dir()
+        |> to_string()
+        |> Path.join("lib/tools-*/ebin")
+        |> Path.wildcard()
+        |> List.first()
 
-      {:error, _reason} ->
-        tools_ebin =
-          :code.root_dir()
-          |> to_string()
-          |> Path.join("lib/tools-*/ebin")
-          |> Path.wildcard()
-          |> List.first()
+      if is_nil(tools_ebin) do
+        raise "could not find OTP tools ebin under #{:code.root_dir()}"
+      end
 
-        if is_nil(tools_ebin) do
-          raise "could not find OTP tools ebin under #{:code.root_dir()}"
-        end
-
-        true = :code.add_pathz(String.to_charlist(tools_ebin))
-        {:module, :cprof} = Code.ensure_loaded(:cprof)
-        :ok
+      true = :code.add_pathz(String.to_charlist(tools_ebin))
+      {:module, :cprof} = Code.ensure_loaded(:cprof)
+      {:module, :eprof} = Code.ensure_loaded(:eprof)
+      :ok
     end
   end
 
@@ -328,7 +88,7 @@ defmodule SftpdProfile do
       Sftpd.start_server(
         transport: :elixir,
         port: port,
-        backend: SftpdProfile.Backend,
+        backend: Sftpd.Backends.Benchmark,
         backend_opts: backend_opts,
         auth: {SftpdProfile.Auth, fingerprint: fingerprint},
         system_dir: system_dir,
@@ -339,7 +99,7 @@ defmodule SftpdProfile do
 
     try do
       {micros, profile} =
-        profile(fn ->
+        profile(opts, fn ->
           case direction do
             :download -> openssh_get!(port, key_path, tmp, opts)
             :upload -> openssh_put!(port, key_path, local_file, tmp, opts)
@@ -352,7 +112,14 @@ defmodule SftpdProfile do
     end
   end
 
-  defp profile(fun) do
+  defp profile(opts, fun) do
+    case Keyword.fetch!(opts, :profiler) do
+      :cprof -> profile_cprof(fun)
+      :eprof -> profile_eprof(fun)
+    end
+  end
+
+  defp profile_cprof(fun) do
     modules = profile_modules()
     stop_cprof(modules)
     start_cprof(modules)
@@ -373,10 +140,66 @@ defmodule SftpdProfile do
     end
   end
 
+  defp profile_eprof(fun) do
+    register_profile_owner!()
+    :eprof.start()
+
+    task =
+      Task.async(fn ->
+        {micros, result} = :timer.tc(fun)
+        {micros, result}
+      end)
+
+    try do
+      connection = await_profile_connection(task)
+      :eprof.start_profiling([connection])
+      {micros, :ok} = Task.await(task, :infinity)
+      :eprof.stop_profiling()
+      {micros, :eprof}
+    after
+      stop_eprof()
+      unregister_profile_owner()
+    end
+  end
+
+  defp register_profile_owner! do
+    if Process.whereis(:sftpd_profile_owner) do
+      raise "process already registered as :sftpd_profile_owner"
+    end
+
+    Process.register(self(), :sftpd_profile_owner)
+  end
+
+  defp unregister_profile_owner do
+    if Process.whereis(:sftpd_profile_owner) == self() do
+      Process.unregister(:sftpd_profile_owner)
+    end
+  end
+
+  defp await_profile_connection(task) do
+    receive do
+      {:sftpd_connection, pid} ->
+        pid
+    after
+      5_000 ->
+        Task.shutdown(task, :brutal_kill)
+        raise "timed out waiting for profiled SFTP connection"
+    end
+  end
+
+  defp stop_eprof do
+    :eprof.stop_profiling()
+  catch
+    :exit, _ -> :ok
+  after
+    :eprof.analyze(:total)
+    :eprof.stop()
+  end
+
   defp profile_modules do
     Application.load(:sftpd)
 
-    Application.spec(:sftpd, :modules) ++ [SftpdProfile.Backend]
+    Application.spec(:sftpd, :modules)
   end
 
   defp start_cprof(modules) do
@@ -413,16 +236,27 @@ defmodule SftpdProfile do
     IO.puts("cipher=aes256-gcm@openssh.com")
     IO.puts("")
 
-    IO.puts("profile=beam_call_count")
-    IO.puts("")
-    IO.puts("| function | calls |")
-    IO.puts("| --- | ---: |")
+    print_profile(opts, profile)
+  end
 
-    profile
-    |> Enum.take(Keyword.fetch!(opts, :limit))
-    |> Enum.each(fn {{mod, fun, arity}, count} ->
-      IO.puts("| `#{inspect(mod)}.#{fun}/#{arity}` | #{count} |")
-    end)
+  defp print_profile(opts, profile) do
+    case Keyword.fetch!(opts, :profiler) do
+      :cprof ->
+        IO.puts("profile=beam_call_count")
+        IO.puts("")
+        IO.puts("| function | calls |")
+        IO.puts("| --- | ---: |")
+
+        profile
+        |> Enum.take(Keyword.fetch!(opts, :limit))
+        |> Enum.each(fn {{mod, fun, arity}, count} ->
+          IO.puts("| `#{inspect(mod)}.#{fun}/#{arity}` | #{count} |")
+        end)
+
+      :eprof ->
+        IO.puts("profile=beam_time")
+        IO.puts("profile_output=above")
+    end
   end
 
   defp parse_args(argv) do
@@ -434,7 +268,8 @@ defmodule SftpdProfile do
           chunk: :integer,
           requests: :integer,
           port: :integer,
-          limit: :integer
+          limit: :integer,
+          profiler: :string
         ]
       )
 
@@ -458,9 +293,17 @@ defmodule SftpdProfile do
       chunk: Keyword.get(opts, :chunk, @openssh_sftp_block_size),
       requests: Keyword.get(opts, :requests, 64),
       port: Keyword.get(opts, :port, 29_222),
-      limit: Keyword.get(opts, :limit, 40)
+      limit: Keyword.get(opts, :limit, 40),
+      profiler: parse_profiler(Keyword.get(opts, :profiler, "cprof"))
     ]
     |> validate_positive_args!([:size, :chunk, :requests, :limit])
+  end
+
+  defp parse_profiler("cprof"), do: :cprof
+  defp parse_profiler("eprof"), do: :eprof
+
+  defp parse_profiler(other) do
+    raise ArgumentError, "profiler must be cprof or eprof, got #{inspect(other)}"
   end
 
   defp validate_positive_args!(opts, keys) do
