@@ -1,0 +1,98 @@
+# SFTP cprof Profile
+
+Tested base commit:
+- SHA: `8e3676a8ae9b9a538214fb349bc072bdbcf45ace`
+- Message: `Reject OTP root mutation paths`
+
+Profile setup:
+- Date: 2026-06-14
+- Server: `transport: :elixir`
+- Backend: in-process memory-size profile backend, seeded directly for downloads
+- Client: OpenSSH `sftp`
+- Cipher: `aes256-gcm@openssh.com`
+- Client tuning: `-B 262080 -R 64`
+- Authentication: generated Ed25519 key with `IdentitiesOnly=yes`
+- Profiler: Erlang `cprof` breakpoint call counters over the `Sftpd` modules plus the profile backend
+- Current working tree includes the window-adjust batching patch on top of that base commit
+
+Important caveat:
+- These are profiles, not benchmarks. `cprof` adds overhead, so throughput below is only context for the profiled run.
+- `tprof` call-time tracing was too intrusive for this OpenSSH workload; even narrowed tracing changed behavior enough to close the connection. `cprof` kept the workload stable.
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29224 --limit 40
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction download --port 29226 --limit 40
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29227 --limit 40
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29230 --limit 40
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction upload --port 29225 --limit 40
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction upload --port 29228 --limit 40
+```
+
+## Download Profiles
+
+| Size | Elapsed | Profiled Throughput | Backend Reads | Encrypted Loop | `send_encrypted_payloads/3` | `put_channel/2` | `fetch_channel/2` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 MiB | 0.659 s | 97.2 MiB/s | 258 | 5,448 | 4,804 | 11,077 | 5,440 |
+| 1 GiB | 7.895 s | 129.7 MiB/s | 4,099 | 72,297 | 67,813 | 148,620 | 72,289 |
+| 10 GiB | 72.795 s | 140.7 MiB/s | 40,972 | 718,907 | 677,772 | 1,478,712 | 718,899 |
+
+10 GiB top profile rows:
+
+| Function | Calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.put_channel/2` | 1,478,712 |
+| `Sftpd.SSH.Wire.string/1` | 831,173 |
+| `Sftpd.SSH.Server.-send_encrypted_payloads/3-fun-0-/2` | 831,137 |
+| `Sftpd.SSH.Server.validate_encrypted_packet_length/1` | 718,907 |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 718,907 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 718,907 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 718,907 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 718,907 |
+| `Sftpd.SSH.Server.flush_sftp_responses/4` | 718,896 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 677,772 |
+| `SftpdProfile.Backend.read_at/4` | 40,972 |
+
+Download interpretation:
+- Backend reads still scale cleanly with the OpenSSH request size: roughly one `read_at/4` per 256 KiB request.
+- The new window-adjust batching dropped `send_encrypted_payloads/3` from 711,479 to 677,772 at 10 GiB.
+- The hot shape is still connection/channel bookkeeping and response flushing, not memory backend reads.
+- `put_channel/2` and `fetch_channel/2` remain prominent, which means the next real win is still reducing channel-state churn in the loop.
+
+## Upload Profiles
+
+| Size | Elapsed | Profiled Throughput | Backend Writes | Encrypted Loop | `send_encrypted_payloads/3` | `put_channel/2` | `fetch_channel/2` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 MiB | 0.187 s | 342.2 MiB/s | 257 | 8,148 | 322 | 16,596 | 8,140 |
+| 1 GiB | 2.579 s | 397.0 MiB/s | 4,098 | 131,110 | 5,087 | 267,285 | 131,102 |
+| 10 GiB | 21.284 s | 481.1 MiB/s | 40,971 | 1,303,254 | 50,650 | 2,657,136 | 1,303,246 |
+
+10 GiB top profile rows:
+
+| Function | Calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.put_channel/2` | 2,657,136 |
+| `Sftpd.SSH.Wire.take_string/1` | 1,303,301 |
+| `Sftpd.SSH.Server.validate_encrypted_packet_length/1` | 1,303,254 |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 1,303,254 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 1,303,254 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 1,303,254 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 1,303,254 |
+| `Sftpd.SSH.Server.fetch_channel/2` | 1,303,246 |
+| `Sftpd.SSH.Server.flush_sftp_responses/4` | 50,662 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 50,650 |
+| `SftpdProfile.Backend.write_at/4` | 40,971 |
+
+Upload interpretation:
+- The window-adjust batching made the big difference here: `send_encrypted_payloads/3` fell from 673,785 to 50,650 at 10 GiB.
+- Throughput improved from 421.5 MiB/s to 481.1 MiB/s in the profiled 10 GiB OpenSSH upload.
+- Backend writes still scale as expected: roughly one `write_at/4` per 256 KiB request.
+- Channel-state calls are still heavy, so the remaining next step is channel-state churn reduction rather than backend work.
+
+## Likely Next Work
+
+1. Reduce channel map churn. `fetch_channel/2` and `put_channel/2` are still the biggest non-network call volume on both directions. Keep the active channel in the loop state while draining a burst, then write it back once.
+2. Batch download response flushing further. Download improved, but `flush_sftp_responses/4` still runs for each response batch. The bridge and server could probably hold more responses per flush when the client window is clearly open.
+3. Consider a dedicated active-channel cache in the connection loop. The profile still shows a single-channel workload paying the cost of map lookups/updates on every packet.
+4. Add a time profiler once call count is lower. `cprof` identified where call volume is going, but not per-call cost. A narrower time profiler should be more useful after the loop count is lower.
