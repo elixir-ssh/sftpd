@@ -1045,8 +1045,14 @@ defmodule Sftpd.SSH.Server do
     }
 
     payloads =
-      []
-      |> maybe_add_window_adjust(channel)
+      if adjust_sent? do
+        [<<93, channel.client_channel::32, channel.recv_window_adjust::32>>]
+      else
+        []
+      end
+
+    payloads =
+      payloads
       |> prepend_sftp_response_payloads(channel, ready)
       |> Enum.reverse()
 
@@ -1112,17 +1118,6 @@ defmodule Sftpd.SSH.Server do
 
   defp maybe_close_eof_channel(_socket, state, _channel), do: {:ok, state}
 
-  defp maybe_add_window_adjust(payloads, %{recv_window_adjust: adjust})
-       when adjust < @window_adjust_batch_size,
-       do: payloads
-
-  defp maybe_add_window_adjust(payloads, %{
-         client_channel: client_channel,
-         recv_window_adjust: adjust
-       }) do
-    [<<93, client_channel::32, adjust::32>> | payloads]
-  end
-
   defp prepend_sftp_response_payloads(payloads, _channel, []), do: payloads
 
   defp prepend_sftp_response_payloads(payloads, channel, responses) do
@@ -1163,10 +1158,13 @@ defmodule Sftpd.SSH.Server do
 
     @doc false
     def __test_window_adjust_payloads__(client_channel, recv_window_adjust) do
-      maybe_add_window_adjust([], %{
-        client_channel: client_channel,
-        recv_window_adjust: recv_window_adjust
-      })
+      adjust_sent? = recv_window_adjust >= @window_adjust_batch_size
+
+      if adjust_sent? do
+        [<<93, client_channel::32, recv_window_adjust::32>>]
+      else
+        []
+      end
     end
 
     @doc false

@@ -339,3 +339,36 @@ nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --si
 Interpretation:
 - This removes a no-op EOF close check from every ordinary SFTP response flush.
 - It is a call-count cleanup; the remaining transfer limit is still packet count and crypto/socket work.
+
+## Inline window-adjust payload construction
+
+After inlining SFTP window-adjust payload construction in the response flush path, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29860 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 71.701 s | 142.8 MiB/s | `maybe_add_window_adjust/2` removed from hot rows |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.cache_channel/2` | 1442716 |
+| `Sftpd.SSH.Server.-send_encrypted_payloads/3-fun-0-/2` | 832596 |
+| `Sftpd.SSH.Server.validate_encrypted_packet_length/1` | 721574 |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 721574 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 721574 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 721574 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 721574 |
+| `Sftpd.SSH.Server.fetch_active_channel/2` | 721565 |
+| `Sftpd.SSH.Server.prepend_sftp_response_payloads/3` | 721154 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 721154 |
+| `Sftpd.SSH.Server.flush_sftp_responses/4` | 721154 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 680254 |
+
+Interpretation:
+- This is another small call-count cleanup in the ordinary SFTP flush loop.
+- The remaining large download bottleneck is still the per-packet connection loop: active-channel cache writes, encrypted packet receive, response payload prep, and encrypted send.
