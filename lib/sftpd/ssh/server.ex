@@ -813,6 +813,8 @@ defmodule Sftpd.SSH.Server do
         drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
 
       {:ok, payload, state} ->
+        state = put_channel(state, channel)
+
         case handle_encrypted_payload(payload, state, socket) do
           {:continue, state} ->
             case fetch_channel(state, recipient) do

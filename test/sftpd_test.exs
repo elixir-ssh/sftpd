@@ -531,11 +531,8 @@ defmodule SftpdTest do
       {packet, c2s} = encrypt_client_channel_data(c2s, server_channel, open_packet)
       assert :ok = :gen_tcp.send(socket, packet)
 
-      assert {:ok, <<93, ^client_channel::32, _bytes::32>>, s2c, buffer} =
-               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
-
-      assert {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, buffer} =
-               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+      assert {:ok, rest, s2c, buffer} =
+               recv_channel_data_after_optional_adjust(socket, s2c, buffer, client_channel)
 
       assert {:ok, sftp_response, ""} = Sftpd.SSH.Wire.take_string(rest)
 
@@ -553,11 +550,8 @@ defmodule SftpdTest do
       {packet, c2s} = encrypt_client_channel_data(c2s, server_channel, read_packet)
       assert :ok = :gen_tcp.send(socket, packet)
 
-      assert {:ok, <<93, ^client_channel::32, _bytes::32>>, s2c, buffer} =
-               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
-
-      assert {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, buffer} =
-               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+      assert {:ok, rest, s2c, buffer} =
+               recv_channel_data_after_optional_adjust(socket, s2c, buffer, client_channel)
 
       assert {:ok, partial_response, ""} = Sftpd.SSH.Wire.take_string(rest)
       assert byte_size(partial_response) > 0
@@ -952,11 +946,8 @@ defmodule SftpdTest do
       {packet, c2s} = encrypt_client_channel_data(c2s, server_channel, open_packet)
       assert :ok = :gen_tcp.send(socket, packet)
 
-      assert {:ok, <<93, ^client_channel::32, _bytes::32>>, s2c, buffer} =
-               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
-
-      assert {:ok, <<94, ^client_channel::32, rest::binary>>, _s2c, _buffer} =
-               recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+      assert {:ok, rest, _s2c, _buffer} =
+               recv_channel_data_after_optional_adjust(socket, s2c, buffer, client_channel)
 
       assert {:ok, <<_len::32, 102, 1::32, _rest::binary>>, ""} =
                Sftpd.SSH.Wire.take_string(rest)

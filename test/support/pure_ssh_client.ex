@@ -124,13 +124,14 @@ defmodule Sftpd.Test.PureSSHClient do
 
     assert :ok = :gen_tcp.send(socket, packet)
 
-    assert {:ok, <<93, ^client_channel::32, bytes::32>>, s2c, buffer} =
-             recv_encrypted_server_packet_with_rest(socket, s2c, "")
-
-    assert bytes == byte_size(sftp_init)
-
-    assert {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, buffer} =
-             recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+    assert {:ok, rest, s2c, buffer} =
+             recv_channel_data_after_optional_adjust(
+               socket,
+               s2c,
+               "",
+               client_channel,
+               byte_size(sftp_init)
+             )
 
     assert {:ok, sftp_response, ""} = Sftpd.SSH.Wire.take_string(rest)
     assert <<5::32, 2, 3::32>> = sftp_response
@@ -221,18 +222,46 @@ defmodule Sftpd.Test.PureSSHClient do
 
     assert :ok = :gen_tcp.send(socket, packet)
 
-    assert {:ok, <<93, ^client_channel::32, bytes::32>>, s2c, buffer} =
-             recv_encrypted_server_packet_with_rest(socket, s2c, "")
-
-    assert bytes == byte_size(sftp_init)
-
-    assert {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, _buffer} =
-             recv_encrypted_server_packet_with_rest(socket, s2c, buffer)
+    assert {:ok, rest, s2c, _buffer} =
+             recv_channel_data_after_optional_adjust(
+               socket,
+               s2c,
+               "",
+               client_channel,
+               byte_size(sftp_init)
+             )
 
     assert {:ok, sftp_response, ""} = Sftpd.SSH.Wire.take_string(rest)
     assert <<5::32, 2, 3::32>> = sftp_response
 
     {c2s, s2c}
+  end
+
+  def recv_channel_data_after_optional_adjust(
+        socket,
+        s2c,
+        buffer,
+        client_channel,
+        expected_adjust_bytes \\ nil
+      ) do
+    case recv_encrypted_server_packet_with_rest(socket, s2c, buffer) do
+      {:ok, <<93, ^client_channel::32, bytes::32>>, s2c, buffer} ->
+        if expected_adjust_bytes, do: assert(bytes == expected_adjust_bytes)
+
+        case recv_encrypted_server_packet_with_rest(socket, s2c, buffer) do
+          {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, buffer} ->
+            {:ok, rest, s2c, buffer}
+
+          other ->
+            other
+        end
+
+      {:ok, <<94, ^client_channel::32, rest::binary>>, s2c, buffer} ->
+        {:ok, rest, s2c, buffer}
+
+      other ->
+        other
+    end
   end
 
   def encrypt_client_packet(cipher, payload) do
