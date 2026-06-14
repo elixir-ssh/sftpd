@@ -137,3 +137,32 @@ nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --si
 Interpretation:
 - This removes one avoidable per-fragment iodata length calculation in the send path.
 - It does not solve download packet count. The remaining work is in window splitting/flush behavior and the OpenSSH-advertised channel packet limit.
+
+## Follow-up: Skip Empty Window-Adjust Flushes
+
+After changing channel-window-adjust handling to skip SFTP response flushing when no responses are pending, the full cprof matrix was:
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29311 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29312 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction download --port 29313 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction upload --port 29314 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29315 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction upload --port 29316 --limit 25
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Flush calls | Send calls |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 64 MiB | Download | 0.692 s | 92.5 MiB/s | 4,965 | 4,778 |
+| 64 MiB | Upload | 0.183 s | 349.7 MiB/s | 324 | 323 |
+| 1 GiB | Download | 8.124 s | 126.1 MiB/s | 71,866 | 67,837 |
+| 1 GiB | Upload | 2.893 s | 354.0 MiB/s | 4,876 | 4,875 |
+| 10 GiB | Download | 79.206 s | 129.3 MiB/s | 718,654 | 677,755 |
+| 10 GiB | Upload | 28.026 s | 365.4 MiB/s | 50,809 | 50,808 |
+
+Interpretation:
+- This is a modest sequential-download improvement at best, but it avoids provably unnecessary response-flush work for empty window-adjust packets.
+- The behavior is likely more useful for many-small-files and other control-heavy OpenSSH workloads than for a single large sequential transfer.
+- Large sequential download is still dominated by OpenSSH channel packet fragmentation and the resulting encrypted send count.

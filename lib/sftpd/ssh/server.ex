@@ -623,10 +623,14 @@ defmodule Sftpd.SSH.Server do
       channel = %{channel | client_window: channel.client_window + bytes}
       state = cache_channel(state, channel)
 
-      case flush_sftp_responses(socket, state, channel, 0) do
-        {:ok, state} -> {:continue, state}
-        {:closed, state} -> {:continue, state}
-        {:error, _reason, state} -> {:stop, state}
+      if no_pending_responses?(channel) do
+        {:continue, state}
+      else
+        case flush_sftp_responses(socket, state, channel, 0) do
+          {:ok, state} -> {:continue, state}
+          {:closed, state} -> {:continue, state}
+          {:error, _reason, state} -> {:stop, state}
+        end
       end
     else
       _ -> {:continue, state}
@@ -706,16 +710,21 @@ defmodule Sftpd.SSH.Server do
 
       {:ok, <<93, ^recipient::32, bytes::32>>, state} ->
         channel = %{channel | client_window: channel.client_window + bytes}
+        state = cache_channel(state, channel)
 
-        case flush_sftp_responses_with_channel(socket, state, channel, 0) do
-          {:ok, state, channel} ->
-            drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+        if no_pending_responses?(channel) do
+          drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+        else
+          case flush_sftp_responses_with_channel(socket, state, channel, 0) do
+            {:ok, state, channel} ->
+              drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
 
-          {:closed, state} ->
-            {:closed, state}
+            {:closed, state} ->
+              {:closed, state}
 
-          {:error, _reason, state} ->
-            {:error, state}
+            {:error, _reason, state} ->
+              {:error, state}
+          end
         end
 
       {:ok, payload, state} ->
@@ -1084,6 +1093,9 @@ defmodule Sftpd.SSH.Server do
 
   defp maybe_close_eof_channel(_socket, state, _channel), do: {:ok, state}
 
+  defp no_pending_responses?(%{pending_responses: []}), do: true
+  defp no_pending_responses?(_channel), do: false
+
   defp maybe_add_window_adjust(payloads, %{recv_window_adjust: adjust})
        when adjust < @window_adjust_batch_size,
        do: payloads
@@ -1140,6 +1152,9 @@ defmodule Sftpd.SSH.Server do
         recv_window_adjust: recv_window_adjust
       })
     end
+
+    @doc false
+    def __test_no_pending_responses?(channel), do: no_pending_responses?(channel)
 
     @doc false
     def __test_finish_channel_data_drain__(drain_result) do
