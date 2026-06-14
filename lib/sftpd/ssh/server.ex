@@ -621,9 +621,9 @@ defmodule Sftpd.SSH.Server do
   defp handle_encrypted_payload(<<93, recipient::32, bytes::32>>, state, socket) do
     with {:ok, channel} <- fetch_active_channel(state, recipient) do
       channel = %{channel | client_window: channel.client_window + bytes}
-      state = cache_channel(state, channel)
 
       if channel.pending_responses == [] do
+        state = cache_channel(state, channel)
         {:continue, state}
       else
         case flush_sftp_responses(socket, state, channel, 0) do
@@ -766,10 +766,9 @@ defmodule Sftpd.SSH.Server do
   defp finish_open_channel_data_drain(socket, responses, state, channel, bytes_read) do
     channel = %{channel | recv_window_adjust: channel.recv_window_adjust + bytes_read}
 
-    state = cache_channel(state, channel)
-
     if responses == [] and channel.pending_responses == [] and
          channel.recv_window_adjust < @window_adjust_batch_size do
+      state = cache_channel(state, channel)
       {:continue, state}
     else
       case flush_sftp_responses(socket, state, channel, 0) do

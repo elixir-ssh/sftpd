@@ -372,3 +372,36 @@ Top rows:
 Interpretation:
 - This is another small call-count cleanup in the ordinary SFTP flush loop.
 - The remaining large download bottleneck is still the per-packet connection loop: active-channel cache writes, encrypted packet receive, response payload prep, and encrypted send.
+
+## Skip redundant channel cache before flush
+
+After moving channel caching out of the pre-flush path for SFTP data and channel-window-adjust handling, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29861 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 69.622 s | 147.1 MiB/s | `cache_channel/2` dropped from 1442716 to 717147 calls |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.-send_encrypted_payloads/3-fun-0-/2` | 830265 |
+| `Sftpd.SSH.Server.validate_encrypted_packet_length/1` | 717158 |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 717158 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 717158 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 717158 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 717158 |
+| `Sftpd.SSH.Server.fetch_active_channel/2` | 717149 |
+| `Sftpd.SSH.Server.cache_channel/2` | 717147 |
+| `Sftpd.SSH.Server.prepend_sftp_response_payloads/3` | 716698 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 716698 |
+| `Sftpd.SSH.Server.flush_sftp_responses/4` | 716698 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 675797 |
+
+Interpretation:
+- This removes one redundant active-channel cache write from ordinary SFTP data flushes.
+- The next largest removable call-count target is response payload preparation and the encrypted send loop.

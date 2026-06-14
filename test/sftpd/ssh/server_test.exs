@@ -200,6 +200,23 @@ defmodule Sftpd.SSH.ServerTest do
     assert {:continue, ^state} = Server.__test_finish_channel_data_drain__({:closed, state})
   end
 
+  test "open buffered drain caches receive window updates when no flush is needed" do
+    channel = %{
+      server_channel: 3,
+      client_channel: 7,
+      pending_responses: [],
+      recv_window_adjust: 10,
+      client_window: 1_048_576
+    }
+
+    state = %{channels: %{}, active_channel_id: nil, active_channel: nil}
+
+    assert {:continue, state} =
+             Server.__test_finish_channel_data_drain__({:open, [], state, channel, 123})
+
+    assert {:ok, %{recv_window_adjust: 133}} = Server.__test_fetch_active_channel__(state, 3)
+  end
+
   defp joined_channel_data(payloads) do
     payloads
     |> Enum.map(fn payload ->
