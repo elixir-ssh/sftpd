@@ -1118,8 +1118,12 @@ defmodule Sftpd.SSH.Server do
 
   defp append_pending_responses(channel, []), do: channel
 
+  defp append_pending_responses(%{pending_responses: []} = channel, responses) do
+    %{channel | pending_responses: responses}
+  end
+
   defp append_pending_responses(channel, responses) do
-    Map.update!(channel, :pending_responses, &(&1 ++ responses))
+    %{channel | pending_responses: channel.pending_responses ++ responses}
   end
 
   if function_exported?(Mix, :env, 0) and Mix.env() == :test do
@@ -1165,6 +1169,11 @@ defmodule Sftpd.SSH.Server do
     @doc false
     def __test_finish_channel_data_drain__(drain_result) do
       finish_channel_data_drain(nil, drain_result)
+    end
+
+    @doc false
+    def __test_append_pending_responses__(channel, responses) do
+      append_pending_responses(channel, responses)
     end
 
     @doc false

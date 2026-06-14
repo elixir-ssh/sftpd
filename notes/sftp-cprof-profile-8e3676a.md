@@ -437,3 +437,35 @@ Top rows:
 Interpretation:
 - This removes a high-volume anonymous function call from encrypted response sends while preserving iodata output.
 - The next removable call-count targets are in the SFTP response flush path itself.
+
+## Specialize pending response append
+
+After specializing `append_pending_responses/2` for the common empty-pending case and replacing `Map.update!/3`, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29863 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 69.199 s | 148.0 MiB/s | anonymous `append_pending_responses/2` fun removed from hot rows |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.validate_encrypted_packet_length/1` | 716643 |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 716643 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 716643 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 716643 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 716643 |
+| `Sftpd.SSH.Server.fetch_active_channel/2` | 716634 |
+| `Sftpd.SSH.Server.cache_channel/2` | 716632 |
+| `Sftpd.SSH.Server.prepend_sftp_response_payloads/3` | 716201 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 716201 |
+| `Sftpd.SSH.Server.flush_sftp_responses/4` | 716201 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 675302 |
+
+Interpretation:
+- This removes another per-SFTP-batch anonymous function from the download hot path.
+- Remaining top-row work is dominated by one encrypted loop per SSH packet and one flush path per response/window step.

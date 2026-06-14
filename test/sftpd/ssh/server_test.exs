@@ -217,6 +217,22 @@ defmodule Sftpd.SSH.ServerTest do
     assert {:ok, %{recv_window_adjust: 133}} = Server.__test_fetch_active_channel__(state, 3)
   end
 
+  test "appends pending responses without changing empty appends" do
+    first = SerializedPacket.iodata("a")
+    second = SerializedPacket.iodata("b")
+
+    channel = %{pending_responses: []}
+
+    assert ^channel = Server.__test_append_pending_responses__(channel, [])
+
+    assert %{pending_responses: [^first]} =
+             Server.__test_append_pending_responses__(channel, [first])
+
+    assert %{pending_responses: [^first, ^second]} =
+             %{pending_responses: [first]}
+             |> Server.__test_append_pending_responses__([second])
+  end
+
   defp joined_channel_data(payloads) do
     payloads
     |> Enum.map(fn payload ->
