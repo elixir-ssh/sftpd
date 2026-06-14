@@ -29,6 +29,8 @@ defmodule SftpdPerfBench do
   ]
 
   def main(argv) do
+    Logger.configure(level: :info)
+
     opts = parse_args(argv)
     size = Keyword.fetch!(opts, :size)
     chunk = Keyword.fetch!(opts, :chunk)
@@ -36,6 +38,7 @@ defmodule SftpdPerfBench do
     port = Keyword.fetch!(opts, :port)
     delay_ms = Keyword.fetch!(opts, :delay_ms)
     full? = Keyword.fetch!(opts, :full?)
+    transport = Keyword.fetch!(opts, :transport)
 
     tmp = Path.join(System.tmp_dir!(), "sftpd_perf_#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp)
@@ -50,19 +53,21 @@ defmodule SftpdPerfBench do
 
     {:ok, ref} =
       Sftpd.start_server(
-        port: port,
-        backend: SftpdPerfBench.DelayedBackend,
-        backend_opts: [delay_ms: delay_ms],
-        auth: {SftpdPerfBench.Auth, fingerprint: fingerprint},
-        system_dir: system_dir,
-        max_sessions: 8
+        [
+          port: port,
+          backend: Sftpd.Backends.Benchmark,
+          backend_opts: [],
+          auth: {SftpdPerfBench.Auth, fingerprint: fingerprint},
+          system_dir: system_dir,
+          max_sessions: 8
+        ] ++ transport_option(transport)
       )
 
     Process.sleep(250)
 
     try do
       IO.puts(
-        "size=#{size} chunk=#{chunk} requests=#{requests} port=#{port} delay_ms=#{delay_ms} cipher=aes256-gcm@openssh.com"
+        "size=#{size} chunk=#{chunk} requests=#{requests} port=#{port} delay_ms=#{delay_ms} transport=#{transport} cipher=aes256-gcm@openssh.com"
       )
 
       if full? do
@@ -116,7 +121,8 @@ defmodule SftpdPerfBench do
           requests: :integer,
           port: :integer,
           delay_ms: :integer,
-          full: :boolean
+          full: :boolean,
+          transport: :string
         ]
       )
 
@@ -126,10 +132,21 @@ defmodule SftpdPerfBench do
       requests: Keyword.get(opts, :requests, 64),
       port: Keyword.get(opts, :port, 29_222),
       delay_ms: Keyword.get(opts, :delay_ms, 0),
-      full?: Keyword.get(opts, :full, false)
+      full?: Keyword.get(opts, :full, false),
+      transport: parse_transport(Keyword.get(opts, :transport, "otp"))
     ]
     |> validate_positive_args!([:size, :chunk, :requests])
   end
+
+  defp parse_transport("otp"), do: :otp
+  defp parse_transport("elixir"), do: :elixir
+
+  defp parse_transport(other) do
+    raise ArgumentError, "transport must be otp or elixir, got #{inspect(other)}"
+  end
+
+  defp transport_option(:otp), do: []
+  defp transport_option(:elixir), do: [transport: :elixir]
 
   defp validate_positive_args!(opts, keys) do
     Enum.each(keys, fn key ->
@@ -352,6 +369,8 @@ defmodule SftpdPerfBench do
       "StrictHostKeyChecking=no",
       "-o",
       "UserKnownHostsFile=/dev/null",
+      "-o",
+      "IdentitiesOnly=yes",
       "key-user@127.0.0.1"
     ]
 
@@ -389,6 +408,8 @@ defmodule SftpdPerfBench do
       "StrictHostKeyChecking=no",
       "-o",
       "UserKnownHostsFile=/dev/null",
+      "-o",
+      "IdentitiesOnly=yes",
       "key-user@127.0.0.1"
     ]
 
