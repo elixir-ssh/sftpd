@@ -166,3 +166,32 @@ Interpretation:
 - This is a modest sequential-download improvement at best, but it avoids provably unnecessary response-flush work for empty window-adjust packets.
 - The behavior is likely more useful for many-small-files and other control-heavy OpenSSH workloads than for a single large sequential transfer.
 - Large sequential download is still dominated by OpenSSH channel packet fragmentation and the resulting encrypted send count.
+
+## Follow-up: Partial SFTP Input Buffer
+
+After replacing `channel.sftp_buffer <> data` with a partial-packet accumulator, complete SFTP packets remain sub-binaries and fragmented packets are materialized only once when complete.
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29331 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction upload --port 29332 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction upload --port 29333 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29334 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction download --port 29335 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29336 --limit 25
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 64 MiB | Upload | 0.289 s | 221.4 MiB/s | small-size cprof noise; call shape unchanged except partial parser |
+| 1 GiB | Upload | 3.228 s | 317.2 MiB/s | noisy slower run |
+| 10 GiB | Upload | 21.433 s | 477.8 MiB/s | best large-upload cprof result in this series |
+| 64 MiB | Download | 0.767 s | 83.4 MiB/s | neutral/noisy; download is not the target path |
+| 1 GiB | Download | 8.434 s | 121.4 MiB/s | neutral/noisy |
+| 10 GiB | Download | 72.158 s | 141.9 MiB/s | no large regression; still send-count-bound |
+
+Interpretation:
+- The optimization targets fragmented upload packets. It avoids repeated growing-buffer copies, but still pays one parser helper call per SSH channel fragment.
+- Large uploads benefit most; small cprof runs remain too noisy to use alone.
+- The next upload work is reducing per-fragment loop/helper overhead, not backend writes.

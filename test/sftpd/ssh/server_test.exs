@@ -146,6 +146,27 @@ defmodule Sftpd.SSH.ServerTest do
     refute Server.__test_no_pending_responses?(%{pending_responses: [:response]})
   end
 
+  test "SFTP packet splitter accumulates fragmented packets without exposing partials" do
+    first = <<1, 2, 3>>
+    second = <<4, 5>>
+
+    assert {:ok, [], %{header: <<0, 0>>} = buffer} =
+             Server.__test_split_sftp_packets__("", <<0, 0>>)
+
+    assert {:ok, [], %{packet_length: 3, size: 1} = buffer} =
+             Server.__test_split_sftp_packets__(buffer, <<0, 3, 1>>)
+
+    assert {:ok, [^first, ^second], ""} =
+             Server.__test_split_sftp_packets__(buffer, <<2, 3, 0, 0, 0, 2, second::binary>>)
+  end
+
+  test "SFTP packet splitter rejects oversized packets before buffering payload" do
+    oversized = 64 * 1024 * 1024 + 1
+
+    assert {:error, :bad_message} =
+             Server.__test_split_sftp_packets__("", <<oversized::32, 1, 2, 3>>)
+  end
+
   test "active channel cache tracks put and delete operations" do
     channel = %{server_channel: 3, client_channel: 7, marker: :cached}
     stale_channel = %{channel | marker: :stale}

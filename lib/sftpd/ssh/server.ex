@@ -643,7 +643,7 @@ defmodule Sftpd.SSH.Server do
          {:ok, channel} <- fetch_active_channel(state, recipient) do
       channel = %{channel | eof_received?: true}
 
-      if channel.pending_responses == [] and channel.sftp_buffer == "" do
+      if channel.pending_responses == [] and sftp_buffer_empty?(channel.sftp_buffer) do
         _ = SFTP.Session.cleanup_open_handles(channel.sftp_session)
         {:ok, state} = send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>)
         {:continue, delete_channel(state, recipient)}
@@ -1078,16 +1078,20 @@ defmodule Sftpd.SSH.Server do
   defp maybe_close_eof_channel(
          socket,
          state,
-         %{eof_received?: true, pending_responses: [], sftp_buffer: ""} = channel
+         %{eof_received?: true, pending_responses: [], sftp_buffer: sftp_buffer} = channel
        ) do
-    _ = SFTP.Session.cleanup_open_handles(channel.sftp_session)
+    if sftp_buffer_empty?(sftp_buffer) do
+      _ = SFTP.Session.cleanup_open_handles(channel.sftp_session)
 
-    case send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>) do
-      {:ok, state} ->
-        {:closed, delete_channel(state, channel.server_channel)}
+      case send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>) do
+        {:ok, state} ->
+          {:closed, delete_channel(state, channel.server_channel)}
 
-      {:error, reason} ->
-        {:error, reason, state}
+        {:error, reason} ->
+          {:error, reason, state}
+      end
+    else
+      {:ok, state}
     end
   end
 
@@ -1155,6 +1159,9 @@ defmodule Sftpd.SSH.Server do
 
     @doc false
     def __test_no_pending_responses?(channel), do: no_pending_responses?(channel)
+
+    @doc false
+    def __test_split_sftp_packets__(buffer, data), do: split_sftp_packets(buffer, data)
 
     @doc false
     def __test_finish_channel_data_drain__(drain_result) do
@@ -1302,29 +1309,81 @@ defmodule Sftpd.SSH.Server do
   defp cleanup_open_handles(state), do: state
 
   defp handle_sftp_data(data, channel) do
-    buffer = channel.sftp_buffer <> data
+    case split_sftp_packets(channel.sftp_buffer, data) do
+      {:ok, [], buffer} ->
+        {[], %{channel | sftp_buffer: buffer}}
 
-    case validate_sftp_buffer(buffer) do
-      :ok ->
-        {packets, rest} = SFTP.Codec.split_packets(buffer)
-
+      {:ok, packets, buffer} ->
         {responses, sftp_session} =
           Enum.map_reduce(packets, channel.sftp_session, fn packet, session ->
             SFTP.Session.handle_packet(packet, session)
           end)
 
-        {responses, %{channel | sftp_buffer: rest, sftp_session: sftp_session}}
+        {responses, %{channel | sftp_buffer: buffer, sftp_session: sftp_session}}
 
       {:error, reason} ->
         {[SFTP.Codec.status(0, reason)], %{channel | sftp_buffer: ""}}
     end
   end
 
-  defp validate_sftp_buffer(<<packet_length::32, _rest::binary>>)
+  defp split_sftp_packets("", data), do: split_complete_sftp_packets(data, [])
+
+  defp split_sftp_packets(%{header: header}, data) do
+    needed = 4 - byte_size(header)
+
+    if byte_size(data) < needed do
+      {:ok, [], %{header: header <> data}}
+    else
+      <<header_tail::binary-size(^needed), rest::binary>> = data
+      <<packet_length::32>> = header <> header_tail
+      continue_partial_sftp_packet(packet_length, [], 0, rest, [])
+    end
+  end
+
+  defp split_sftp_packets(%{packet_length: packet_length, parts: parts, size: size}, data) do
+    continue_partial_sftp_packet(packet_length, parts, size, data, [])
+  end
+
+  defp split_complete_sftp_packets(<<>>, packets), do: {:ok, Enum.reverse(packets), ""}
+
+  defp split_complete_sftp_packets(data, packets) when byte_size(data) < 4 do
+    {:ok, Enum.reverse(packets), %{header: data}}
+  end
+
+  defp split_complete_sftp_packets(<<packet_length::32, _rest::binary>>, _packets)
        when packet_length > @max_sftp_packet_length,
        do: {:error, :bad_message}
 
-  defp validate_sftp_buffer(_buffer), do: :ok
+  defp split_complete_sftp_packets(
+         <<packet_length::32, packet::binary-size(packet_length), rest::binary>>,
+         packets
+       ) do
+    split_complete_sftp_packets(rest, [packet | packets])
+  end
+
+  defp split_complete_sftp_packets(<<packet_length::32, rest::binary>>, packets) do
+    continue_partial_sftp_packet(packet_length, [], 0, rest, packets)
+  end
+
+  defp continue_partial_sftp_packet(packet_length, _parts, _size, _data, _packets)
+       when packet_length > @max_sftp_packet_length,
+       do: {:error, :bad_message}
+
+  defp continue_partial_sftp_packet(packet_length, parts, size, data, packets) do
+    needed = packet_length - size
+
+    if byte_size(data) < needed do
+      {:ok, Enum.reverse(packets),
+       %{packet_length: packet_length, parts: [data | parts], size: size + byte_size(data)}}
+    else
+      <<part::binary-size(^needed), rest::binary>> = data
+      packet = IO.iodata_to_binary(Enum.reverse([part | parts]))
+      split_complete_sftp_packets(rest, [packet | packets])
+    end
+  end
+
+  defp sftp_buffer_empty?(""), do: true
+  defp sftp_buffer_empty?(_buffer), do: false
 
   defp parse_want_reply(rest) do
     with {:ok, _request, rest} <- Wire.take_string(rest),
