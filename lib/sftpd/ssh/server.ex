@@ -955,11 +955,19 @@ defmodule Sftpd.SSH.Server do
   defp recv_buffered_encrypted_payload(_state), do: :none
 
   defp recv_encrypted_packet(socket, "", timeout) do
-    with {:ok, <<packet_length::32>>} <- :gen_tcp.recv(socket, 4, timeout),
-         :ok <- validate_encrypted_packet_length(packet_length),
-         {:ok, encrypted_body} <-
-           :gen_tcp.recv(socket, packet_length + @aead_tag_size, timeout) do
-      {:ok, packet_length, encrypted_body, ""}
+    case :gen_tcp.recv(socket, 4, timeout) do
+      {:ok, <<packet_length::32>>}
+      when packet_length > 0 and packet_length <= @max_encrypted_packet_length ->
+        with {:ok, encrypted_body} <-
+               :gen_tcp.recv(socket, packet_length + @aead_tag_size, timeout) do
+          {:ok, packet_length, encrypted_body, ""}
+        end
+
+      {:ok, <<_packet_length::32>>} ->
+        {:error, :invalid_packet_length}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -979,20 +987,16 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
-  defp encrypted_packet_missing_bytes(<<packet_length::32, _rest::binary>> = buffer) do
-    case validate_encrypted_packet_length(packet_length) do
-      :ok -> max(4 + packet_length + @aead_tag_size - byte_size(buffer), 0)
-      {:error, reason} -> {:error, reason}
-    end
+  defp encrypted_packet_missing_bytes(<<packet_length::32, _rest::binary>> = buffer)
+       when packet_length > 0 and packet_length <= @max_encrypted_packet_length do
+    max(4 + packet_length + @aead_tag_size - byte_size(buffer), 0)
+  end
+
+  defp encrypted_packet_missing_bytes(<<_packet_length::32, _rest::binary>>) do
+    {:error, :invalid_packet_length}
   end
 
   defp encrypted_packet_missing_bytes(buffer), do: 4 - byte_size(buffer)
-
-  defp validate_encrypted_packet_length(packet_length)
-       when packet_length > 0 and packet_length <= @max_encrypted_packet_length,
-       do: :ok
-
-  defp validate_encrypted_packet_length(_packet_length), do: {:error, :invalid_packet_length}
 
   defp send_encrypted_payload(socket, %{s2c_cipher: cipher} = state, payload) do
     {encrypted, cipher} =

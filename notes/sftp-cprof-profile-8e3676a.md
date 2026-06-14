@@ -469,3 +469,34 @@ Top rows:
 Interpretation:
 - This removes another per-SFTP-batch anonymous function from the download hot path.
 - Remaining top-row work is dominated by one encrypted loop per SSH packet and one flush path per response/window step.
+
+## Inline encrypted packet length validation
+
+After inlining encrypted packet-length validation into the receive framing pattern matches, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29864 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 67.184 s | 152.4 MiB/s | `validate_encrypted_packet_length/1` removed from hot rows |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 729000 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 729000 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 729000 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 729000 |
+| `Sftpd.SSH.Server.fetch_active_channel/2` | 728991 |
+| `Sftpd.SSH.Server.cache_channel/2` | 728989 |
+| `Sftpd.SSH.Server.prepend_sftp_response_payloads/3` | 728563 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 728563 |
+| `Sftpd.SSH.Server.flush_sftp_responses/4` | 728563 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 687663 |
+
+Interpretation:
+- This keeps invalid encrypted packet lengths rejected without paying a function call per inbound encrypted packet.
+- Remaining top-row work is the unavoidable packet loop plus channel lookup/cache and SFTP response flushing.
