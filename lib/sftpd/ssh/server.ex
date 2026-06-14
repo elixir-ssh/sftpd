@@ -402,6 +402,8 @@ defmodule Sftpd.SSH.Server do
       |> Map.put(:auth_session, nil)
       |> Map.put(:auth_failures, 0)
       |> Map.put(:channels, %{})
+      |> Map.put(:active_channel_id, nil)
+      |> Map.put(:active_channel, nil)
       |> Map.put(:next_channel_id, 0)
       |> encrypted_loop(socket)
     end
@@ -597,9 +599,8 @@ defmodule Sftpd.SSH.Server do
     Logger.debug("pure ssh received channel data")
 
     with {:ok, data, ""} <- Wire.take_string(rest),
-         {:ok, %{sftp?: true} = channel} <- fetch_channel(state, recipient) do
+         {:ok, %{sftp?: true} = channel} <- fetch_active_channel(state, recipient) do
       {responses, channel} = handle_sftp_data(data, channel)
-      state = put_channel(state, channel)
 
       drain_result =
         drain_buffered_sftp_data(
@@ -618,9 +619,9 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp handle_encrypted_payload(<<93, recipient::32, bytes::32>>, state, socket) do
-    with {:ok, channel} <- fetch_channel(state, recipient) do
+    with {:ok, channel} <- fetch_active_channel(state, recipient) do
       channel = %{channel | client_window: channel.client_window + bytes}
-      state = put_channel(state, channel)
+      state = cache_channel(state, channel)
 
       case flush_sftp_responses(socket, state, channel, 0) do
         {:ok, state} -> {:continue, state}
@@ -633,17 +634,17 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp handle_encrypted_payload(<<96, recipient::32, _rest::binary>>, state, socket) do
-    with {:ok, channel} <- fetch_channel(state, recipient),
+    with {:ok, channel} <- fetch_active_channel(state, recipient),
          {:ok, state} <- flush_sftp_responses(socket, state, channel, 0),
-         {:ok, channel} <- fetch_channel(state, recipient) do
+         {:ok, channel} <- fetch_active_channel(state, recipient) do
       channel = %{channel | eof_received?: true}
 
       if channel.pending_responses == [] and channel.sftp_buffer == "" do
         _ = SFTP.Session.cleanup_open_handles(channel.sftp_session)
         {:ok, state} = send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>)
-        {:continue, %{state | channels: Map.delete(state.channels, recipient)}}
+        {:continue, delete_channel(state, recipient)}
       else
-        {:continue, put_channel(state, channel)}
+        {:continue, cache_channel(state, channel)}
       end
     else
       :error -> {:continue, state}
@@ -653,10 +654,10 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp handle_encrypted_payload(<<97, recipient::32, _rest::binary>>, state, socket) do
-    with {:ok, channel} <- fetch_channel(state, recipient),
+    with {:ok, channel} <- fetch_active_channel(state, recipient),
          {:ok, state} <- send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>) do
       _ = SFTP.Session.cleanup_open_handles(channel.sftp_session)
-      {:continue, %{state | channels: Map.delete(state.channels, recipient)}}
+      {:continue, delete_channel(state, recipient)}
     else
       _ -> {:continue, state}
     end
@@ -687,10 +688,8 @@ defmodule Sftpd.SSH.Server do
   defp drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
     case recv_buffered_encrypted_payload(state) do
       {:ok, <<94, ^recipient::32, rest::binary>>, state} ->
-        with {:ok, data, ""} <- Wire.take_string(rest),
-             {:ok, %{sftp?: true} = channel} <- fetch_channel(state, recipient) do
+        with {:ok, data, ""} <- Wire.take_string(rest) do
           {new_responses, channel} = handle_sftp_data(data, channel)
-          state = put_channel(state, channel)
           responses = prepend_reversed(new_responses, responses)
 
           drain_buffered_sftp_data(
@@ -707,11 +706,9 @@ defmodule Sftpd.SSH.Server do
 
       {:ok, <<93, ^recipient::32, bytes::32>>, state} ->
         channel = %{channel | client_window: channel.client_window + bytes}
-        state = put_channel(state, channel)
 
-        case flush_sftp_responses(socket, state, channel, 0) do
-          {:ok, state} ->
-            {:ok, channel} = fetch_channel(state, recipient)
+        case flush_sftp_responses_with_channel(socket, state, channel, 0) do
+          {:ok, state, channel} ->
             drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
 
           {:closed, state} ->
@@ -750,7 +747,7 @@ defmodule Sftpd.SSH.Server do
 
     channel = %{channel | recv_window_adjust: channel.recv_window_adjust + bytes_read}
 
-    state = put_channel(state, channel)
+    state = cache_channel(state, channel)
 
     if responses == [] and channel.pending_responses == [] and
          channel.recv_window_adjust < @window_adjust_batch_size do
@@ -1011,6 +1008,14 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp flush_sftp_responses(socket, state, channel, bytes_read) do
+    case flush_sftp_responses_with_channel(socket, state, channel, bytes_read) do
+      {:ok, state, _channel} -> {:ok, state}
+      {:closed, state} -> {:closed, state}
+      {:error, reason, state} -> {:error, reason, state}
+    end
+  end
+
+  defp flush_sftp_responses_with_channel(socket, state, channel, bytes_read) do
     channel = %{channel | recv_window_adjust: channel.recv_window_adjust + bytes_read}
     adjust_sent? = channel.recv_window_adjust >= @window_adjust_batch_size
 
@@ -1036,16 +1041,24 @@ defmodule Sftpd.SSH.Server do
         channel
       end
 
-    state = put_channel(state, channel)
+    state = cache_channel(state, channel)
 
     case payloads do
       [] ->
-        maybe_close_eof_channel(socket, state, channel)
+        case maybe_close_eof_channel(socket, state, channel) do
+          {:ok, state} -> {:ok, state, channel}
+          {:closed, state} -> {:closed, state}
+          {:error, reason, state} -> {:error, reason, state}
+        end
 
       payloads ->
         case send_encrypted_payloads(socket, state, payloads) do
           {:ok, state} ->
-            maybe_close_eof_channel(socket, state, channel)
+            case maybe_close_eof_channel(socket, state, channel) do
+              {:ok, state} -> {:ok, state, channel}
+              {:closed, state} -> {:closed, state}
+              {:error, reason, state} -> {:error, reason, state}
+            end
 
           {:error, reason} ->
             {:error, reason, state}
@@ -1062,7 +1075,7 @@ defmodule Sftpd.SSH.Server do
 
     case send_encrypted_payload(socket, state, <<97, channel.client_channel::32>>) do
       {:ok, state} ->
-        {:closed, %{state | channels: Map.delete(state.channels, channel.server_channel)}}
+        {:closed, delete_channel(state, channel.server_channel)}
 
       {:error, reason} ->
         {:error, reason, state}
@@ -1132,6 +1145,23 @@ defmodule Sftpd.SSH.Server do
     def __test_finish_channel_data_drain__(drain_result) do
       finish_channel_data_drain(nil, drain_result)
     end
+
+    @doc false
+    def __test_put_channel__(state, channel), do: put_channel(state, channel)
+
+    @doc false
+    def __test_cache_channel__(state, channel), do: cache_channel(state, channel)
+
+    @doc false
+    def __test_fetch_active_channel__(state, server_channel) do
+      fetch_active_channel(state, server_channel)
+    end
+
+    @doc false
+    def __test_sync_active_channel__(state), do: sync_active_channel(state)
+
+    @doc false
+    def __test_delete_channel__(state, server_channel), do: delete_channel(state, server_channel)
   end
 
   defp authenticate_password(auth, username, password, socket) do
@@ -1171,6 +1201,15 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
+  defp fetch_active_channel(
+         %{active_channel_id: server_channel, active_channel: channel},
+         server_channel
+       )
+       when not is_nil(channel),
+       do: {:ok, channel}
+
+  defp fetch_active_channel(state, server_channel), do: fetch_channel(state, server_channel)
+
   defp max_channels_reached?(state) do
     map_size(state.channels) >= state.max_channels
   end
@@ -1185,10 +1224,57 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp put_channel(state, %{server_channel: server_channel} = channel) do
-    %{state | channels: Map.put(state.channels, server_channel, channel)}
+    state =
+      if Map.get(state, :active_channel_id) in [nil, server_channel] do
+        state
+      else
+        sync_active_channel(state)
+      end
+
+    state
+    |> Map.put(:channels, Map.put(state.channels, server_channel, channel))
+    |> Map.put(:active_channel_id, server_channel)
+    |> Map.put(:active_channel, channel)
   end
 
-  defp cleanup_open_handles(%{channels: channels} = state) do
+  defp cache_channel(state, %{server_channel: server_channel} = channel) do
+    state =
+      if Map.get(state, :active_channel_id) in [nil, server_channel] do
+        state
+      else
+        sync_active_channel(state)
+      end
+
+    state
+    |> Map.put(:active_channel_id, server_channel)
+    |> Map.put(:active_channel, channel)
+  end
+
+  defp sync_active_channel(%{active_channel_id: nil} = state), do: state
+  defp sync_active_channel(%{active_channel: nil} = state), do: state
+
+  defp sync_active_channel(%{active_channel_id: server_channel, active_channel: channel} = state) do
+    Map.put(state, :channels, Map.put(state.channels, server_channel, channel))
+  end
+
+  defp sync_active_channel(state), do: state
+
+  defp delete_channel(state, server_channel) do
+    state = Map.put(state, :channels, Map.delete(state.channels, server_channel))
+
+    if Map.get(state, :active_channel_id) == server_channel do
+      state
+      |> Map.put(:active_channel_id, nil)
+      |> Map.put(:active_channel, nil)
+    else
+      state
+    end
+  end
+
+  defp cleanup_open_handles(%{channels: _channels} = state) do
+    state = sync_active_channel(state)
+    channels = state.channels
+
     channels =
       Map.new(channels, fn {server_channel, channel} ->
         {server_channel,

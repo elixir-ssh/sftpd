@@ -141,6 +141,38 @@ defmodule Sftpd.SSH.ServerTest do
              Server.__test_window_adjust_payloads__(7, 1_048_576)
   end
 
+  test "active channel cache tracks put and delete operations" do
+    channel = %{server_channel: 3, client_channel: 7, marker: :cached}
+    stale_channel = %{channel | marker: :stale}
+    other_channel = %{server_channel: 4, client_channel: 8, marker: :other}
+
+    state =
+      %{channels: %{3 => stale_channel}, active_channel_id: 3, active_channel: stale_channel}
+      |> Server.__test_cache_channel__(channel)
+
+    assert {:ok, ^channel} = Server.__test_fetch_active_channel__(state, 3)
+    assert %{channels: %{3 => ^stale_channel}} = state
+
+    assert %{channels: %{3 => ^channel}} = Server.__test_sync_active_channel__(state)
+
+    state = Server.__test_put_channel__(state, other_channel)
+
+    assert %{
+             channels: %{3 => ^channel, 4 => ^other_channel},
+             active_channel_id: 4,
+             active_channel: ^other_channel
+           } = state
+
+    state = Server.__test_delete_channel__(state, 3)
+
+    assert :error = Server.__test_fetch_active_channel__(state, 3)
+    assert %{channels: %{4 => ^other_channel}, active_channel_id: 4} = state
+
+    state = Server.__test_delete_channel__(state, 4)
+
+    assert %{channels: %{}, active_channel_id: nil, active_channel: nil} = state
+  end
+
   test "closed buffered drain does not restore a deleted channel" do
     state = %{channels: %{}}
 

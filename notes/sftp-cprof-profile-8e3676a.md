@@ -96,3 +96,24 @@ Upload interpretation:
 2. Batch download response flushing further. Download improved, but `flush_sftp_responses/4` still runs for each response batch. The bridge and server could probably hold more responses per flush when the client window is clearly open.
 3. Consider a dedicated active-channel cache in the connection loop. The profile still shows a single-channel workload paying the cost of map lookups/updates on every packet.
 4. Add a time profiler once call count is lower. `cprof` identified where call volume is going, but not per-call cost. A narrower time profiler should be more useful after the loop count is lower.
+
+## Follow-up: Active Channel Cache
+
+After adding a conservative active-channel cache and deferring active-channel map writes until channel switch/cleanup, the 64 MiB OpenSSH profile shape changed as expected.
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29247 --limit 20
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29248 --limit 20
+```
+
+| Direction | Elapsed | Profiled Throughput | `put_channel/2` | `fetch_channel/2` | New hot channel helper |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Download | 0.667 s | 96.0 MiB/s | below top 20 | below top 20 | `cache_channel/2`: 10,777 calls |
+| Upload | 0.173 s | 370.2 MiB/s | below top 20 | below top 20 | `cache_channel/2`: 8,524 calls |
+
+Interpretation:
+- The map-update and map-fetch functions dropped out of the top rows for the profiled 64 MiB OpenSSH workload.
+- The remaining channel helper calls are state-slot updates, not full channel map rewrites.
+- Download is still dominated by response flushing and encrypted packet send count; upload is now mostly the receive/decode/drain loop.
