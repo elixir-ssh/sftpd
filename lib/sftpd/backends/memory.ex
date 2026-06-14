@@ -61,6 +61,7 @@ defmodule Sftpd.Backends.Memory do
           | %{
               chunks: %{non_neg_integer() => binary()},
               offsets: [non_neg_integer()],
+              offset_index: tuple(),
               size: non_neg_integer(),
               mtime: NaiveDateTime.t()
             }
@@ -377,7 +378,13 @@ defmodule Sftpd.Backends.Memory do
       chunks = Map.new(sorted_chunks)
       size = indexed_size(sorted_chunks)
 
-      %{chunks: chunks, offsets: offsets, size: size, mtime: NaiveDateTime.utc_now()}
+      %{
+        chunks: chunks,
+        offsets: offsets,
+        offset_index: List.to_tuple(offsets),
+        size: size,
+        mtime: NaiveDateTime.utc_now()
+      }
     end
   end
 
@@ -415,18 +422,49 @@ defmodule Sftpd.Backends.Memory do
     end
   end
 
-  defp read_indexed_range(%{chunks: chunks, offsets: offsets}, offset, len) do
+  defp read_indexed_range(%{chunks: chunks} = file_data, offset, len) do
     case Map.get(chunks, offset) do
       chunk when is_binary(chunk) and byte_size(chunk) >= len ->
         binary_part(chunk, 0, len)
 
       _ ->
-        materialize_indexed_file(%{chunks: chunks, offsets: offsets}, offset, offset + len)
+        materialize_indexed_range(file_data, offset, offset + len)
     end
   end
 
+  defp materialize_indexed_range(
+         %{chunks: chunks, offset_index: offset_index},
+         start_offset,
+         end_offset
+       ) do
+    start_index = previous_offset_index(offset_index, start_offset)
+    materialize_indexed_tuple(chunks, offset_index, start_offset, end_offset, start_index)
+  end
+
+  defp materialize_indexed_range(%{offsets: offsets} = file_data, start_offset, end_offset) do
+    start_index =
+      offsets
+      |> Enum.find_index(fn offset -> offset >= start_offset end)
+      |> then(fn
+        nil -> max(length(offsets) - 1, 0)
+        index -> max(index - 1, 0)
+      end)
+
+    materialize_indexed_file(file_data, start_offset, end_offset, start_index)
+  end
+
   defp materialize_indexed_file(%{chunks: chunks, offsets: offsets}, start_offset, end_offset) do
+    materialize_indexed_file(%{chunks: chunks, offsets: offsets}, start_offset, end_offset, 0)
+  end
+
+  defp materialize_indexed_file(
+         %{chunks: chunks, offsets: offsets},
+         start_offset,
+         end_offset,
+         start_index
+       ) do
     offsets
+    |> Enum.drop(start_index)
     |> Enum.reduce_while({[], start_offset}, fn chunk_offset, {parts, position} ->
       chunk = Map.fetch!(chunks, chunk_offset)
       chunk_end = chunk_offset + byte_size(chunk)
@@ -465,6 +503,77 @@ defmodule Sftpd.Backends.Memory do
       IO.iodata_to_binary([parts, tail_gap])
     end)
   end
+
+  defp materialize_indexed_tuple(chunks, offset_index, start_offset, end_offset, start_index) do
+    offset_index
+    |> reduce_offsets_from(start_index, {[], start_offset}, fn chunk_offset, {parts, position} ->
+      chunk = Map.fetch!(chunks, chunk_offset)
+      chunk_end = chunk_offset + byte_size(chunk)
+
+      cond do
+        chunk_end <= start_offset ->
+          {:cont, {parts, position}}
+
+        chunk_offset >= end_offset ->
+          {:halt, {parts, position}}
+
+        true ->
+          gap =
+            if chunk_offset > position do
+              :binary.copy(<<0>>, min(chunk_offset, end_offset) - position)
+            else
+              []
+            end
+
+          take_start = max(position, chunk_offset)
+          take_end = min(chunk_end, end_offset)
+          take_size = max(0, take_end - take_start)
+          chunk_part = binary_part(chunk, take_start - chunk_offset, take_size)
+
+          {:cont, {[parts, gap, chunk_part], take_end}}
+      end
+    end)
+    |> then(fn {parts, position} ->
+      tail_gap =
+        if position < end_offset do
+          :binary.copy(<<0>>, end_offset - position)
+        else
+          []
+        end
+
+      IO.iodata_to_binary([parts, tail_gap])
+    end)
+  end
+
+  defp reduce_offsets_from(offset_index, index, acc, fun) when index < tuple_size(offset_index) do
+    case fun.(elem(offset_index, index), acc) do
+      {:cont, acc} -> reduce_offsets_from(offset_index, index + 1, acc, fun)
+      {:halt, acc} -> acc
+    end
+  end
+
+  defp reduce_offsets_from(_offset_index, _index, acc, _fun), do: acc
+
+  defp previous_offset_index(offset_index, offset) do
+    size = tuple_size(offset_index)
+
+    cond do
+      size == 0 -> 0
+      true -> previous_offset_index(offset_index, offset, 0, size - 1, 0)
+    end
+  end
+
+  defp previous_offset_index(offset_index, offset, low, high, best) when low <= high do
+    mid = div(low + high, 2)
+
+    if elem(offset_index, mid) <= offset do
+      previous_offset_index(offset_index, offset, mid + 1, high, mid)
+    else
+      previous_offset_index(offset_index, offset, low, mid - 1, best)
+    end
+  end
+
+  defp previous_offset_index(_offset_index, _offset, _low, _high, best), do: best
 
   defp overlapping_chunks?(chunks) do
     chunks

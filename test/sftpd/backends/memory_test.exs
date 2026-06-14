@@ -90,6 +90,12 @@ defmodule Sftpd.Backends.MemoryTest do
       {:ok, read_handle} = Memory.open_read("/sequential.bin", %{}, state)
       assert {:ok, chunk} = Memory.read_at(read_handle, 31 * 1024, 1024, state)
       assert chunk == :binary.copy(<<31>>, 1024)
+
+      assert {:ok, cross_chunk} = Memory.read_at(read_handle, 31 * 1024 + 512, 1024, state)
+
+      assert cross_chunk ==
+               [:binary.copy(<<31>>, 512), :binary.copy(<<32>>, 512)]
+               |> IO.iodata_to_binary()
     end
 
     property "fills gaps in sparse non-overlapping chunks", %{state: state} do
