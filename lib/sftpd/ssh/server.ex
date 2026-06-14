@@ -19,6 +19,7 @@ defmodule Sftpd.SSH.Server do
   @aead_tag_size 16
   @max_encrypted_packet_length 2 * 1024 * 1024
   @max_sftp_packet_length @channel_window_size
+  @window_adjust_batch_size @channel_max_packet_size
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -518,6 +519,7 @@ defmodule Sftpd.SSH.Server do
         server_channel: server_channel,
         client_window: client_window,
         client_max_packet: client_max_packet,
+        recv_window_adjust: 0,
         sftp?: false,
         sftp_session: sftp_session,
         sftp_buffer: "",
@@ -745,18 +747,26 @@ defmodule Sftpd.SSH.Server do
   defp finish_channel_data_drain(socket, {:open, responses_acc, state, channel, bytes_read}) do
     responses = Enum.reverse(responses_acc)
     channel = append_pending_responses(channel, responses)
+
+    channel = %{channel | recv_window_adjust: channel.recv_window_adjust + bytes_read}
+
     state = put_channel(state, channel)
 
-    case flush_sftp_responses(socket, state, channel, bytes_read) do
-      {:ok, state} ->
-        {:continue, state}
+    if responses == [] and channel.pending_responses == [] and
+         channel.recv_window_adjust < @window_adjust_batch_size do
+      {:continue, state}
+    else
+      case flush_sftp_responses(socket, state, channel, 0) do
+        {:ok, state} ->
+          {:continue, state}
 
-      {:closed, state} ->
-        {:continue, state}
+        {:closed, state} ->
+          {:continue, state}
 
-      {:error, reason, state} ->
-        Logger.debug("pure ssh failed to flush sftp responses: #{inspect(reason)}")
-        {:stop, state}
+        {:error, reason, state} ->
+          Logger.debug("pure ssh failed to flush sftp responses: #{inspect(reason)}")
+          {:stop, state}
+      end
     end
   end
 
@@ -1001,6 +1011,9 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp flush_sftp_responses(socket, state, channel, bytes_read) do
+    channel = %{channel | recv_window_adjust: channel.recv_window_adjust + bytes_read}
+    adjust_sent? = channel.recv_window_adjust >= @window_adjust_batch_size
+
     {ready, pending, response_bytes} =
       SFTPBridge.split_responses_for_window(channel.pending_responses, channel.client_window)
 
@@ -1010,13 +1023,20 @@ defmodule Sftpd.SSH.Server do
         client_window: channel.client_window - response_bytes
     }
 
-    state = put_channel(state, channel)
-
     payloads =
       []
-      |> maybe_add_window_adjust(channel.client_channel, bytes_read)
+      |> maybe_add_window_adjust(channel)
       |> prepend_sftp_response_payloads(channel, ready)
       |> Enum.reverse()
+
+    channel =
+      if adjust_sent? do
+        %{channel | recv_window_adjust: 0}
+      else
+        channel
+      end
+
+    state = put_channel(state, channel)
 
     case payloads do
       [] ->
@@ -1025,10 +1045,7 @@ defmodule Sftpd.SSH.Server do
       payloads ->
         case send_encrypted_payloads(socket, state, payloads) do
           {:ok, state} ->
-            case fetch_channel(state, channel.server_channel) do
-              {:ok, channel} -> maybe_close_eof_channel(socket, state, channel)
-              :error -> {:ok, state}
-            end
+            maybe_close_eof_channel(socket, state, channel)
 
           {:error, reason} ->
             {:error, reason, state}
@@ -1054,10 +1071,15 @@ defmodule Sftpd.SSH.Server do
 
   defp maybe_close_eof_channel(_socket, state, _channel), do: {:ok, state}
 
-  defp maybe_add_window_adjust(payloads, _client_channel, 0), do: payloads
+  defp maybe_add_window_adjust(payloads, %{recv_window_adjust: adjust})
+       when adjust < @window_adjust_batch_size,
+       do: payloads
 
-  defp maybe_add_window_adjust(payloads, client_channel, bytes_read) do
-    [<<93, client_channel::32, bytes_read::32>> | payloads]
+  defp maybe_add_window_adjust(payloads, %{
+         client_channel: client_channel,
+         recv_window_adjust: adjust
+       }) do
+    [<<93, client_channel::32, adjust::32>> | payloads]
   end
 
   defp prepend_sftp_response_payloads(payloads, _channel, []), do: payloads
@@ -1096,6 +1118,14 @@ defmodule Sftpd.SSH.Server do
     @doc false
     def __test_cleanup_open_handles__(state) do
       cleanup_open_handles(state)
+    end
+
+    @doc false
+    def __test_window_adjust_payloads__(client_channel, recv_window_adjust) do
+      maybe_add_window_adjust([], %{
+        client_channel: client_channel,
+        recv_window_adjust: recv_window_adjust
+      })
     end
 
     @doc false

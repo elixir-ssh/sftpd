@@ -134,6 +134,13 @@ defmodule Sftpd.SSH.ServerTest do
     assert bytes == 1
   end
 
+  test "batches window adjust payloads until the batch threshold is reached" do
+    assert [] = Server.__test_window_adjust_payloads__(7, 1_048_575)
+
+    assert [<<93, 7::32, 1_048_576::32>>] =
+             Server.__test_window_adjust_payloads__(7, 1_048_576)
+  end
+
   test "closed buffered drain does not restore a deleted channel" do
     state = %{channels: %{}}
 
