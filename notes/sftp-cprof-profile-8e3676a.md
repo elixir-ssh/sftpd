@@ -195,3 +195,32 @@ Interpretation:
 - The optimization targets fragmented upload packets. It avoids repeated growing-buffer copies, but still pays one parser helper call per SSH channel fragment.
 - Large uploads benefit most; small cprof runs remain too noisy to use alone.
 - The next upload work is reducing per-fragment loop/helper overhead, not backend writes.
+
+## Follow-up: Direct Channel-Data Parse
+
+After replacing `Wire.take_string/1` with direct binary matching for SSH channel-data payloads, the generic string parser dropped out of the upload/download hot rows.
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29341 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction upload --port 29342 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction upload --port 29343 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29344 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction download --port 29345 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29346 --limit 25
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 64 MiB | Upload | 0.269 s | 238.4 MiB/s | small-size cprof noise |
+| 1 GiB | Upload | 3.332 s | 307.4 MiB/s | noisy slower run |
+| 10 GiB | Upload | 22.376 s | 457.6 MiB/s | still in the improved large-upload range |
+| 64 MiB | Download | 0.743 s | 86.2 MiB/s | noisy |
+| 1 GiB | Download | 7.359 s | 139.1 MiB/s | improved in this run |
+| 10 GiB | Download | 70.233 s | 145.8 MiB/s | best large-download cprof result in this series |
+
+Interpretation:
+- This is a call-count cleanup, not a fundamental packet-count fix.
+- It removes `Wire.take_string/1` from the hot channel-data path.
+- The remaining large-transfer bottleneck is still one encrypted-loop pass per OpenSSH channel-data/window packet.

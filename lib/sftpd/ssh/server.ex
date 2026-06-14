@@ -598,7 +598,7 @@ defmodule Sftpd.SSH.Server do
   defp handle_encrypted_payload(<<94, recipient::32, rest::binary>>, state, socket) do
     Logger.debug("pure ssh received channel data")
 
-    with {:ok, data, ""} <- Wire.take_string(rest),
+    with <<data_len::32, data::binary-size(data_len)>> <- rest,
          {:ok, %{sftp?: true} = channel} <- fetch_active_channel(state, recipient) do
       {responses, channel} = handle_sftp_data(data, channel)
 
@@ -692,7 +692,7 @@ defmodule Sftpd.SSH.Server do
   defp drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
     case recv_buffered_encrypted_payload(state) do
       {:ok, <<94, ^recipient::32, rest::binary>>, state} ->
-        with {:ok, data, ""} <- Wire.take_string(rest) do
+        with <<data_len::32, data::binary-size(data_len)>> <- rest do
           {new_responses, channel} = handle_sftp_data(data, channel)
           responses = prepend_reversed(new_responses, responses)
 
