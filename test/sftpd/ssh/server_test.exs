@@ -141,6 +141,16 @@ defmodule Sftpd.SSH.ServerTest do
              Server.__test_window_adjust_payloads__(7, 1_048_576)
   end
 
+  test "flush payloads keep window adjust before channel data" do
+    channel = %{client_channel: 7, client_max_packet: 12, recv_window_adjust: 1_048_576}
+    response = SerializedPacket.iodata("abc")
+
+    assert [
+             <<93, 7::32, 1_048_576::32>>,
+             [<<94, 7::32, 3::32>>, "abc"]
+           ] = Server.__test_sftp_flush_payloads__(channel, [response], true)
+  end
+
   test "SFTP packet splitter accumulates fragmented packets without exposing partials" do
     first = <<1, 2, 3>>
     second = <<4, 5>>

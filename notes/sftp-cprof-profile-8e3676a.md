@@ -500,3 +500,35 @@ Top rows:
 Interpretation:
 - This keeps invalid encrypted packet lengths rejected without paying a function call per inbound encrypted packet.
 - Remaining top-row work is the unavoidable packet loop plus channel lookup/cache and SFTP response flushing.
+
+## Build flush payloads directly
+
+After replacing the response-payload prepend/reverse helper with direct flush payload construction, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29865 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 66.944 s | 153.0 MiB/s | `prepend_sftp_response_payloads/3` removed from hot rows |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SFTP.SerializedPacket.iodata/2` | 1355773 |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 719262 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 719262 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 719262 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 719262 |
+| `Sftpd.SSH.Server.fetch_active_channel/2` | 719253 |
+| `Sftpd.SSH.Server.cache_channel/2` | 719251 |
+| `Sftpd.SSH.Server.sftp_flush_payloads/3` | 718800 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 718800 |
+| `Sftpd.SSH.Server.flush_sftp_responses/4` | 718800 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 677900 |
+
+Interpretation:
+- This removes an extra list reversal from every SFTP response flush and avoids a dedicated prepend helper call.
+- The next major target is avoiding `SerializedPacket.iodata/2` allocation while slicing pending responses for channel-window-limited sends.

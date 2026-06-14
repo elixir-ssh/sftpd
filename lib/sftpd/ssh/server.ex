@@ -1040,17 +1040,7 @@ defmodule Sftpd.SSH.Server do
         client_window: channel.client_window - response_bytes
     }
 
-    payloads =
-      if adjust_sent? do
-        [<<93, channel.client_channel::32, channel.recv_window_adjust::32>>]
-      else
-        []
-      end
-
-    payloads =
-      payloads
-      |> prepend_sftp_response_payloads(channel, ready)
-      |> Enum.reverse()
+    payloads = sftp_flush_payloads(channel, ready, adjust_sent?)
 
     channel =
       if adjust_sent? do
@@ -1114,10 +1104,14 @@ defmodule Sftpd.SSH.Server do
 
   defp maybe_close_eof_channel(_socket, state, _channel), do: {:ok, state}
 
-  defp prepend_sftp_response_payloads(payloads, _channel, []), do: payloads
+  defp sftp_flush_payloads(channel, ready, adjust_sent?) do
+    response_payloads = SFTPBridge.response_payloads(channel, ready)
 
-  defp prepend_sftp_response_payloads(payloads, channel, responses) do
-    Enum.reverse(SFTPBridge.response_payloads(channel, responses), payloads)
+    if adjust_sent? do
+      [<<93, channel.client_channel::32, channel.recv_window_adjust::32>> | response_payloads]
+    else
+      response_payloads
+    end
   end
 
   defp append_pending_responses(channel, []), do: channel
@@ -1165,6 +1159,11 @@ defmodule Sftpd.SSH.Server do
       else
         []
       end
+    end
+
+    @doc false
+    def __test_sftp_flush_payloads__(channel, ready, adjust_sent?) do
+      sftp_flush_payloads(channel, ready, adjust_sent?)
     end
 
     @doc false

@@ -46,6 +46,9 @@ defmodule Sftpd.SSH.SFTPBridge do
             payloads = Enum.reverse(response_split_payloads(channel, response), payloads)
             {payloads, [], 0}
 
+          size == 0 and response_size <= max_packet ->
+            {payloads, response_data, response_size}
+
           size + response_size <= max_packet ->
             {payloads, [parts, response_data], size + response_size}
 
