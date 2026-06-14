@@ -26,6 +26,19 @@ defmodule Sftpd.SSH.SFTPBridge do
       max(channel.client_window - channel.client_max_packet, 0)
   end
 
+  @spec responses_near_window_size?(window_channel(), non_neg_integer()) :: boolean()
+  def responses_near_window_size?(_channel, 0), do: false
+
+  def responses_near_window_size?(channel, response_bytes) do
+    response_bytes >= max(channel.client_window - channel.client_max_packet, 0)
+  end
+
+  @spec response_window_size(response_part()) :: non_neg_integer()
+  def response_window_size(response) do
+    {response_size, _response_data} = response_iodata(response)
+    response_size
+  end
+
   @spec split_responses_for_window([response_part()], integer()) :: window_split()
   def split_responses_for_window(responses, window) do
     split_responses_for_window(responses, max(window, 0), [], 0)
@@ -272,8 +285,7 @@ defmodule Sftpd.SSH.SFTPBridge do
 
   defp responses_window_size(responses) do
     Enum.reduce(responses, 0, fn response, size ->
-      {response_size, _response_data} = response_iodata(response)
-      size + response_size
+      size + response_window_size(response)
     end)
   end
 

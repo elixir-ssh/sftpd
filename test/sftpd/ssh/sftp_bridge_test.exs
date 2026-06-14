@@ -64,6 +64,28 @@ defmodule Sftpd.SSH.SFTPBridgeTest do
     assert SFTPBridge.responses_near_window?(channel, [SerializedPacket.iodata("abcdef")])
   end
 
+  property "near-window detection by accumulated size matches response list detection" do
+    check all(
+            first <- binary(max_length: 32),
+            second <- binary(max_length: 32),
+            window <- integer(0..64),
+            max_packet <- integer(1..64)
+          ) do
+      channel = %{client_window: window, client_max_packet: max_packet}
+      responses = [SerializedPacket.iodata(first), SerializedPacket.data("hdr", second)]
+      size = Enum.reduce(responses, 0, fn response, total -> total + response_size(response) end)
+
+      assert SFTPBridge.responses_near_window_size?(channel, size) ==
+               SFTPBridge.responses_near_window?(channel, responses)
+    end
+  end
+
+  test "response window size uses serialized packet sizes without flattening iodata" do
+    assert SFTPBridge.response_window_size(SerializedPacket.iodata(["ab", ["cd"]])) == 4
+    assert SFTPBridge.response_window_size(SerializedPacket.data("header", ["body"])) == 10
+    assert SFTPBridge.response_window_size({:iodata, ["split", ["data"]], 9}) == 9
+  end
+
   defp packet_bytes(responses) do
     Enum.reduce(responses, 0, fn response, total -> total + response_size(response) end)
   end

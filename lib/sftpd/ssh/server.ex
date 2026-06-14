@@ -430,6 +430,7 @@ defmodule Sftpd.SSH.Server do
                 state,
                 channel,
                 Enum.reverse(responses),
+                responses_window_size_if_any(responses),
                 byte_size(data)
               )
 
@@ -453,7 +454,7 @@ defmodule Sftpd.SSH.Server do
             state = cache_channel(state, channel)
             {:continue, state}
           else
-            drain_result = drain_buffered_sftp_data(socket, recipient, state, channel, [], 0)
+            drain_result = drain_buffered_sftp_data(socket, recipient, state, channel, [], 0, 0)
             finish_channel_data_drain(socket, drain_result)
           end
 
@@ -667,6 +668,7 @@ defmodule Sftpd.SSH.Server do
           state,
           channel,
           Enum.reverse(responses),
+          responses_window_size_if_any(responses),
           byte_size(data)
         )
 
@@ -690,6 +692,7 @@ defmodule Sftpd.SSH.Server do
           state,
           channel,
           Enum.reverse(responses),
+          responses_window_size_if_any(responses),
           byte_size(data)
         )
 
@@ -781,20 +784,45 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
-  defp drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
-    if SFTPBridge.responses_near_window?(channel, responses) do
+  defp drain_buffered_sftp_data(
+         socket,
+         recipient,
+         state,
+         channel,
+         responses,
+         responses_bytes,
+         bytes_read
+       ) do
+    if SFTPBridge.responses_near_window_size?(channel, responses_bytes) do
       {:open, responses, state, channel, bytes_read}
     else
-      drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+      drain_more_buffered_sftp_data(
+        socket,
+        recipient,
+        state,
+        channel,
+        responses,
+        responses_bytes,
+        bytes_read
+      )
     end
   end
 
-  defp drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read) do
+  defp drain_more_buffered_sftp_data(
+         socket,
+         recipient,
+         state,
+         channel,
+         responses,
+         responses_bytes,
+         bytes_read
+       ) do
     case recv_buffered_or_available_encrypted_payload(socket, state) do
       {:ok, <<94, ^recipient::32, rest::binary>>, state} ->
         with <<data_len::32, data::binary-size(data_len)>> <- rest do
           {new_responses, channel} = handle_sftp_data(data, channel)
           responses = prepend_reversed(new_responses, responses)
+          responses_bytes = responses_bytes + responses_window_size_if_any(new_responses)
 
           drain_buffered_sftp_data(
             socket,
@@ -802,6 +830,7 @@ defmodule Sftpd.SSH.Server do
             state,
             channel,
             responses,
+            responses_bytes,
             bytes_read + byte_size(data)
           )
         else
@@ -810,7 +839,16 @@ defmodule Sftpd.SSH.Server do
 
       {:ok, <<93, ^recipient::32, bytes::32>>, state} ->
         channel = %{channel | client_window: channel.client_window + bytes}
-        drain_more_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+
+        drain_more_buffered_sftp_data(
+          socket,
+          recipient,
+          state,
+          channel,
+          responses,
+          responses_bytes,
+          bytes_read
+        )
 
       {:ok, payload, state} ->
         state = put_channel(state, channel)
@@ -819,7 +857,15 @@ defmodule Sftpd.SSH.Server do
           {:continue, state} ->
             case fetch_channel(state, recipient) do
               {:ok, %{sftp?: true} = channel} ->
-                drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+                drain_buffered_sftp_data(
+                  socket,
+                  recipient,
+                  state,
+                  channel,
+                  responses,
+                  responses_bytes,
+                  bytes_read
+                )
 
               _ ->
                 {:closed, state}
@@ -1261,6 +1307,15 @@ defmodule Sftpd.SSH.Server do
     %{channel | pending_responses: channel.pending_responses ++ responses}
   end
 
+  defp responses_window_size(responses) do
+    Enum.reduce(responses, 0, fn response, total ->
+      total + SFTPBridge.response_window_size(response)
+    end)
+  end
+
+  defp responses_window_size_if_any([]), do: 0
+  defp responses_window_size_if_any(responses), do: responses_window_size(responses)
+
   if function_exported?(Mix, :env, 0) and Mix.env() == :test do
     @doc false
     def __test_sftp_response_payloads__(channel, responses) do
@@ -1336,7 +1391,17 @@ defmodule Sftpd.SSH.Server do
           responses,
           bytes_read
         ) do
-      drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
+      response_bytes = responses_window_size_if_any(responses)
+
+      drain_buffered_sftp_data(
+        socket,
+        recipient,
+        state,
+        channel,
+        responses,
+        response_bytes,
+        bytes_read
+      )
     end
 
     @doc false
