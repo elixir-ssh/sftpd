@@ -626,8 +626,8 @@ defmodule Sftpd.SSH.Server do
         state = cache_channel(state, channel)
         {:continue, state}
       else
-        case flush_sftp_responses(socket, state, channel, 0) do
-          {:ok, state} -> {:continue, state}
+        case flush_sftp_responses_with_channel(socket, state, channel, 0) do
+          {:ok, state, _channel} -> {:continue, state}
           {:closed, state} -> {:continue, state}
           {:error, _reason, state} -> {:stop, state}
         end
@@ -639,8 +639,7 @@ defmodule Sftpd.SSH.Server do
 
   defp handle_encrypted_payload(<<96, recipient::32, _rest::binary>>, state, socket) do
     with {:ok, channel} <- fetch_active_channel(state, recipient),
-         {:ok, state} <- flush_sftp_responses(socket, state, channel, 0),
-         {:ok, channel} <- fetch_active_channel(state, recipient) do
+         {:ok, state, channel} <- flush_sftp_responses_with_channel(socket, state, channel, 0) do
       channel = %{channel | eof_received?: true}
 
       if channel.pending_responses == [] and sftp_buffer_empty?(channel.sftp_buffer) do
@@ -771,8 +770,8 @@ defmodule Sftpd.SSH.Server do
       state = cache_channel(state, channel)
       {:continue, state}
     else
-      case flush_sftp_responses(socket, state, channel, 0) do
-        {:ok, state} ->
+      case flush_sftp_responses_with_channel(socket, state, channel, 0) do
+        {:ok, state, _channel} ->
           {:continue, state}
 
         {:closed, state} ->
@@ -1016,14 +1015,6 @@ defmodule Sftpd.SSH.Server do
     case :gen_tcp.send(socket, encrypted) do
       :ok -> {:ok, state}
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp flush_sftp_responses(socket, state, channel, bytes_read) do
-    case flush_sftp_responses_with_channel(socket, state, channel, bytes_read) do
-      {:ok, state, _channel} -> {:ok, state}
-      {:closed, state} -> {:closed, state}
-      {:error, reason, state} -> {:error, reason, state}
     end
   end
 

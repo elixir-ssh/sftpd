@@ -563,3 +563,33 @@ Top rows:
 Interpretation:
 - This removes high-volume struct allocation while preserving low-copy iodata slices for partially sent responses.
 - The remaining bottleneck is now overwhelmingly the per-SSH-packet receive/dispatch/flush loop itself.
+
+## Remove SFTP flush wrapper from hot path
+
+After replacing hot `flush_sftp_responses/4` call sites with direct `flush_sftp_responses_with_channel/4` handling, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29867 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 67.152 s | 152.5 MiB/s | `flush_sftp_responses/4` removed from hot rows |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 730901 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 730901 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 730901 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 730901 |
+| `Sftpd.SSH.Server.fetch_active_channel/2` | 730891 |
+| `Sftpd.SSH.Server.cache_channel/2` | 730890 |
+| `Sftpd.SSH.Server.sftp_flush_payloads/3` | 730443 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 730443 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 689543 |
+
+Interpretation:
+- This removes a pure return-shape wrapper from every ordinary SFTP flush.
+- Remaining cost is the packet receive/dispatch loop and the real flush implementation.
