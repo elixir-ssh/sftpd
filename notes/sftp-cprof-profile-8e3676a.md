@@ -253,3 +253,61 @@ Interpretation:
 - This removes one no-op function from every incomplete upload fragment.
 - `append_pending_responses/2` now scales with completed SFTP requests rather than SSH channel-data fragments on upload.
 - The remaining upload cost is the unavoidable receive/decrypt/dispatch loop per OpenSSH channel packet plus partial-packet bookkeeping.
+
+## Baseline After Empty Response Append
+
+After commit `4abce91` (`Skip empty SFTP response append`), the full cprof matrix was:
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29401 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29402 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction download --port 29403 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction upload --port 29404 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29405 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction upload --port 29406 --limit 25
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Main hot shape |
+| ---: | --- | ---: | ---: | --- |
+| 64 MiB | Download | 0.665 s | 96.2 MiB/s | send/flush loop, 4,719 sends |
+| 64 MiB | Upload | 0.186 s | 344.5 MiB/s | receive/decrypt/drain loop, 8,200 channel fragments |
+| 1 GiB | Download | 8.348 s | 122.7 MiB/s | send/flush loop, 67,676 sends |
+| 1 GiB | Upload | 2.823 s | 362.8 MiB/s | receive/decrypt/drain loop, 130,824 channel fragments |
+| 10 GiB | Download | 77.319 s | 132.4 MiB/s | send/flush loop, 673,975 sends |
+| 10 GiB | Upload | 24.311 s | 421.2 MiB/s | receive/decrypt/drain loop, 1,310,986 channel fragments |
+
+Interpretation:
+- Throughput is still noisy under `cprof`; call counts are more stable than elapsed time.
+- Upload remains dominated by per-fragment receive/decrypt/dispatch and active-channel updates.
+- Download remains dominated by OpenSSH channel packet/window cadence and encrypted send count.
+
+## Follow-up: Direct Pending Response Check
+
+After replacing the hot window-adjust `no_pending_responses?/1` helper call with a direct `channel.pending_responses == []` check, the full cprof matrix was:
+
+Commands used:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction download --port 29431 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 67108864 --direction upload --port 29432 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction download --port 29433 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 1073741824 --direction upload --port 29434 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29435 --limit 25
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction upload --port 29436 --limit 25
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 64 MiB | Download | 0.743 s | 86.1 MiB/s | helper removed from hot rows |
+| 64 MiB | Upload | 0.173 s | 368.9 MiB/s | upload mostly unaffected |
+| 1 GiB | Download | 8.224 s | 124.5 MiB/s | helper removed from hot rows |
+| 1 GiB | Upload | 2.755 s | 371.7 MiB/s | neutral/noisy |
+| 10 GiB | Download | 77.909 s | 131.4 MiB/s | send calls: 673,176 |
+| 10 GiB | Upload | 23.615 s | 433.6 MiB/s | neutral/noisy |
+
+Interpretation:
+- This is a small call-count cleanup on the window-adjust path.
+- It removes an avoidable helper call from hundreds of thousands of download-side packets.
+- The fundamental download limit remains encrypted send count and OpenSSH channel packet/window cadence.

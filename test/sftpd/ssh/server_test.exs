@@ -141,11 +141,6 @@ defmodule Sftpd.SSH.ServerTest do
              Server.__test_window_adjust_payloads__(7, 1_048_576)
   end
 
-  test "window adjust only needs response flush when responses are pending" do
-    assert Server.__test_no_pending_responses?(%{pending_responses: []})
-    refute Server.__test_no_pending_responses?(%{pending_responses: [:response]})
-  end
-
   test "SFTP packet splitter accumulates fragmented packets without exposing partials" do
     first = <<1, 2, 3>>
     second = <<4, 5>>

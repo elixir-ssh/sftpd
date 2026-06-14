@@ -623,7 +623,7 @@ defmodule Sftpd.SSH.Server do
       channel = %{channel | client_window: channel.client_window + bytes}
       state = cache_channel(state, channel)
 
-      if no_pending_responses?(channel) do
+      if channel.pending_responses == [] do
         {:continue, state}
       else
         case flush_sftp_responses(socket, state, channel, 0) do
@@ -712,7 +712,7 @@ defmodule Sftpd.SSH.Server do
         channel = %{channel | client_window: channel.client_window + bytes}
         state = cache_channel(state, channel)
 
-        if no_pending_responses?(channel) do
+        if channel.pending_responses == [] do
           drain_buffered_sftp_data(socket, recipient, state, channel, responses, bytes_read)
         else
           case flush_sftp_responses_with_channel(socket, state, channel, 0) do
@@ -1104,9 +1104,6 @@ defmodule Sftpd.SSH.Server do
 
   defp maybe_close_eof_channel(_socket, state, _channel), do: {:ok, state}
 
-  defp no_pending_responses?(%{pending_responses: []}), do: true
-  defp no_pending_responses?(_channel), do: false
-
   defp maybe_add_window_adjust(payloads, %{recv_window_adjust: adjust})
        when adjust < @window_adjust_batch_size,
        do: payloads
@@ -1163,9 +1160,6 @@ defmodule Sftpd.SSH.Server do
         recv_window_adjust: recv_window_adjust
       })
     end
-
-    @doc false
-    def __test_no_pending_responses?(channel), do: no_pending_responses?(channel)
 
     @doc false
     def __test_split_sftp_packets__(buffer, data), do: split_sftp_packets(buffer, data)
