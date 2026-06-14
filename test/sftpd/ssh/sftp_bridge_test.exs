@@ -44,6 +44,9 @@ defmodule Sftpd.SSH.SFTPBridgeTest do
   end
 
   defp packet_bytes(responses) do
-    Enum.reduce(responses, 0, fn %SerializedPacket{size: size}, total -> total + size end)
+    Enum.reduce(responses, 0, fn response, total -> total + response_size(response) end)
   end
+
+  defp response_size(%SerializedPacket{size: size}), do: size
+  defp response_size({:iodata, _iodata, size}), do: size
 end

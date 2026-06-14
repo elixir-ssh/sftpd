@@ -15,8 +15,8 @@ defmodule Sftpd.SSH.SFTPBridge do
           optional(atom()) => term()
         }
 
-  @type window_split ::
-          {[SerializedPacket.t()], [SerializedPacket.t()], non_neg_integer()}
+  @type response_part :: SerializedPacket.t() | {:iodata, iodata(), non_neg_integer()}
+  @type window_split :: {[response_part()], [response_part()], non_neg_integer()}
 
   @spec responses_near_window?(window_channel(), [SerializedPacket.t()]) :: boolean()
   def responses_near_window?(_channel, []), do: false
@@ -26,12 +26,12 @@ defmodule Sftpd.SSH.SFTPBridge do
       max(channel.client_window - channel.client_max_packet, 0)
   end
 
-  @spec split_responses_for_window([SerializedPacket.t()], integer()) :: window_split()
+  @spec split_responses_for_window([response_part()], integer()) :: window_split()
   def split_responses_for_window(responses, window) do
     split_responses_for_window(responses, max(window, 0), [], 0)
   end
 
-  @spec response_payloads(payload_channel(), [SerializedPacket.t()]) :: [iodata()]
+  @spec response_payloads(payload_channel(), [response_part()]) :: [iodata()]
   def response_payloads(channel, responses) when is_list(responses) do
     max_packet = max(1, channel.client_max_packet)
     client_channel = channel.client_channel
@@ -81,8 +81,8 @@ defmodule Sftpd.SSH.SFTPBridge do
       true ->
         {prefix, suffix} = split_iodata(response_data, remaining_window)
 
-        ready = [SerializedPacket.iodata(prefix, remaining_window) | ready]
-        pending = [SerializedPacket.iodata(suffix, response_size - remaining_window) | rest]
+        ready = [{:iodata, prefix, remaining_window} | ready]
+        pending = [{:iodata, suffix, response_size - remaining_window} | rest]
 
         {Enum.reverse(ready), pending, window}
     end
@@ -156,6 +156,8 @@ defmodule Sftpd.SSH.SFTPBridge do
     {size, data}
   end
 
+  defp response_iodata({:iodata, data, size}), do: {size, data}
+
   defp response_iodata(%SerializedPacket{
          kind: :data,
          header: header,
@@ -168,6 +170,11 @@ defmodule Sftpd.SSH.SFTPBridge do
   defp response_split_payloads(channel, %SerializedPacket{kind: :iodata, iodata: data}) do
     max_packet = max(1, channel.client_max_packet)
     channel_data_payloads(channel.client_channel, data, max_packet, IO.iodata_length(data), [])
+  end
+
+  defp response_split_payloads(channel, {:iodata, data, size}) do
+    max_packet = max(1, channel.client_max_packet)
+    channel_data_payloads(channel.client_channel, data, max_packet, size, [])
   end
 
   defp response_split_payloads(

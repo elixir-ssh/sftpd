@@ -532,3 +532,34 @@ Top rows:
 Interpretation:
 - This removes an extra list reversal from every SFTP response flush and avoids a dedicated prepend helper call.
 - The next major target is avoiding `SerializedPacket.iodata/2` allocation while slicing pending responses for channel-window-limited sends.
+
+## Avoid packet structs for window slices
+
+After representing channel-window split slices as internal `{iodata, data, size}` tuples instead of allocating new `SerializedPacket` structs, the 10 GiB OpenSSH download profile was:
+
+```sh
+nix develop -c mix run -r test/support/ssh_keys.ex scripts/sftp_profile.exs --size 10737418240 --direction download --port 29866 --limit 35
+```
+
+| Size | Direction | Elapsed | Profiled Throughput | Notes |
+| ---: | --- | ---: | ---: | --- |
+| 10 GiB | Download | 67.419 s | 151.9 MiB/s | `SerializedPacket.iodata/2` dropped from 1355773 calls to 7 |
+
+Top rows:
+
+| function | calls |
+| --- | ---: |
+| `Sftpd.SSH.Server.recv_encrypted_payload/2` | 724593 |
+| `Sftpd.SSH.Server.recv_encrypted_packet/3` | 724593 |
+| `Sftpd.SSH.Server.handle_encrypted_payload/3` | 724593 |
+| `Sftpd.SSH.Server.encrypted_loop/2` | 724593 |
+| `Sftpd.SSH.Server.fetch_active_channel/2` | 724584 |
+| `Sftpd.SSH.Server.cache_channel/2` | 724582 |
+| `Sftpd.SSH.Server.sftp_flush_payloads/3` | 724151 |
+| `Sftpd.SSH.Server.flush_sftp_responses_with_channel/4` | 724151 |
+| `Sftpd.SSH.Server.flush_sftp_responses/4` | 724151 |
+| `Sftpd.SSH.Server.send_encrypted_payloads/3` | 683252 |
+
+Interpretation:
+- This removes high-volume struct allocation while preserving low-copy iodata slices for partially sent responses.
+- The remaining bottleneck is now overwhelmingly the per-SSH-packet receive/dispatch/flush loop itself.

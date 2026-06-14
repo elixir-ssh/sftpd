@@ -255,4 +255,8 @@ defmodule Sftpd.SSH.ServerTest do
   defp response_iodata(%SerializedPacket{kind: :iodata, size: size, iodata: iodata}) do
     {size, iodata}
   end
+
+  defp response_iodata({:iodata, iodata, size}) do
+    {size, iodata}
+  end
 end
