@@ -288,6 +288,12 @@ defmodule Sftpd.SSH.ServerTest do
              |> Server.__test_append_pending_responses__([second])
   end
 
+  test "encrypted send mode uses the small path only for small iodata" do
+    assert :small = Server.__test_encrypted_send_mode__(<<0::size(8 * 4096)>>)
+    assert :large = Server.__test_encrypted_send_mode__(<<0::size(8 * 4096 + 8)>>)
+    assert :small = Server.__test_encrypted_send_mode__(["abc", "def"])
+  end
+
   test "nonblocking encrypted drain preserves empty buffers and consumes available packets" do
     {client, server} = connected_sockets()
 

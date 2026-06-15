@@ -23,6 +23,7 @@ defmodule Sftpd.SSH.Server do
   @sftp_drain_probe_timeout 1
   @connection_fullsweep_after 65_535
   @connection_min_heap_size 196_650
+  @small_encrypted_send_limit 4 * 1024
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -1222,7 +1223,7 @@ defmodule Sftpd.SSH.Server do
     {encrypted, cipher} =
       Cipher.encrypt_packet(cipher, Packet.encode_aead_packet(payload, Cipher.block_size(cipher)))
 
-    case :gen_tcp.send(socket, encrypted) do
+    case send_small_tcp(socket, encrypted) do
       :ok -> {:ok, %{state | s2c_cipher: cipher}}
       {:error, reason} -> {:error, reason}
     end
@@ -1233,10 +1234,26 @@ defmodule Sftpd.SSH.Server do
     {encrypted, cipher} = Cipher.encrypt_payloads(cipher, payloads, Cipher.block_size(cipher))
     state = %{state | s2c_cipher: cipher}
 
-    case :gen_tcp.send(socket, encrypted) do
+    case send_encrypted_tcp(socket, encrypted) do
       :ok -> {:ok, state}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp send_encrypted_tcp(socket, iodata) do
+    if encrypted_send_mode(iodata) == :small do
+      send_small_tcp(socket, iodata)
+    else
+      :gen_tcp.send(socket, iodata)
+    end
+  end
+
+  defp encrypted_send_mode(iodata) do
+    if IO.iodata_length(iodata) <= @small_encrypted_send_limit, do: :small, else: :large
+  end
+
+  defp send_small_tcp(socket, iodata) do
+    :prim_inet.send(socket, iodata, [])
   end
 
   defp flush_sftp_responses_with_channel(socket, state, channel, bytes_read) do
@@ -1420,6 +1437,9 @@ defmodule Sftpd.SSH.Server do
     def __test_recv_encrypted_payload__(socket, state) do
       recv_encrypted_payload(socket, state)
     end
+
+    @doc false
+    def __test_encrypted_send_mode__(iodata), do: encrypted_send_mode(iodata)
 
     @doc false
     def __test_drain_buffered_sftp_data__(
