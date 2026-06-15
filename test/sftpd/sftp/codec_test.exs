@@ -69,6 +69,17 @@ defmodule Sftpd.SFTP.CodecTest do
 
     assert IO.iodata_to_binary(data) == "payload"
     refute is_binary(data)
+
+    split_inside_data = [
+      <<6, 4::32, string("h")::binary, 8::64, 7::32, "pay">>,
+      ["load"]
+    ]
+
+    assert {:ok, %{type: :write, id: 4, handle: "h", offset: 8, data: data}} =
+             Codec.decode({:iodata, split_inside_data, IO.iodata_length(split_inside_data)})
+
+    assert IO.iodata_to_binary(data) == "payload"
+    assert ["pay", ["load"]] = data
   end
 
   test "rejects malformed fragmented write packets" do

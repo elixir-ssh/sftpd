@@ -264,6 +264,32 @@ defmodule Sftpd.SFTP.Codec do
 
   defp take_string(_), do: {:error, :bad_message}
 
+  defp decode_iodata_write([first | data_parts], size)
+       when is_binary(first) and is_integer(size) and size >= 21 do
+    with <<@ssh_fxp_write, id::32, handle_len::32, rest::binary>> <- first,
+         true <- byte_size(rest) >= handle_len + 12,
+         <<handle::binary-size(^handle_len), offset::64, data_len::32, first_data::binary>> <-
+           rest,
+         true <- size == 21 + handle_len + data_len,
+         first_data_size = byte_size(first_data),
+         true <- first_data_size <= data_len,
+         true <- byte_size(first) <= size,
+         true <- size - byte_size(first) == data_len - first_data_size do
+      data =
+        case {first_data, data_parts} do
+          {"", [data]} -> data
+          {"", data_parts} -> data_parts
+          {first_data, []} -> first_data
+          {first_data, data_parts} -> [first_data | data_parts]
+        end
+
+      {:ok, %{type: :write, id: id, handle: handle, offset: offset, data: data}}
+    else
+      false -> :error
+      _ -> :not_write
+    end
+  end
+
   defp decode_iodata_write(iodata, size) do
     with true <- size >= 21,
          {:ok, <<@ssh_fxp_write, id::32, handle_len::32>>, rest} <- take_iodata_binary(iodata, 9),
