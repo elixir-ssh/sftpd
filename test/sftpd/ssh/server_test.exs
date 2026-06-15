@@ -312,7 +312,7 @@ defmodule Sftpd.SSH.ServerTest do
     end
   end
 
-  test "encrypted receive keeps extra packets buffered after one socket read" do
+  test "encrypted receive preserves extra packets after one blocking receive" do
     {client, server} = connected_sockets()
 
     try do
@@ -333,7 +333,7 @@ defmodule Sftpd.SSH.ServerTest do
                Server.__test_recv_encrypted_payload__(server, state)
 
       assert state.c2s_cipher.sequence == 1
-      assert IO.iodata_to_binary(second_encrypted) == state.buffer
+      assert state.buffer == ""
 
       assert {:ok, ^second_payload, %{buffer: "", c2s_cipher: next_cipher}} =
                Server.__test_recv_encrypted_payload__(server, state)
