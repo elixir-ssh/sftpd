@@ -895,7 +895,30 @@ defmodule Sftpd.SSH.Server do
   end
 
   defp finish_channel_data_drain(socket, {:open, [], state, channel, bytes_read}) do
-    finish_open_channel_data_drain(socket, [], state, channel, bytes_read)
+    channel = %{channel | recv_window_adjust: channel.recv_window_adjust + bytes_read}
+
+    if channel.pending_responses == [] and channel.recv_window_adjust < @window_adjust_batch_size do
+      state =
+        if state.active_channel_id in [nil, channel.server_channel] do
+          %{state | active_channel_id: channel.server_channel, active_channel: channel}
+        else
+          cache_channel(state, channel)
+        end
+
+      {:continue, state}
+    else
+      case flush_sftp_responses_with_channel(socket, state, channel, 0) do
+        {:ok, state, _channel} ->
+          {:continue, state}
+
+        {:closed, state} ->
+          {:continue, state}
+
+        {:error, reason, state} ->
+          Logger.debug("pure ssh failed to flush sftp responses: #{inspect(reason)}")
+          {:stop, state}
+      end
+    end
   end
 
   defp finish_channel_data_drain(socket, {:open, responses_acc, state, channel, bytes_read}) do
