@@ -249,6 +249,9 @@ defmodule Sftpd.Backends.Memory do
       offset >= byte_size(content) ->
         :eof
 
+      offset == 0 and len >= byte_size(content) ->
+        {:ok, content}
+
       true ->
         bytes = min(len, byte_size(content) - offset)
         {:ok, binary_part(content, offset, bytes)}

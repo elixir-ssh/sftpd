@@ -108,6 +108,19 @@ defmodule Sftpd.Backends.MemoryTest do
       assert :erts_debug.same(read_chunk, stored_chunk)
     end
 
+    test "returns exact content reads without copying", %{state: state} do
+      content = :binary.copy("x", 262_080)
+      assert :ok = Memory.write_file("/exact-content.bin", content, state)
+
+      assert {:ok, read_handle} = Memory.open_read("/exact-content.bin", %{}, state)
+      stored_content = read_handle.file.content
+
+      assert {:ok, read_content} = Memory.read_at(read_handle, 0, byte_size(content), state)
+      assert stored_content == content
+      assert read_content == stored_content
+      assert :erts_debug.same(read_content, stored_content)
+    end
+
     test "materializes sequential chunks without changing content", %{state: state} do
       {:ok, handle} = Memory.open_write("/sequential.bin", %{}, %{}, state)
 
