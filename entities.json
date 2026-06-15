@@ -6,7 +6,6 @@
     "Sftpd.Backends.S3",
     "Sftpd.Backends.Memory",
     "Sftpd.FileHandler",
-    "Sftpd.IODevice",
     "ExAws",
     "SFTP",
     "S3"

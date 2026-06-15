@@ -1,1052 +1,607 @@
 defmodule Sftpd.IODeviceTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use ExUnitProperties
 
-  import ExUnit.CaptureLog
-
+  alias Sftpd.Backends.Memory
   alias Sftpd.IODevice
-  alias Sftpd.FileHandler
-  alias Sftpd.Test.TelemetryHelper
 
-  defmodule MockBackend do
-    def read_file(_path, %{content: content}), do: {:ok, content}
-    def read_file(_path, %{error: reason}), do: {:error, reason}
+  defmodule ErrorBackend do
+    @moduledoc false
 
-    def write_file(_path, _content, %{write_error: reason}), do: {:error, reason}
+    def file_attrs("/attrs-error", _session, _state), do: {:error, :enoent}
 
-    def write_file(_path, content, state) do
-      send(state.test_pid, {:written, content})
-      :ok
+    def file_attrs("/nested-iodata", _session, %{seed_data: data}),
+      do: {:ok, %{size: IO.iodata_length(data)}}
+
+    def file_attrs(_path, _session, _state), do: {:ok, %{size: 4}}
+
+    def open_read("/open-read-error", _session, _state), do: {:error, :eacces}
+    def open_read("/read-error", _session, _state), do: {:ok, :read_error}
+    def open_read("/backend-eof", _session, _state), do: {:ok, :backend_eof}
+    def open_read("/iodata", _session, _state), do: {:ok, :iodata}
+
+    def open_read("/nested-iodata", _session, %{seed_data: data}),
+      do: {:ok, {:nested_iodata, data}}
+
+    def open_read(_path, _session, _state), do: {:ok, :reader}
+
+    def read_at(:read_error, _offset, _len, _state), do: {:error, :eio}
+    def read_at(:backend_eof, _offset, _len, _state), do: :eof
+    def read_at(:iodata, _offset, _len, _state), do: {:ok, ["io", "data"]}
+    def read_at({:nested_iodata, data}, _offset, _len, _state), do: {:ok, data}
+    def read_at(_handle, _offset, 0, _state), do: {:ok, ""}
+    def read_at(_handle, _offset, len, _state), do: {:ok, binary_part("data", 0, min(len, 4))}
+
+    def open_write("/open-write-error", _attrs, _session, _state), do: {:error, :eacces}
+    def open_write("/finish-error", _attrs, _session, _state), do: {:ok, :finish_error}
+    def open_write("/write-error", _attrs, _session, _state), do: {:ok, :write_error}
+    def open_write("/nested-iodata", _attrs, _session, _state), do: {:ok, :nested_writer}
+    def open_write(_path, _attrs, _session, _state), do: {:ok, :writer}
+
+    def write_at(:write_error, _offset, _data, _state), do: {:error, :eio}
+
+    def write_at(:nested_writer = handle, offset, data, %{test_pid: test_pid}) do
+      send(test_pid, {:seed_write, offset, data, IO.iodata_length(data), is_binary(data)})
+      {:ok, handle}
+    end
+
+    def write_at(handle, _offset, _data, _state), do: {:ok, handle}
+
+    def finish_write(:finish_error, _state), do: {:error, :eio}
+    def finish_write(_handle, _state), do: :ok
+
+    def abort_write(:write_error, %{test_pid: test_pid}), do: send(test_pid, :aborted)
+    def abort_write(:finish_error, %{test_pid: test_pid}), do: send(test_pid, :aborted_finish)
+    def abort_write(_handle, _state), do: :ok
+  end
+
+  defmodule SequentialBackend do
+    @moduledoc false
+
+    def file_attrs("/sized.bin", _session, _state), do: {:ok, %{size: 4}}
+    def file_attrs(_path, _session, _state), do: {:ok, %{size: 0}}
+    def open_read(_path, _session, _state), do: {:error, :enoent}
+    def read_at(_handle, _offset, _len, _state), do: :eof
+
+    def open_write(_path, _attrs, _session, state) do
+      open_index =
+        Agent.get_and_update(state, fn data ->
+          open_index = Map.get(data, :opens, 0) + 1
+          {open_index, Map.put(data, :opens, open_index)}
+        end)
+
+      {:ok, %{offset: 0, chunks: [], open_index: open_index}}
+    end
+
+    def write_at(%{offset: offset} = handle, offset, data, _state) do
+      data = IO.iodata_to_binary(data)
+
+      {:ok,
+       %{handle | offset: offset + byte_size(data), chunks: [{offset, data} | handle.chunks]}}
+    end
+
+    def write_at(_handle, _offset, _data, _state), do: {:error, :einval}
+
+    def finish_write(%{open_index: open_index} = handle, state) do
+      if Agent.get(state, &Map.get(&1, :finish_error_on_open)) == open_index do
+        {:error, :eio}
+      else
+        content =
+          handle.chunks
+          |> Enum.reverse()
+          |> Enum.map(fn {_offset, data} -> data end)
+          |> IO.iodata_to_binary()
+
+        Agent.update(state, &Map.put(&1, :content, content))
+      end
+    end
+
+    def abort_write(_handle, state) do
+      Agent.update(state, fn data ->
+        Map.update(data, :aborts, 1, fn aborts -> aborts + 1 end)
+      end)
     end
   end
 
-  defmodule RangeBackend do
-    def file_info(_path, %{content: content}) do
-      {:ok, Sftpd.Backend.file_info(byte_size(content), {{2024, 1, 1}, {0, 0, 0}})}
-    end
+  defmodule SeedReplayBackend do
+    @moduledoc false
 
-    def read_file_range(_path, offset, len, %{content: content}) do
-      size = byte_size(content)
+    @content "abcdef"
 
-      if offset >= size do
+    def file_attrs("/large-existing.bin", _session, _state),
+      do: {:ok, %{size: byte_size(@content)}}
+
+    def open_read("/large-existing.bin", _session, _state), do: {:ok, @content}
+
+    def read_at(content, offset, len, _state) do
+      if offset >= byte_size(content) do
         :eof
       else
-        bytes_to_read = min(len, size - offset)
-        {:ok, binary_part(content, offset, bytes_to_read)}
+        {:ok, binary_part(content, offset, min(len, byte_size(content) - offset))}
       end
     end
-  end
 
-  defmodule RangeEmptyBackend do
-    def file_info(_path, _state),
-      do: {:ok, Sftpd.Backend.file_info(10, {{2024, 1, 1}, {0, 0, 0}})}
+    def open_write(_path, _attrs, _session, state) do
+      open_index =
+        Agent.get_and_update(state, fn data ->
+          open_index = Map.get(data, :opens, 0) + 1
+          {open_index, Map.put(data, :opens, open_index)}
+        end)
 
-    def read_file_range(_path, _offset, _len, _state), do: {:ok, <<>>}
-  end
-
-  defmodule RangeErrorBackend do
-    def file_info(_path, _state),
-      do: {:ok, Sftpd.Backend.file_info(10, {{2024, 1, 1}, {0, 0, 0}})}
-
-    def read_file_range(_path, _offset, _len, _state), do: {:error, :eio}
-  end
-
-  defmodule RangeStatErrorBackend do
-    def file_info(_path, _state), do: {:error, :enoent}
-    def read_file_range(_path, _offset, _len, _state), do: {:ok, "unused"}
-  end
-
-  defmodule HangingOpenBackend do
-    def read_file(_path, %{test_pid: test_pid}) do
-      send(test_pid, {:open_started, self()})
-      Process.sleep(:infinity)
-    end
-  end
-
-  defmodule SlowProcessReadBackend do
-    use GenServer
-
-    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
-
-    def reply(pid, reply), do: GenServer.cast(pid, {:reply_read, reply})
-
-    @impl GenServer
-    def init(test_pid), do: {:ok, %{test_pid: test_pid, read_from: nil}}
-
-    @impl GenServer
-    def handle_call({:read_file, path}, from, state) do
-      send(state.test_pid, {:process_read_opened, self(), path})
-      {:noreply, %{state | read_from: from}}
+      {:ok, %{offset: 0, chunks: [], open_index: open_index}}
     end
 
-    @impl GenServer
-    def handle_cast({:reply_read, reply}, %{read_from: from} = state) do
-      GenServer.reply(from, reply)
-      {:noreply, %{state | read_from: nil}}
-    end
-  end
+    def write_at(%{offset: offset} = handle, offset, data, _state) do
+      data = IO.iodata_to_binary(data)
 
-  defmodule CrashingOpenBackend do
-    def read_file(_path, _state), do: raise("open failed")
-  end
-
-  defmodule StreamingBackend do
-    def begin_write(_path, %{test_pid: test_pid}), do: {:ok, %{chunks: [], test_pid: test_pid}}
-
-    def write_chunk(handle, offset, chunk, _state) do
-      data = IO.iodata_to_binary(chunk)
-      send(handle.test_pid, {:stream_chunk, offset, data})
-      {:ok, %{handle | chunks: handle.chunks ++ [{offset, data}]}}
+      {:ok,
+       %{handle | offset: offset + byte_size(data), chunks: [{offset, data} | handle.chunks]}}
     end
 
-    def finish_write(handle, _state) do
-      send(handle.test_pid, {:stream_finish, handle.chunks})
-      :ok
+    def write_at(_handle, _offset, _data, _state), do: {:error, :einval}
+
+    def finish_write(handle, state) do
+      content =
+        handle.chunks
+        |> Enum.reverse()
+        |> Enum.map(fn {_offset, data} -> data end)
+        |> IO.iodata_to_binary()
+
+      Agent.update(state, &Map.put(&1, :content, content))
     end
 
-    def abort_write(handle, _state) do
-      send(handle.test_pid, {:stream_abort, handle.chunks})
-      :ok
-    end
-  end
-
-  defmodule HangingStreamingOpenBackend do
-    def begin_write(_path, %{test_pid: test_pid}) do
-      send(test_pid, {:stream_open_started, self()})
-      Process.sleep(:infinity)
-    end
-
-    def write_chunk(handle, _offset, _chunk, _state), do: {:ok, handle}
-    def finish_write(_handle, _state), do: :ok
-    def abort_write(_handle, _state), do: :ok
-  end
-
-  defmodule PartialStreamingBackend do
-    def begin_write(_path, %{test_pid: test_pid}), do: {:ok, %{test_pid: test_pid}}
-
-    def write_file(_path, content, %{test_pid: test_pid}) do
-      send(test_pid, {:partial_written, content})
-      :ok
-    end
-  end
-
-  defmodule ReplayBackend do
-    def begin_write(_path, %{agent: agent, test_pid: test_pid}) do
-      Agent.get_and_update(agent, fn attempts ->
-        next_attempt = attempts + 1
-
-        result =
-          case next_attempt do
-            1 -> {:error, :fallback_once}
-            _ -> {:ok, %{chunks: [], test_pid: test_pid}}
-          end
-
-        {result, next_attempt}
+    def abort_write(_handle, state) do
+      Agent.update(state, fn data ->
+        Map.update(data, :aborts, 1, fn aborts -> aborts + 1 end)
       end)
     end
-
-    def write_chunk(handle, offset, chunk, _state) do
-      data = IO.iodata_to_binary(chunk)
-      send(handle.test_pid, {:replay_chunk, offset, data})
-      {:ok, %{handle | chunks: handle.chunks ++ [{offset, data}]}}
-    end
-
-    def finish_write(handle, _state) do
-      send(handle.test_pid, {:replay_finish, handle.chunks})
-      :ok
-    end
-
-    def abort_write(handle, _state) do
-      send(handle.test_pid, {:replay_abort, handle.chunks})
-      :ok
-    end
   end
 
-  defmodule StreamingWriteErrorBackend do
-    def begin_write(_path, %{test_pid: test_pid}), do: {:ok, %{test_pid: test_pid}}
-    def write_chunk(_handle, _offset, _chunk, _state), do: {:error, :eio}
-    def finish_write(_handle, _state), do: :ok
-    def abort_write(_handle, _state), do: {:error, :abort_failed}
+  setup do
+    {:ok, state} = Memory.init([])
+    %{backend_state: state}
   end
 
-  defmodule StreamingFinishErrorBackend do
-    def begin_write(_path, %{test_pid: test_pid}), do: {:ok, %{chunks: [], test_pid: test_pid}}
+  test "reads ranges without a per-file process", %{backend_state: backend_state} do
+    :ok = Memory.write_file(~c"/file.bin", "abcdefghij", backend_state)
 
-    def write_chunk(handle, offset, chunk, _state) do
-      data = IO.iodata_to_binary(chunk)
-      {:ok, %{handle | chunks: handle.chunks ++ [{offset, data}]}}
-    end
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/file.bin",
+               mode: :read,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
 
-    def finish_write(_handle, _state), do: {:error, :eio}
-
-    def abort_write(handle, _state) do
-      send(handle.test_pid, {:finish_error_abort, handle.chunks})
-      :ok
-    end
+    refute is_pid(handle)
+    assert IODevice.handle?(handle)
+    assert {:ok, "abcd"} = IODevice.read(handle, 4)
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert {:ok, "cde"} = IODevice.read(handle, 3)
+    assert {:ok, 9} = IODevice.position(handle, {:eof, -1})
+    assert {:ok, "j"} = IODevice.read(handle, 4)
+    assert :eof = IODevice.read(handle, 4)
+    assert :ok = IODevice.close(handle)
   end
 
-  defmodule ReplayWriteErrorBackend do
-    def begin_write(_path, %{agent: agent, test_pid: test_pid}) do
-      Agent.get_and_update(agent, fn attempts ->
-        next_attempt = attempts + 1
+  test "normalizes backend iodata reads to binaries" do
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: "/iodata",
+               mode: :read,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
 
-        result =
-          case next_attempt do
-            1 -> {:error, :fallback_once}
-            _ -> {:ok, %{test_pid: test_pid}}
-          end
-
-        {result, next_attempt}
-      end)
-    end
-
-    def write_chunk(_handle, _offset, _chunk, _state), do: {:error, :eio}
-    def finish_write(_handle, _state), do: :ok
-    def abort_write(_handle, _state), do: :ok
+    assert {:ok, "iodata"} = IODevice.read(handle, 6)
   end
 
-  defmodule ReplayFinishErrorBackend do
-    def begin_write(_path, %{agent: agent, test_pid: test_pid}) do
-      Agent.get_and_update(agent, fn attempts ->
-        next_attempt = attempts + 1
+  property "read/write seeding accepts iodata without writing it to the backend" do
+    check all(
+            head <- binary(min_length: 1, max_length: 16),
+            tail <- binary(max_length: 16)
+          ) do
+      data = [head, [tail]]
+      bytes = IO.iodata_length(data)
+      expected = IO.iodata_to_binary(data)
 
-        result =
-          case next_attempt do
-            1 -> {:error, :fallback_once}
-            _ -> {:ok, %{chunks: [], test_pid: test_pid}}
-          end
-
-        {result, next_attempt}
-      end)
-    end
-
-    def write_chunk(handle, offset, chunk, _state) do
-      data = IO.iodata_to_binary(chunk)
-      {:ok, %{handle | chunks: handle.chunks ++ [{offset, data}]}}
-    end
-
-    def finish_write(_handle, _state), do: {:error, :eio}
-
-    def abort_write(handle, _state) do
-      send(handle.test_pid, {:replay_finish_error_abort, handle.chunks})
-      :ok
-    end
-  end
-
-  describe "read mode" do
-    property "buffered reads return the original content across arbitrary read sizes" do
-      check all(
-              content <- binary(max_length: 256),
-              lengths <- list_of(integer(1..64), min_length: 1, max_length: 20)
-            ) do
-        {:ok, pid} =
-          IODevice.start(%{
-            path: ~c"/test.txt",
-            mode: :read,
-            backend: MockBackend,
-            backend_state: %{content: content}
-          })
-
-        data = read_until_eof(pid, lengths ++ [byte_size(content) + 1])
-        assert data == content
-        assert :eof = GenServer.call(pid, {:read, 1})
-        GenServer.stop(pid)
-      end
-    end
-
-    property "range reads advance by exactly the bytes returned by the backend" do
-      check all(
-              content <- binary(max_length: 256),
-              lengths <- list_of(integer(1..64), min_length: 1, max_length: 20)
-            ) do
-        {:ok, pid} =
-          IODevice.start(%{
-            path: ~c"/range.txt",
-            mode: :read,
-            backend: RangeBackend,
-            backend_state: %{content: content}
-          })
-
-        data = read_until_eof(pid, lengths ++ [byte_size(content) + 1])
-        assert data == content
-        assert :eof = GenServer.call(pid, {:read, 1})
-        GenServer.stop(pid)
-      end
-    end
-
-    property "eof-relative read positions are clamped to valid file offsets" do
-      check all(
-              content <- binary(max_length: 256),
-              offset <- integer(-256..0)
-            ) do
-        {:ok, pid} =
-          IODevice.start(%{
-            path: ~c"/range.txt",
-            mode: :read,
-            backend: RangeBackend,
-            backend_state: %{content: content}
-          })
-
-        expected = max(byte_size(content) + offset, 0)
-
-        if byte_size(content) + offset >= 0 do
-          assert {:ok, ^expected} = GenServer.call(pid, {:position, {:eof, offset}})
-        else
-          assert {:error, :einval} = GenServer.call(pid, {:position, {:eof, offset}})
-        end
-
-        GenServer.stop(pid)
-      end
-    end
-
-    test "reads file content on init for legacy backends" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/test.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{content: "hello world"}
-        })
-
-      assert {:ok, "hello"} = GenServer.call(pid, {:read, 5})
-      assert {:ok, " worl"} = GenServer.call(pid, {:read, 5})
-      assert {:ok, "d"} = GenServer.call(pid, {:read, 5})
-      assert :eof = GenServer.call(pid, {:read, 5})
-    end
-
-    test "file handler emits telemetry for reads" do
-      handler_id = TelemetryHelper.attach(self(), [[:sftpd, :sftp, :read]])
-      on_exit(fn -> :telemetry.detach(handler_id) end)
-
-      state = %{backend: MockBackend, backend_state: %{content: "hello world"}}
-      {{:ok, pid}, _state} = FileHandler.open(~c"/test.txt", [:read], state)
-
-      assert {{:ok, "hello"}, _state} = FileHandler.read(pid, 5, state)
-
-      assert_receive {:telemetry_event, [:sftpd, :sftp, :read], measurements, metadata}
-      assert measurements.bytes == 5
-      assert metadata.result == :ok
-      assert metadata.bytes_requested == 5
-      assert metadata.backend == MockBackend
-
-      GenServer.stop(pid)
-    end
-
-    test "file handler emits eof telemetry for reads" do
-      handler_id = TelemetryHelper.attach(self(), [[:sftpd, :sftp, :read]])
-      on_exit(fn -> :telemetry.detach(handler_id) end)
-
-      state = %{backend: RangeEmptyBackend, backend_state: %{}}
-      {{:ok, pid}, _state} = FileHandler.open(~c"/range.txt", [:read], state)
-
-      assert {:eof, ^state} = FileHandler.read(pid, 3, state)
-
-      assert_receive {:telemetry_event, [:sftpd, :sftp, :read], measurements, metadata}
-      assert measurements.bytes == 0
-      assert metadata.result == :eof
-      assert metadata.reason == nil
-
-      GenServer.stop(pid)
-    end
-
-    test "uses read_file_range when the backend supports it" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/range.txt",
-          mode: :read,
-          backend: RangeBackend,
-          backend_state: %{content: "abcdefghij"}
-        })
-
-      assert {:ok, "abc"} = GenServer.call(pid, {:read, 3})
-      assert {:ok, "defg"} = GenServer.call(pid, {:read, 4})
-      assert {:ok, 8} = GenServer.call(pid, {:position, {:eof, -2}})
-      assert {:ok, "ij"} = GenServer.call(pid, {:read, 4})
-      assert :eof = GenServer.call(pid, {:read, 1})
-    end
-
-    test "handles read error gracefully" do
-      assert {:error, :enoent} =
+      assert {:ok, handle} =
                IODevice.start(%{
-                 path: ~c"/missing.txt",
-                 mode: :read,
-                 backend: MockBackend,
-                 backend_state: %{error: :enoent}
+                 path: "/nested-iodata",
+                 mode: :read_write,
+                 backend: ErrorBackend,
+                 backend_state: %{test_pid: self(), seed_data: data}
                })
-    end
 
-    test "returns eof when a range backend yields an empty chunk" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/range.txt",
-          mode: :read,
-          backend: RangeEmptyBackend,
-          backend_state: %{}
-        })
-
-      assert :eof = GenServer.call(pid, {:read, 3})
-    end
-
-    test "returns backend errors from range reads" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/range.txt",
-          mode: :read,
-          backend: RangeErrorBackend,
-          backend_state: %{}
-        })
-
-      assert {:error, :eio} = GenServer.call(pid, {:read, 3})
-    end
-
-    test "logs and surfaces file_info errors for range backends" do
-      log =
-        capture_log(fn ->
-          assert {:error, :enoent} =
-                   IODevice.start(%{
-                     path: ~c"/range.txt",
-                     mode: :read,
-                     backend: RangeStatErrorBackend,
-                     backend_state: %{}
-                   })
-        end)
-
-      assert log =~ "Failed to stat file"
-    end
-
-    test "times out and terminates devices when read setup hangs" do
-      test_pid = self()
-
-      task =
-        Task.async(fn ->
-          capture_log(fn ->
-            result =
-              IODevice.start(%{
-                path: ~c"/stuck.txt",
-                mode: :read,
-                backend: HangingOpenBackend,
-                backend_state: %{test_pid: test_pid},
-                open_timeout: 10
-              })
-
-            send(test_pid, {:open_result, result})
-          end)
-        end)
-
-      assert_receive {:open_started, pid}, 1000
-      ref = Process.monitor(pid)
-      assert_receive {:open_result, {:error, :timeout}}, 1000
-      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1000
-
-      assert Task.await(task, 1000) =~ "Timed out waiting 10ms"
-    end
-
-    test "process backend read open honors open_timeout beyond GenServer call default" do
-      {:ok, backend} = SlowProcessReadBackend.start_link(self())
-
-      task =
-        Task.async(fn ->
-          IODevice.start(%{
-            path: ~c"/slow.txt",
-            mode: :read,
-            backend: {:genserver, backend},
-            backend_state: :ignored,
-            open_timeout: 7_000
-          })
-        end)
-
-      assert_receive {:process_read_opened, ^backend, ~c"/slow.txt"}, 1_000
-      Process.sleep(5_200)
-      refute Task.yield(task, 0)
-
-      SlowProcessReadBackend.reply(backend, {:ok, "slow"})
-
-      assert {:ok, pid} = Task.await(task, 2_000)
-      assert {:ok, "slow"} = GenServer.call(pid, {:read, 10})
-    end
-
-    test "returns eio immediately when read setup crashes" do
-      test_pid = self()
-
-      task =
-        Task.async(fn ->
-          capture_log(fn ->
-            result =
-              IODevice.start(%{
-                path: ~c"/crash.txt",
-                mode: :read,
-                backend: CrashingOpenBackend,
-                backend_state: %{},
-                open_timeout: 10_000
-              })
-
-            send(test_pid, {:open_result, result})
-          end)
-        end)
-
-      assert_receive {:open_result, {:error, :eio}}, 1_000
-      assert Task.await(task, 1_000) =~ "IODevice open worker failed: open failed"
-    end
-
-    test "position bof sets absolute position" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/test.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{content: "0123456789"}
-        })
-
-      assert {:ok, 5} = GenServer.call(pid, {:position, {:bof, 5}})
-      assert {:ok, "56789"} = GenServer.call(pid, {:read, 10})
-    end
-
-    test "position cur sets relative position" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/test.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{content: "0123456789"}
-        })
-
-      assert {:ok, "012"} = GenServer.call(pid, {:read, 3})
-      assert {:ok, 5} = GenServer.call(pid, {:position, {:cur, 2}})
-      assert {:ok, "56789"} = GenServer.call(pid, {:read, 10})
-    end
-
-    test "position with integer sets absolute position" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/test.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{content: "0123456789"}
-        })
-
-      assert {:ok, 7} = GenServer.call(pid, {:position, 7})
-      assert {:ok, "789"} = GenServer.call(pid, {:read, 10})
-    end
-
-    test "invalid positions return einval" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/test.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{content: "0123456789"}
-        })
-
-      assert {:error, :einval} = GenServer.call(pid, {:position, {:bogus, 1}})
-      assert {:error, :einval} = GenServer.call(pid, {:position, -1})
-    end
-
-    test "returns eof when position is at or past end" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/test.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{content: "abc"}
-        })
-
-      assert {:ok, 10} = GenServer.call(pid, {:position, {:bof, 10}})
-      assert :eof = GenServer.call(pid, {:read, 1})
-    end
-
-    test "close message stops read-mode process" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/test.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{content: "hello"}
-        })
-
-      ref = Process.monitor(pid)
-      send(pid, {:file_request, self(), make_ref(), :close})
-      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
-    end
-
-    test "terminate is clean for read mode" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/test.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{content: "hello"}
-        })
-
-      assert :ok = GenServer.stop(pid)
-      refute Process.alive?(pid)
+      refute_receive {:seed_write, _offset, _data, _bytes, _binary?}
+      assert {:ok, ^expected} = IODevice.read(handle, bytes)
+      assert :ok = IODevice.close(handle)
     end
   end
 
-  describe "write mode" do
-    property "legacy sequential writes persist exactly the concatenated bytes on close" do
-      check all(chunks <- list_of(binary(max_length: 64), min_length: 1, max_length: 20)) do
-        {:ok, pid} =
-          IODevice.start(%{
-            path: ~c"/output.txt",
-            mode: :write,
-            backend: MockBackend,
-            backend_state: %{test_pid: self()}
-          })
-
-        for chunk <- chunks do
-          assert :ok = GenServer.call(pid, {:write, chunk})
-        end
-
-        assert :ok = GenServer.call(pid, :close)
-        assert_receive {:written, written}, 1000
-        assert written == IO.iodata_to_binary(chunks)
-      end
-    end
-
-    property "streaming sequential writes preserve chunk offsets and finish state" do
-      check all(chunks <- list_of(binary(max_length: 64), min_length: 1, max_length: 20)) do
-        {:ok, pid} =
-          IODevice.start(%{
-            path: ~c"/stream.txt",
-            mode: :write,
-            backend: StreamingBackend,
-            backend_state: %{test_pid: self()}
-          })
-
-        expected =
-          chunks
-          |> Enum.reduce({0, []}, fn chunk, {offset, acc} ->
-            assert :ok = GenServer.call(pid, {:write, chunk})
-            assert_receive {:stream_chunk, ^offset, ^chunk}, 1000
-            {offset + byte_size(chunk), acc ++ [{offset, chunk}]}
-          end)
-          |> elem(1)
-
-        assert :ok = GenServer.call(pid, :close)
-        assert_receive {:stream_finish, ^expected}, 1000
-      end
-    end
-
-    test "persists writes through the legacy backend on close" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/output.txt",
-          mode: :write,
-          backend: MockBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      assert :ok = GenServer.call(pid, {:write, "hello "})
-      assert :ok = GenServer.call(pid, {:write, "world"})
-      assert :ok = GenServer.call(pid, :close)
-
-      assert_receive {:written, "hello world"}, 1000
-      refute_receive {:written, _}, 200
-    end
-
-    test "file handler emits telemetry for writes" do
-      handler_id = TelemetryHelper.attach(self(), [[:sftpd, :sftp, :write]])
-      on_exit(fn -> :telemetry.detach(handler_id) end)
-
-      state = %{backend: MockBackend, backend_state: %{test_pid: self()}}
-      {{:ok, pid}, _state} = FileHandler.open(~c"/output.txt", [:write], state)
-
-      assert {:ok, _state} = FileHandler.write(pid, "hello", state)
-
-      assert_receive {:telemetry_event, [:sftpd, :sftp, :write], measurements, metadata}
-      assert measurements.bytes == 5
-      assert metadata.result == :ok
-      assert metadata.backend == MockBackend
-
-      assert :ok = GenServer.call(pid, :close)
-    end
-
-    test "file handler emits error telemetry for failed writes" do
-      handler_id = TelemetryHelper.attach(self(), [[:sftpd, :sftp, :write]])
-      on_exit(fn -> :telemetry.detach(handler_id) end)
-
-      state = %{backend: StreamingWriteErrorBackend, backend_state: %{test_pid: self()}}
-      {{:ok, pid}, _state} = FileHandler.open(~c"/output.txt", [:write], state)
-
-      assert {{:error, :eio}, ^state} = FileHandler.write(pid, "hello", state)
-
-      assert_receive {:telemetry_event, [:sftpd, :sftp, :write], measurements, metadata}
-      assert measurements.bytes == 5
-      assert metadata.result == :error
-      assert metadata.reason == :eio
-
-      GenServer.stop(pid)
-    end
-
-    test "creates temp files with owner-only permissions" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/output.txt",
-          mode: :write,
-          backend: MockBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      %{temp_path: temp_path} = :sys.get_state(pid)
-      assert {:ok, %{mode: mode}} = File.stat(temp_path)
-      assert Bitwise.band(mode, 0o777) == 0o600
-
-      assert :ok = GenServer.call(pid, :close)
-    end
-
-    test "open timeout cleans up temp files while streaming write setup hangs" do
-      test_pid = self()
-      before = sftpd_temp_files()
-
-      task =
-        Task.async(fn ->
-          capture_log(fn ->
-            result =
-              IODevice.start(%{
-                path: ~c"/stuck-output.txt",
-                mode: :write,
-                backend: HangingStreamingOpenBackend,
-                backend_state: %{test_pid: test_pid},
-                open_timeout: 10
-              })
-
-            send(test_pid, {:open_result, result})
-          end)
-        end)
-
-      assert_receive {:stream_open_started, worker}, 1000
-      ref = Process.monitor(worker)
-      assert_receive {:open_result, {:error, :timeout}}, 1000
-      assert_receive {:DOWN, ^ref, :process, ^worker, :killed}, 1000
-      assert Task.await(task, 1000) =~ "Timed out waiting 10ms"
-      assert sftpd_temp_files() == before
-    end
-
-    test "logs temp file removal failures" do
-      temp_dir = Path.join(System.tmp_dir!(), "sftpd-test-#{System.unique_integer([:positive])}")
-      File.mkdir!(temp_dir)
-
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/output.txt",
-          mode: :write,
-          backend: MockBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      %{temp_path: original_temp_path} = :sys.get_state(pid)
-
-      :sys.replace_state(pid, fn state ->
-        %{state | temp_path: temp_dir}
-      end)
-
-      log =
-        capture_log(fn ->
-          assert {:error, _reason} = GenServer.call(pid, :close)
-        end)
-
-      assert log =~ "Failed to remove temp file"
-      File.rm(original_temp_path)
-      File.rmdir!(temp_dir)
-    end
-
-    test "does not upload buffered content on terminate" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/output.txt",
-          mode: :write,
-          backend: MockBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      assert :ok = GenServer.call(pid, {:write, "content"})
-      GenServer.stop(pid)
-
-      refute_receive {:written, _}, 200
-    end
-
-    test "logs and returns an error when legacy finalization fails" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/output.txt",
-          mode: :write,
-          backend: MockBackend,
-          backend_state: %{write_error: :eacces}
-        })
-
-      assert :ok = GenServer.call(pid, {:write, "content"})
-
-      log =
-        capture_log(fn ->
-          assert {:error, :eacces} = GenServer.call(pid, :close)
-        end)
-
-      assert log =~ "Failed to finalize legacy write"
-    end
-
-    test "position bof updates the write cursor" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/output.txt",
-          mode: :write,
-          backend: MockBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      assert {:ok, 100} = GenServer.call(pid, {:position, {:bof, 100}})
-    end
-
-    test "position eof returns einval in write mode" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/output.txt",
-          mode: :write,
-          backend: MockBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      assert {:error, :einval} = GenServer.call(pid, {:position, {:eof, 0}})
-    end
-
-    test "handles iodata in writes" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/output.txt",
-          mode: :write,
-          backend: MockBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      assert :ok = GenServer.call(pid, {:write, [?a, "bc", [?d, ?e]]})
-      assert :ok = GenServer.call(pid, :close)
-
-      assert_receive {:written, "abcde"}, 1000
-    end
-
-    test "finalizes active streaming writes on close" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/stream.txt",
-          mode: :write,
-          backend: StreamingBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      assert :ok = GenServer.call(pid, {:write, "hello"})
-      assert_receive {:stream_chunk, 0, "hello"}
-      assert :ok = GenServer.call(pid, :close)
-      assert_receive {:stream_finish, [{0, "hello"}]}
-    end
-
-    test "falls back to replay mode when streaming initialization fails" do
-      {:ok, agent} = Agent.start_link(fn -> 0 end)
-
-      log =
-        capture_log(fn ->
-          {:ok, pid} =
-            IODevice.start(%{
-              path: ~c"/stream.txt",
-              mode: :write,
-              backend: ReplayBackend,
-              backend_state: %{agent: agent, test_pid: self()}
-            })
-
-          assert :ok = GenServer.call(pid, {:write, "hello"})
-          assert :ok = GenServer.call(pid, :close)
-        end)
-
-      assert log =~ "Failed to initialize streaming write"
-      assert_receive {:replay_chunk, 0, "hello"}
-      assert_receive {:replay_finish, [{0, "hello"}]}
-    end
-
-    test "falls back to legacy writes unless all streaming callbacks are present" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/partial.txt",
-          mode: :write,
-          backend: PartialStreamingBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      assert :ok = GenServer.call(pid, {:write, "hello"})
-      assert :ok = GenServer.call(pid, :close)
-      assert_receive {:partial_written, "hello"}, 1000
-    end
-
-    test "non-sequential writes downgrade to temp-file replay mode" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/stream.txt",
-          mode: :write,
-          backend: StreamingBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      assert :ok = GenServer.call(pid, {:write, "abc"})
-      assert_receive {:stream_chunk, 0, "abc"}
-
-      assert {:ok, 1} = GenServer.call(pid, {:position, {:bof, 1}})
-      assert :ok = GenServer.call(pid, {:write, "Z"})
-      assert_receive {:stream_abort, [{0, "abc"}]}
-
-      assert :ok = GenServer.call(pid, :close)
-      assert_receive {:stream_chunk, 0, "aZc"}
-      assert_receive {:stream_finish, [{0, "aZc"}]}
-    end
-
-    test "returns write errors and logs cleanup failures for streaming backends" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/stream.txt",
-          mode: :write,
-          backend: StreamingWriteErrorBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      log =
-        capture_log(fn ->
-          assert {:error, :eio} = GenServer.call(pid, {:write, "hello"})
-          assert {:error, :eio} = GenServer.call(pid, :close)
-        end)
-
-      assert log =~ "Streaming write failed"
-      assert log =~ "Failed to abort streaming write"
-    end
-
-    test "preserves write errors for precomputed-byte write calls" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/stream.txt",
-          mode: :write,
-          backend: StreamingWriteErrorBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      capture_log(fn ->
-        assert {:error, :eio} = GenServer.call(pid, {:write, "hello"})
-        assert {:error, :eio} = GenServer.call(pid, {:write, "world", 5})
-      end)
-
-      GenServer.stop(pid)
-    end
-
-    test "returns errors when finish_write fails" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/stream.txt",
-          mode: :write,
-          backend: StreamingFinishErrorBackend,
-          backend_state: %{test_pid: self()}
-        })
-
-      assert :ok = GenServer.call(pid, {:write, "hello"})
-
-      log =
-        capture_log(fn ->
-          assert {:error, :eio} = GenServer.call(pid, :close)
-        end)
-
-      assert log =~ "Failed to finalize streaming write"
-      assert_receive {:finish_error_abort, [{0, "hello"}]}
-    end
-
-    test "returns errors when replaying the temp file fails" do
-      {:ok, agent} = Agent.start_link(fn -> 0 end)
-
-      log =
-        capture_log(fn ->
-          {:ok, pid} =
-            IODevice.start(%{
-              path: ~c"/stream.txt",
-              mode: :write,
-              backend: ReplayWriteErrorBackend,
-              backend_state: %{agent: agent, test_pid: self()}
-            })
-
-          assert :ok = GenServer.call(pid, {:write, "hello"})
-          assert {:error, :eio} = GenServer.call(pid, :close)
-        end)
-
-      assert log =~ "Failed to replay temp file"
-    end
-
-    test "aborts replayed streaming writes when finish_write fails" do
-      {:ok, agent} = Agent.start_link(fn -> 0 end)
-
-      log =
-        capture_log(fn ->
-          {:ok, pid} =
-            IODevice.start(%{
-              path: ~c"/stream.txt",
-              mode: :write,
-              backend: ReplayFinishErrorBackend,
-              backend_state: %{agent: agent, test_pid: self()}
-            })
-
-          assert :ok = GenServer.call(pid, {:write, "hello"})
-          assert {:error, :eio} = GenServer.call(pid, :close)
-        end)
-
-      assert log =~ "Failed to replay temp file"
-      assert_receive {:replay_finish_error_abort, [{0, "hello"}]}
-    end
-
-    test "returns an error instead of looping when temp replay hits unexpected eof" do
-      {:ok, agent} = Agent.start_link(fn -> 0 end)
-
-      log =
-        capture_log(fn ->
-          {:ok, pid} =
-            IODevice.start(%{
-              path: ~c"/stream.txt",
-              mode: :write,
-              backend: ReplayBackend,
-              backend_state: %{agent: agent, test_pid: self()}
-            })
-
-          assert :ok = GenServer.call(pid, {:write, "abc"})
-          :sys.replace_state(pid, fn state -> %{state | size: 10} end)
-          assert {:error, :eof} = GenServer.call(pid, :close)
-        end)
-
-      assert log =~ "Failed to replay temp file"
-      assert_receive {:replay_chunk, 0, "abc"}
-      assert_receive {:replay_abort, [{0, "abc"}]}
+  test "writes iodata and finalizes on close", %{backend_state: backend_state} do
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/out.bin",
+               mode: :write,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert :ok = IODevice.write(handle, ["abc", "def"], 6)
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert :ok = IODevice.close(handle)
+
+    assert {:ok, "abXYef"} = Memory.read_file(~c"/out.bin", backend_state)
+  end
+
+  test "append writes against missing files start at offset zero", %{backend_state: backend_state} do
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/new-append.bin",
+               mode: :write,
+               append?: true,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert :ok = IODevice.write(handle, "new", 3)
+    assert :ok = IODevice.close(handle)
+
+    assert {:ok, "new"} = Memory.read_file(~c"/new-append.bin", backend_state)
+  end
+
+  test "read/write append handles force writes to eof", %{backend_state: backend_state} do
+    :ok = Memory.write_file(~c"/append-rw.bin", "base", backend_state)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/append-rw.bin",
+               mode: :read_write,
+               append?: true,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert {:ok, 0} = IODevice.position(handle, {:bof, 0})
+    assert :ok = IODevice.write(handle, "tail", 4)
+    assert :ok = IODevice.close(handle)
+
+    assert {:ok, "basetail"} = Memory.read_file(~c"/append-rw.bin", backend_state)
+  end
+
+  test "replays random writes sequentially when backend rejects positioned writes" do
+    {:ok, state} = Agent.start_link(fn -> %{} end)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/sized.bin",
+               mode: :write,
+               backend: SequentialBackend,
+               backend_state: state,
+               session: %{}
+             })
+
+    assert :ok = IODevice.write(handle, "abcdef", 6)
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert {:ok, 4} = IODevice.position(handle, 4)
+    assert :ok = IODevice.write(handle, "Z", 1)
+    assert :ok = IODevice.close(handle)
+
+    assert Agent.get(state, & &1) == %{aborts: 1, content: "abXYZf", opens: 2}
+  end
+
+  test "rejects read/write handles without a readable backend side for existing files" do
+    {:ok, state} = Agent.start_link(fn -> %{} end)
+
+    assert {:error, :eio} =
+             IODevice.start(%{
+               path: ~c"/sized.bin",
+               mode: :read_write,
+               backend: SequentialBackend,
+               backend_state: state,
+               session: %{}
+             })
+  end
+
+  test "closing untouched read/write handles preserves existing content", %{
+    backend_state: backend_state
+  } do
+    :ok = Memory.write_file(~c"/file.bin", "content", backend_state)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/file.bin",
+               mode: :read_write,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert {:ok, "content"} = IODevice.read(handle, 16)
+    assert :ok = IODevice.close(handle)
+    assert {:ok, "content"} = Memory.read_file(~c"/file.bin", backend_state)
+  end
+
+  property "read/write handles preserve existing bytes around partial writes", %{
+    backend_state: backend_state
+  } do
+    check all(
+            prefix <- binary(min_length: 1, max_length: 32),
+            replacement <- binary(min_length: 1, max_length: 32),
+            suffix <- binary(min_length: 1, max_length: 32)
+          ) do
+      original = [prefix, :binary.copy("x", byte_size(replacement)), suffix]
+      expected = [prefix, replacement, suffix] |> IO.iodata_to_binary()
+      offset = byte_size(prefix)
+
+      :ok = Memory.write_file(~c"/file.bin", original, backend_state)
+
+      assert {:ok, handle} =
+               IODevice.start(%{
+                 path: ~c"/file.bin",
+                 mode: :read_write,
+                 backend: Memory,
+                 backend_state: backend_state,
+                 session: %{}
+               })
+
+      assert {:ok, ^offset} = IODevice.position(handle, {:bof, offset})
+      assert :ok = IODevice.write(handle, replacement, byte_size(replacement))
+      assert :ok = IODevice.close(handle)
+      assert {:ok, ^expected} = Memory.read_file(~c"/file.bin", backend_state)
     end
   end
 
-  describe "handle_info catch-all" do
-    test "ignores unknown messages and stays alive" do
-      {:ok, pid} =
-        IODevice.start(%{
-          path: ~c"/test.txt",
-          mode: :read,
-          backend: MockBackend,
-          backend_state: %{content: "hello"}
-        })
+  test "read/write handles read accepted writes before close", %{
+    backend_state: backend_state
+  } do
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/new.bin",
+               mode: :read_write,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
 
-      send(pid, :unknown_message)
-      send(pid, {:some, :other, :message})
-
-      assert {:ok, "hello"} = GenServer.call(pid, {:read, 5})
-    end
+    assert :ok = IODevice.write(handle, "abc", 3)
+    assert {:ok, 0} = IODevice.position(handle, {:bof, 0})
+    assert {:ok, "abc"} = IODevice.read(handle, 3)
+    assert :ok = IODevice.close(handle)
   end
 
-  defp read_until_eof(pid, lengths) do
-    Enum.reduce_while(lengths, "", fn length, acc ->
-      case GenServer.call(pid, {:read, length}) do
-        {:ok, data} -> {:cont, acc <> data}
-        :eof -> {:halt, acc}
-        {:error, reason} -> flunk("unexpected read error: #{inspect(reason)}")
-      end
-    end)
+  test "read/write handles read partial overwrites before close", %{
+    backend_state: backend_state
+  } do
+    :ok = Memory.write_file(~c"/file.bin", "abcdef", backend_state)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/file.bin",
+               mode: :read_write,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert {:ok, 0} = IODevice.position(handle, {:bof, 0})
+    assert {:ok, "abXYef"} = IODevice.read(handle, 6)
+    assert :ok = IODevice.close(handle)
   end
 
-  defp sftpd_temp_files do
-    System.tmp_dir!()
-    |> Path.join("sftpd-*.tmp")
-    |> Path.wildcard()
-    |> MapSet.new()
+  test "truncating read/write handles ignore previous content", %{backend_state: backend_state} do
+    :ok = Memory.write_file(~c"/file.bin", "old", backend_state)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/file.bin",
+               mode: :read_write,
+               truncate?: true,
+               backend: Memory,
+               backend_state: backend_state,
+               session: %{}
+             })
+
+    assert :eof = IODevice.read(handle, 1)
+    assert :ok = IODevice.write(handle, "new", 3)
+    assert {:ok, 0} = IODevice.position(handle, {:bof, 0})
+    assert {:ok, "new"} = IODevice.read(handle, 8)
+    assert :ok = IODevice.close(handle)
+
+    assert {:ok, "new"} = Memory.read_file(~c"/file.bin", backend_state)
+  end
+
+  test "read/write handles replay seeded content before earlier range updates" do
+    {:ok, state} = Agent.start_link(fn -> %{} end)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/large-existing.bin",
+               mode: :read_write,
+               backend: SeedReplayBackend,
+               backend_state: state,
+               session: %{}
+             })
+
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert :ok = IODevice.close(handle)
+
+    assert Agent.get(state, &Map.take(&1, [:aborts, :content, :opens])) == %{
+             aborts: 1,
+             content: "abXYef",
+             opens: 2
+           }
+  end
+
+  test "aborts replay writer when replay finalize fails" do
+    {:ok, state} = Agent.start_link(fn -> %{finish_error_on_open: 2} end)
+
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: ~c"/out.bin",
+               mode: :write,
+               backend: SequentialBackend,
+               backend_state: state,
+               session: %{}
+             })
+
+    assert :ok = IODevice.write(handle, "abcdef", 6)
+    assert {:ok, 2} = IODevice.position(handle, {:bof, 2})
+    assert :ok = IODevice.write(handle, "XY", 2)
+    assert {:error, :eio} = IODevice.close(handle)
+
+    assert Agent.get(state, &Map.take(&1, [:aborts, :opens])) == %{aborts: 2, opens: 2}
+  end
+
+  test "returns einval for stale handles" do
+    handle = {:sftpd_io, make_ref()}
+
+    assert {:error, :einval} = IODevice.position(handle, 0)
+    assert {:error, :einval} = IODevice.read(handle, 1)
+    assert {:error, :einval} = IODevice.write(handle, "x", 1)
+    assert :ok = IODevice.close(handle)
+  end
+
+  test "rejects invalid positions and operations for the handle mode", %{
+    backend_state: backend_state
+  } do
+    :ok = Memory.write_file(~c"/file.bin", "abcd", backend_state)
+
+    assert {:ok, read_handle} =
+             IODevice.start(%{
+               path: ~c"/file.bin",
+               mode: :read,
+               backend: Memory,
+               backend_state: backend_state
+             })
+
+    assert {:error, :einval} = IODevice.position(read_handle, {:bof, -1})
+    assert {:error, :einval} = IODevice.position(read_handle, {:cur, -1})
+    assert {:error, :einval} = IODevice.position(read_handle, {:eof, -5})
+    assert {:ok, 0} = IODevice.position(read_handle, 0)
+    assert {:error, :einval} = IODevice.position(read_handle, :bad)
+    assert {:error, :einval} = IODevice.write(read_handle, "x", 1)
+
+    assert {:ok, write_handle} =
+             IODevice.start(%{
+               path: ~c"/out.bin",
+               mode: :write,
+               backend: Memory,
+               backend_state: backend_state
+             })
+
+    assert {:error, :einval} = IODevice.read(write_handle, 1)
+  end
+
+  test "propagates backend start, read, write, and close errors" do
+    assert {:error, :enoent} =
+             IODevice.start(%{
+               path: "/attrs-error",
+               mode: :read,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert {:error, :eacces} =
+             IODevice.start(%{
+               path: "/open-read-error",
+               mode: :read,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert {:error, :eacces} =
+             IODevice.start(%{
+               path: "/open-write-error",
+               mode: :write,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert {:ok, read_handle} =
+             IODevice.start(%{
+               path: "/read-error",
+               mode: :read,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert {:error, :eio} = IODevice.read(read_handle, 1)
+
+    assert {:ok, eof_handle} =
+             IODevice.start(%{
+               path: "/backend-eof",
+               mode: :read,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert :eof = IODevice.read(eof_handle, 1)
+
+    assert {:ok, empty_handle} =
+             IODevice.start(%{
+               path: "/empty-read",
+               mode: :read,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert :eof = IODevice.read(empty_handle, 0)
+
+    assert {:ok, write_handle} =
+             IODevice.start(%{
+               path: "/write-error",
+               mode: :write,
+               backend: ErrorBackend,
+               backend_state: %{test_pid: self()}
+             })
+
+    assert {:error, :eio} = IODevice.write(write_handle, "x", 1)
+    assert_receive :aborted
+    assert :ok = IODevice.close(write_handle)
+
+    assert {:ok, close_handle} =
+             IODevice.start(%{
+               path: "/finish-error",
+               mode: :write,
+               backend: ErrorBackend,
+               backend_state: %{test_pid: self()}
+             })
+
+    assert {:error, :eio} = IODevice.close(close_handle)
+    assert_receive :aborted_finish
+  end
+
+  test "read/write start falls back to zero size when attrs are unavailable" do
+    assert {:ok, handle} =
+             IODevice.start(%{
+               path: "/attrs-error",
+               mode: :read_write,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
+
+    assert :eof = IODevice.read(handle, 1)
+    assert :ok = IODevice.close(handle)
+  end
+
+  test "read/write start rejects existing files that cannot be seeded" do
+    assert {:error, :eio} =
+             IODevice.start(%{
+               path: "/open-read-error",
+               mode: :read_write,
+               backend: ErrorBackend,
+               backend_state: %{}
+             })
   end
 end

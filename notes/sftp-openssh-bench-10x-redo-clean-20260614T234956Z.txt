@@ -1,0 +1,180 @@
+BEGIN transport=elixir size=67108864 run=1 port=47570 2026-06-14T23:49:56Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=47570 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.174s 366.8 MiB/s
+openssh sftp get: 0.183s 349.0 MiB/s
+END transport=elixir size=67108864 run=1 status= 2026-06-14T23:49:58Z
+BEGIN transport=elixir size=67108864 run=2 port=45595 2026-06-14T23:50:00Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=45595 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.147s 434.9 MiB/s
+openssh sftp get: 0.184s 347.7 MiB/s
+END transport=elixir size=67108864 run=2 status= 2026-06-14T23:50:02Z
+BEGIN transport=elixir size=67108864 run=3 port=40830 2026-06-14T23:50:04Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=40830 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.173s 370.9 MiB/s
+openssh sftp get: 0.178s 359.9 MiB/s
+END transport=elixir size=67108864 run=3 status= 2026-06-14T23:50:06Z
+BEGIN transport=elixir size=67108864 run=4 port=41403 2026-06-14T23:50:08Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=41403 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.153s 418.3 MiB/s
+openssh sftp get: 0.178s 359.1 MiB/s
+END transport=elixir size=67108864 run=4 status= 2026-06-14T23:50:10Z
+BEGIN transport=elixir size=67108864 run=5 port=46577 2026-06-14T23:50:12Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=46577 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.173s 370.9 MiB/s
+openssh sftp get: 0.188s 340.6 MiB/s
+END transport=elixir size=67108864 run=5 status= 2026-06-14T23:50:14Z
+BEGIN transport=elixir size=67108864 run=6 port=49820 2026-06-14T23:50:16Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=49820 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.173s 369.9 MiB/s
+openssh sftp get: 0.188s 340.2 MiB/s
+END transport=elixir size=67108864 run=6 status= 2026-06-14T23:50:17Z
+BEGIN transport=elixir size=67108864 run=7 port=43135 2026-06-14T23:50:19Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=43135 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.163s 392.4 MiB/s
+openssh sftp get: 0.184s 347.9 MiB/s
+END transport=elixir size=67108864 run=7 status= 2026-06-14T23:50:21Z
+BEGIN transport=elixir size=67108864 run=8 port=47303 2026-06-14T23:50:23Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=47303 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.173s 369.7 MiB/s
+openssh sftp get: 0.184s 348.7 MiB/s
+END transport=elixir size=67108864 run=8 status= 2026-06-14T23:50:25Z
+BEGIN transport=elixir size=67108864 run=9 port=41481 2026-06-14T23:50:27Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=41481 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.174s 368.6 MiB/s
+openssh sftp get: 0.181s 354.5 MiB/s
+END transport=elixir size=67108864 run=9 status= 2026-06-14T23:50:29Z
+BEGIN transport=elixir size=67108864 run=10 port=49666 2026-06-14T23:50:31Z
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=49666 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.158s 404.7 MiB/s
+openssh sftp get: 0.184s 347.0 MiB/s
+END transport=elixir size=67108864 run=10 status= 2026-06-14T23:50:33Z
+BEGIN transport=elixir size=1073741824 run=1 port=49865 2026-06-14T23:50:35Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=49865 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.732s 591.2 MiB/s
+openssh sftp get: 1.841s 556.4 MiB/s
+END transport=elixir size=1073741824 run=1 status= 2026-06-14T23:50:40Z
+BEGIN transport=elixir size=1073741824 run=2 port=42542 2026-06-14T23:50:42Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=42542 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.734s 590.6 MiB/s
+openssh sftp get: 1.83s 559.6 MiB/s
+END transport=elixir size=1073741824 run=2 status= 2026-06-14T23:50:47Z
+BEGIN transport=elixir size=1073741824 run=3 port=39726 2026-06-14T23:50:49Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=39726 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.753s 584.1 MiB/s
+openssh sftp get: 1.844s 555.5 MiB/s
+END transport=elixir size=1073741824 run=3 status= 2026-06-14T23:50:54Z
+BEGIN transport=elixir size=1073741824 run=4 port=53293 2026-06-14T23:50:56Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=53293 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.804s 567.5 MiB/s
+openssh sftp get: 1.842s 555.9 MiB/s
+END transport=elixir size=1073741824 run=4 status= 2026-06-14T23:51:01Z
+BEGIN transport=elixir size=1073741824 run=5 port=48461 2026-06-14T23:51:03Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=48461 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.77s 578.5 MiB/s
+openssh sftp get: 1.841s 556.2 MiB/s
+END transport=elixir size=1073741824 run=5 status= 2026-06-14T23:51:08Z
+BEGIN transport=elixir size=1073741824 run=6 port=50181 2026-06-14T23:51:10Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=50181 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.725s 593.7 MiB/s
+openssh sftp get: 1.854s 552.4 MiB/s
+END transport=elixir size=1073741824 run=6 status= 2026-06-14T23:51:15Z
+BEGIN transport=elixir size=1073741824 run=7 port=45225 2026-06-14T23:51:17Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=45225 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.759s 582.2 MiB/s
+openssh sftp get: 1.857s 551.4 MiB/s
+END transport=elixir size=1073741824 run=7 status= 2026-06-14T23:51:23Z
+BEGIN transport=elixir size=1073741824 run=8 port=43139 2026-06-14T23:51:25Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=43139 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.758s 582.6 MiB/s
+openssh sftp get: 1.829s 559.9 MiB/s
+END transport=elixir size=1073741824 run=8 status= 2026-06-14T23:51:30Z
+BEGIN transport=elixir size=1073741824 run=9 port=49202 2026-06-14T23:51:32Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=49202 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.719s 595.7 MiB/s
+openssh sftp get: 1.851s 553.2 MiB/s
+END transport=elixir size=1073741824 run=9 status= 2026-06-14T23:51:37Z
+BEGIN transport=elixir size=1073741824 run=10 port=45397 2026-06-14T23:51:39Z
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=45397 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.755s 583.6 MiB/s
+openssh sftp get: 1.835s 558.1 MiB/s
+END transport=elixir size=1073741824 run=10 status= 2026-06-14T23:51:44Z
+BEGIN transport=elixir size=10737418240 run=1 port=58651 2026-06-14T23:51:46Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=58651 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.926s 605.0 MiB/s
+openssh sftp get: 17.601s 581.8 MiB/s
+END transport=elixir size=10737418240 run=1 status= 2026-06-14T23:52:22Z
+BEGIN transport=elixir size=10737418240 run=2 port=56546 2026-06-14T23:52:24Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=56546 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.719s 612.5 MiB/s
+openssh sftp get: 17.624s 581.0 MiB/s
+END transport=elixir size=10737418240 run=2 status= 2026-06-14T23:53:00Z
+BEGIN transport=elixir size=10737418240 run=3 port=42606 2026-06-14T23:53:02Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=42606 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.66s 614.7 MiB/s
+openssh sftp get: 17.701s 578.5 MiB/s
+END transport=elixir size=10737418240 run=3 status= 2026-06-14T23:53:39Z
+BEGIN transport=elixir size=10737418240 run=4 port=42972 2026-06-14T23:53:41Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=42972 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.769s 610.6 MiB/s
+openssh sftp get: 17.388s 588.9 MiB/s
+END transport=elixir size=10737418240 run=4 status= 2026-06-14T23:54:17Z
+BEGIN transport=elixir size=10737418240 run=5 port=44263 2026-06-14T23:54:19Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=44263 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.481s 621.3 MiB/s
+openssh sftp get: 17.21s 595.0 MiB/s
+END transport=elixir size=10737418240 run=5 status= 2026-06-14T23:54:54Z
+BEGIN transport=elixir size=10737418240 run=6 port=41856 2026-06-14T23:54:56Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=41856 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.071s 599.8 MiB/s
+openssh sftp get: 17.267s 593.0 MiB/s
+END transport=elixir size=10737418240 run=6 status= 2026-06-14T23:55:33Z
+BEGIN transport=elixir size=10737418240 run=7 port=47591 2026-06-14T23:55:35Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=47591 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.947s 604.3 MiB/s
+openssh sftp get: 17.697s 578.6 MiB/s
+END transport=elixir size=10737418240 run=7 status= 2026-06-14T23:56:12Z
+BEGIN transport=elixir size=10737418240 run=8 port=43650 2026-06-14T23:56:14Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=43650 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.965s 603.6 MiB/s
+openssh sftp get: 17.73s 577.6 MiB/s
+END transport=elixir size=10737418240 run=8 status= 2026-06-14T23:56:50Z
+BEGIN transport=elixir size=10737418240 run=9 port=39123 2026-06-14T23:56:52Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=39123 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.922s 605.1 MiB/s
+openssh sftp get: 17.759s 576.6 MiB/s
+END transport=elixir size=10737418240 run=9 status= 2026-06-14T23:57:29Z
+BEGIN transport=elixir size=10737418240 run=10 port=49714 2026-06-14T23:57:31Z
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=49714 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.059s 600.3 MiB/s
+openssh sftp get: 17.604s 581.7 MiB/s
+END transport=elixir size=10737418240 run=10 status= 2026-06-14T23:58:08Z

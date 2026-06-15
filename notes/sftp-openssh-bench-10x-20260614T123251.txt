@@ -1,0 +1,128 @@
+# OpenSSH SFTP bench 10x
+date=2026-06-14T18:32:53Z
+branch=mjc/pure-elixir-ssh-sftp
+commit=52ae2563526db9af6d750309681f50ae88cbf990
+worktree_status= M lib/sftpd/ssh/server.ex; M scripts/sftp_perf_bench.exs;?? notes/sftp-openssh-bench-10x-20260614T123251.txt;
+transport=elixir
+chunk=262080
+requests=64
+--- size=67108864 iter=1 port=29800 ---
+size=67108864 chunk=262080 requests=64 port=29800 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.257s 248.9 MiB/s
+openssh sftp get: 0.401s 159.8 MiB/s
+--- size=67108864 iter=2 port=29801 ---
+size=67108864 chunk=262080 requests=64 port=29801 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.275s 232.9 MiB/s
+openssh sftp get: 0.387s 165.5 MiB/s
+--- size=67108864 iter=3 port=29802 ---
+size=67108864 chunk=262080 requests=64 port=29802 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.267s 240.0 MiB/s
+openssh sftp get: 0.374s 171.2 MiB/s
+--- size=67108864 iter=4 port=29803 ---
+size=67108864 chunk=262080 requests=64 port=29803 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.217s 294.6 MiB/s
+openssh sftp get: 0.327s 195.7 MiB/s
+--- size=67108864 iter=5 port=29804 ---
+size=67108864 chunk=262080 requests=64 port=29804 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.197s 325.2 MiB/s
+openssh sftp get: 0.61s 104.9 MiB/s
+--- size=67108864 iter=6 port=29805 ---
+size=67108864 chunk=262080 requests=64 port=29805 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.309s 207.2 MiB/s
+openssh sftp get: 0.615s 104.1 MiB/s
+--- size=67108864 iter=7 port=29806 ---
+size=67108864 chunk=262080 requests=64 port=29806 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.537s 119.3 MiB/s
+openssh sftp get: 0.882s 72.6 MiB/s
+--- size=67108864 iter=8 port=29807 ---
+size=67108864 chunk=262080 requests=64 port=29807 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.408s 157.0 MiB/s
+openssh sftp get: 0.508s 125.9 MiB/s
+--- size=67108864 iter=9 port=29808 ---
+size=67108864 chunk=262080 requests=64 port=29808 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.179s 356.6 MiB/s
+openssh sftp get: 0.59s 108.5 MiB/s
+--- size=67108864 iter=10 port=29809 ---
+size=67108864 chunk=262080 requests=64 port=29809 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.634s 101.0 MiB/s
+openssh sftp get: 0.94s 68.1 MiB/s
+--- size=1073741824 iter=1 port=29810 ---
+size=1073741824 chunk=262080 requests=64 port=29810 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 5.087s 201.3 MiB/s
+openssh sftp get: 5.021s 204.0 MiB/s
+--- size=1073741824 iter=2 port=29811 ---
+size=1073741824 chunk=262080 requests=64 port=29811 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 6.838s 149.7 MiB/s
+openssh sftp get: 3.333s 307.2 MiB/s
+--- size=1073741824 iter=3 port=29812 ---
+size=1073741824 chunk=262080 requests=64 port=29812 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 2.425s 422.3 MiB/s
+openssh sftp get: 3.545s 288.9 MiB/s
+--- size=1073741824 iter=4 port=29813 ---
+size=1073741824 chunk=262080 requests=64 port=29813 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 2.876s 356.1 MiB/s
+openssh sftp get: 4.437s 230.8 MiB/s
+--- size=1073741824 iter=5 port=29814 ---
+size=1073741824 chunk=262080 requests=64 port=29814 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 2.782s 368.1 MiB/s
+openssh sftp get: 3.399s 301.3 MiB/s
+--- size=1073741824 iter=6 port=29815 ---
+size=1073741824 chunk=262080 requests=64 port=29815 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 3.221s 317.9 MiB/s
+openssh sftp get: 4.54s 225.5 MiB/s
+--- size=1073741824 iter=7 port=29816 ---
+size=1073741824 chunk=262080 requests=64 port=29816 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 3.427s 298.8 MiB/s
+openssh sftp get: 4.419s 231.7 MiB/s
+--- size=1073741824 iter=8 port=29817 ---
+size=1073741824 chunk=262080 requests=64 port=29817 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 4.125s 248.2 MiB/s
+openssh sftp get: 4.278s 239.3 MiB/s
+--- size=1073741824 iter=9 port=29818 ---
+size=1073741824 chunk=262080 requests=64 port=29818 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 3.654s 280.2 MiB/s
+openssh sftp get: 12.472s 82.1 MiB/s
+--- size=1073741824 iter=10 port=29819 ---
+size=1073741824 chunk=262080 requests=64 port=29819 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 3.182s 321.8 MiB/s
+openssh sftp get: 3.764s 272.0 MiB/s
+--- size=10737418240 iter=1 port=29820 ---
+size=10737418240 chunk=262080 requests=64 port=29820 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 51.839s 197.5 MiB/s
+openssh sftp get: 47.405s 216.0 MiB/s
+--- size=10737418240 iter=2 port=29821 ---
+size=10737418240 chunk=262080 requests=64 port=29821 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 56.867s 180.1 MiB/s
+openssh sftp get: 74.078s 138.2 MiB/s
+--- size=10737418240 iter=3 port=29822 ---
+size=10737418240 chunk=262080 requests=64 port=29822 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 57.259s 178.8 MiB/s
+openssh sftp get: 73.161s 140.0 MiB/s
+--- size=10737418240 iter=4 port=29823 ---
+size=10737418240 chunk=262080 requests=64 port=29823 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 51.744s 197.9 MiB/s
+openssh sftp get: 69.354s 147.6 MiB/s
+--- size=10737418240 iter=5 port=29824 ---
+size=10737418240 chunk=262080 requests=64 port=29824 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 55.067s 186.0 MiB/s
+openssh sftp get: 94.599s 108.2 MiB/s
+--- size=10737418240 iter=6 port=29825 ---
+size=10737418240 chunk=262080 requests=64 port=29825 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 46.392s 220.7 MiB/s
+openssh sftp get: 67.397s 151.9 MiB/s
+--- size=10737418240 iter=7 port=29826 ---
+size=10737418240 chunk=262080 requests=64 port=29826 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 65.965s 155.2 MiB/s
+openssh sftp get: 88.298s 116.0 MiB/s
+--- size=10737418240 iter=8 port=29827 ---
+size=10737418240 chunk=262080 requests=64 port=29827 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 63.842s 160.4 MiB/s
+openssh sftp get: 62.194s 164.6 MiB/s
+--- size=10737418240 iter=9 port=29828 ---
+size=10737418240 chunk=262080 requests=64 port=29828 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 66.545s 153.9 MiB/s
+openssh sftp get: 26.402s 387.9 MiB/s
+--- size=10737418240 iter=10 port=29829 ---
+size=10737418240 chunk=262080 requests=64 port=29829 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 18.551s 552.0 MiB/s
+openssh sftp get: 21.949s 466.5 MiB/s

@@ -3,8 +3,10 @@
 A pluggable SFTP server for Elixir with memory, custom, and optional S3
 backends.
 
-`Sftpd` wraps Erlang's `:ssh_sftpd` subsystem and lets you plug storage behind
-it through a small backend behaviour. It ships with:
+`Sftpd` provides an SFTP-only SSH daemon with pluggable storage. The default
+transport uses Erlang's
+`:ssh_sftpd` subsystem; `transport: :elixir` opts into the experimental
+pure-Elixir SSH/SFTP transport. It ships with:
 
 - an in-memory backend for development and tests
 - an optional S3 backend with range reads and multipart streaming writes
@@ -13,20 +15,16 @@ it through a small backend behaviour. It ships with:
 
 ## Installation
 
-Version notes for this package:
+Runtime targets:
 
-- verified minimum Elixir: `~> 1.14`
-- verified minimum OTP for CI: `26`
-- current pinned development environment: Erlang/OTP 29.0
-- current pinned development environment: Elixir 1.20.0-rc.5 on OTP 29
-
-The package requirement is declared in `mix.exs`. The development environment
-is pinned in `.tool-versions`.
+- package requirement: Elixir `~> 1.14`
+- verified minimum runtime: Elixir 1.14.5 on OTP 26
+- pinned development runtime: OTP 29.0 with Elixir 1.20.0-rc.5
 
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.1"}
+    {:sftpd, "~> 0.2.0"}
   ]
 end
 ```
@@ -34,7 +32,6 @@ end
 ## Quick Start
 
 ```elixir
-# Start with in-memory backend (great for development)
 {:ok, ref} = Sftpd.start_server(
   port: 2222,
   backend: Sftpd.Backends.Memory,
@@ -56,8 +53,7 @@ end
 
 ## Key Concepts
 
-- `Sftpd.start_server/1` starts an SSH daemon configured with an SFTP
-  file-handler
+- `Sftpd.start_server/1` starts an SFTP-only SSH daemon
 - `Sftpd.child_spec/1` lets Phoenix and other OTP apps supervise the server
 - `Sftpd.Auth` defines password and public-key auth callbacks
 - `Sftpd.Backend` defines the storage contract
@@ -72,11 +68,11 @@ end
 | Tests, demos, and local development | `Sftpd.Backends.Memory` |
 | Amazon S3, MinIO, or another S3-compatible store | `Sftpd.Backends.S3` |
 | A local disk folder | A custom folder backend |
-| A shared process, cache, queue, or connection pool | `{:genserver, name_or_pid}` |
+| A shared cache, queue, or connection pool | A custom `Sftpd.Backend` module |
 | Async ingestion after upload | Store synchronously in the backend, then enqueue a Broadway job |
 
 See [Backends](BACKENDS.md) for backend tradeoffs and
-[Custom Backends](CUSTOM_BACKENDS.md) for folder, GenServer, supervision, and
+[Custom Backends](CUSTOM_BACKENDS.md) for folder, supervision, and
 post-write processing examples.
 
 ## Next Steps
@@ -90,7 +86,7 @@ post-write processing examples.
 
 ### Memory Backend
 
-Stores files in memory. Useful for development and testing without external dependencies.
+Stores files in memory. Useful for development and tests.
 
 ```elixir
 Sftpd.start_server(
@@ -104,10 +100,8 @@ Sftpd.start_server(
 
 ### S3 Backend
 
-Stores files in Amazon S3 or S3-compatible storage such as MinIO.
-The built-in S3 backend now uses range reads, paginated delimiter-based
-directory listings, and multipart streaming writes for better large-file
-performance.
+Stores files in Amazon S3 or S3-compatible storage such as MinIO. It uses range
+reads, delimiter-based directory listings, and multipart writes.
 
 The S3 backend is optional. Core users can depend on `:sftpd` without ExAws.
 Applications that use `Sftpd.Backends.S3` must add the S3 dependency set:
@@ -115,7 +109,7 @@ Applications that use `Sftpd.Backends.S3` must add the S3 dependency set:
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.1"},
+    {:sftpd, "~> 0.2.0"},
     {:ex_aws, "~> 2.0"},
     {:ex_aws_s3, "~> 2.0"},
     {:hackney, "~> 1.9"},
@@ -128,10 +122,6 @@ end
 
 Without those dependencies, `Sftpd.Backends.S3.init/1` returns
 `{:error, :missing_s3_dependency}`.
-
-The same dependency set is documented in [Getting Started](GETTING_STARTED.md)
-and [Backends](BACKENDS.md); those guides also cover when to choose S3 instead
-of Memory or a custom backend.
 
 ```elixir
 Sftpd.start_server(
@@ -148,7 +138,8 @@ Sftpd.start_server(
 - `:bucket` - required S3 bucket name
 - `:prefix` - optional static key prefix, or `{:session, key}` to read a prefix
   from the authenticated session map
-- `:aws_client` - optional ExAws-compatible client module, mainly useful for tests or custom request adapters
+- `:aws_client` - optional ExAws-compatible client module, mainly useful for
+  tests or custom request adapters
 
 For Phoenix apps, use `Sftpd.child_spec/1` and an auth module:
 
@@ -184,31 +175,36 @@ config :ex_aws, :s3,
   port: 9000
 ```
 
-### Optional Streaming Backend Callbacks
+### Handle-First Backend Callbacks
 
-Custom module backends can implement optional callbacks for efficient large-file
+Custom module backends implement handle-first callbacks for efficient large-file
 transfers:
 
 ```elixir
-# read_file_range(path, offset, len, state) -> {:ok, binary} | :eof | {:error, reason}
-# begin_write(path, state) -> {:ok, writer_handle} | {:error, reason}
-# write_chunk(writer_handle, offset, chunk, state) -> {:ok, writer_handle} | {:error, reason}
+# open_read(path, session, state) -> {:ok, read_handle} | {:error, reason}
+# read_at(read_handle, offset, len, state) -> {:ok, iodata} | :eof | {:error, reason}
+# open_write(path, attrs, session, state) -> {:ok, writer_handle} | {:error, reason}
+# write_at(writer_handle, offset, chunk, state) -> {:ok, writer_handle} | {:error, reason}
 # finish_write(writer_handle, state) -> :ok | {:error, reason}
 # abort_write(writer_handle, state) -> :ok
 ```
 
-These callbacks let `Sftpd.IODevice` avoid loading whole files into memory on
-open and reduce write-side buffering. See `Sftpd.Backend` for the exact
-callback contracts.
+These callbacks let the OTP file-handler adapter and the pure-Elixir transport
+operate on backend-owned handles without loading whole files into memory on open
+or routing hot-path file IO through per-file processes. See `Sftpd.Backend` for
+the exact callback contracts.
+
+The pure-Elixir transport validates the same `Sftpd.Backend` callback set at
+startup. The built-in OTP transport and pure-Elixir transport therefore use the
+same backend modules; only the SSH/SFTP framing layer changes.
 
 Note that OTP's built-in `:ssh_sftpd` implementation always reports success for
 close operations, even if final close-time flushing fails. Write errors are
 therefore surfaced during active writes whenever possible, while close-only
 failures are logged server-side.
 
-If you need to bound how long file opens or close-time finalization can block a
-session, pass `open_timeout: timeout_in_ms` or `close_timeout: timeout_in_ms` to
-`Sftpd.start_server/1`. Both default to `30_000`.
+Backend open, read, write, and close work runs through backend-owned handles.
+Long-running backend operations should enforce their own timeouts.
 
 ## Telemetry
 

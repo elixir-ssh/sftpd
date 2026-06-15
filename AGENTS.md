@@ -2,7 +2,10 @@
 
 ## Project Overview
 
-Sftpd is an Elixir library that provides a pluggable SFTP server with support for multiple backends (S3, memory, custom). It implements a file handler for OTP's `:ssh_sftpd` subsystem.
+Sftpd is an Elixir library that provides an SFTP-only SSH daemon with
+pluggable backends (memory, S3, and custom modules). The default transport uses
+OTP's `:ssh_sftpd` subsystem; `transport: :elixir` uses the experimental
+pure-Elixir SSH/SFTP implementation.
 
 `Sftpd.start_server/1` explicitly configures the SFTP subsystem via
 `:ssh_sftpd.subsystem_spec/1`. This matters on OTP 29, where SSH daemons no
@@ -14,8 +17,10 @@ for a broader SSH daemon API.
 
 - `lib/sftpd.ex` - Main module, starts the SSH daemon with configurable backend
 - `lib/sftpd/backend.ex` - Behaviour definition for storage backends
-- `lib/sftpd/file_handler.ex` - Implements `:ssh_sftpd_file_api` behaviour
-- `lib/sftpd/io_device.ex` - GenServer managing file handles for read/write operations
+- `lib/sftpd/file_handler.ex` - Adapts the handle-first backend API to OTP's `:ssh_sftpd_file_api`
+- `lib/sftpd/io_device.ex` - Opaque open-file handles used by the OTP file-handler adapter
+- `lib/sftpd/ssh/` - Experimental pure-Elixir SSH transport
+- `lib/sftpd/sftp/` - Pure-Elixir SFTP v3 parser and dispatcher
 - `lib/sftpd/backends/s3.ex` - S3 storage backend
 - `lib/sftpd/backends/memory.ex` - In-memory backend for testing
 
@@ -38,14 +43,16 @@ and exec are disabled unless explicitly configured.
 ### Running Tests
 
 ```bash
-# Start MinIO first
-docker compose up -d minio
-
-# Run tests
-mix test
+nix develop -c mix test
 ```
 
-Tests use MinIO as the S3 backend. The bucket `sftpd-test-bucket` is used for integration tests.
+Integration tests use MinIO as the S3 backend. The bucket
+`sftpd-test-bucket` is used for integration tests.
+
+```bash
+docker compose up -d minio
+nix develop -c mix test --only integration
+```
 
 ### Manual Testing
 
@@ -58,7 +65,8 @@ mix run test_manual.exs
 ## S3 Constraints
 
 - S3 multipart uploads require minimum 5MB per part
-- Small file writes use single-part uploads via the terminate callback
+- Small file writes use single-part uploads when `finish_write/2` closes the
+  backend-owned handle
 - Directories are virtual (represented by `.keep` marker files)
 
 ## Configuration

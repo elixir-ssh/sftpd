@@ -1,0 +1,151 @@
+commit=66e7bdb Profile SFTP after window adjust batching
+BEGIN size=67108864 run=1 port=48041 2026-06-15T00:34:46Z
+size=67108864 chunk=262080 requests=64 port=48041 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.17s 375.8 MiB/s
+openssh sftp get: 0.176s 364.6 MiB/s
+END size=67108864 run=1 status=0 2026-06-15T00:34:49Z
+BEGIN size=67108864 run=2 port=48859 2026-06-15T00:34:49Z
+size=67108864 chunk=262080 requests=64 port=48859 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.143s 446.0 MiB/s
+openssh sftp get: 0.185s 345.6 MiB/s
+END size=67108864 run=2 status=0 2026-06-15T00:34:51Z
+BEGIN size=67108864 run=3 port=48058 2026-06-15T00:34:51Z
+size=67108864 chunk=262080 requests=64 port=48058 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.17s 377.4 MiB/s
+openssh sftp get: 0.178s 358.6 MiB/s
+END size=67108864 run=3 status=0 2026-06-15T00:34:53Z
+BEGIN size=67108864 run=4 port=48804 2026-06-15T00:34:53Z
+size=67108864 chunk=262080 requests=64 port=48804 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.142s 451.4 MiB/s
+openssh sftp get: 0.179s 357.8 MiB/s
+END size=67108864 run=4 status=0 2026-06-15T00:34:55Z
+BEGIN size=67108864 run=5 port=48487 2026-06-15T00:34:55Z
+size=67108864 chunk=262080 requests=64 port=48487 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.165s 387.0 MiB/s
+openssh sftp get: 0.179s 356.8 MiB/s
+END size=67108864 run=5 status=0 2026-06-15T00:34:57Z
+BEGIN size=67108864 run=6 port=48079 2026-06-15T00:34:57Z
+size=67108864 chunk=262080 requests=64 port=48079 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.282s 226.8 MiB/s
+openssh sftp get: 0.2s 320.0 MiB/s
+END size=67108864 run=6 status=0 2026-06-15T00:34:59Z
+BEGIN size=67108864 run=7 port=48273 2026-06-15T00:34:59Z
+size=67108864 chunk=262080 requests=64 port=48273 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.175s 365.1 MiB/s
+openssh sftp get: 0.183s 349.7 MiB/s
+END size=67108864 run=7 status=0 2026-06-15T00:35:01Z
+BEGIN size=67108864 run=8 port=48038 2026-06-15T00:35:01Z
+size=67108864 chunk=262080 requests=64 port=48038 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.176s 363.4 MiB/s
+openssh sftp get: 0.196s 327.3 MiB/s
+END size=67108864 run=8 status=0 2026-06-15T00:35:02Z
+BEGIN size=67108864 run=9 port=48524 2026-06-15T00:35:02Z
+size=67108864 chunk=262080 requests=64 port=48524 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.174s 368.7 MiB/s
+openssh sftp get: 0.192s 332.8 MiB/s
+END size=67108864 run=9 status=0 2026-06-15T00:35:04Z
+BEGIN size=67108864 run=10 port=48887 2026-06-15T00:35:04Z
+size=67108864 chunk=262080 requests=64 port=48887 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.149s 431.0 MiB/s
+openssh sftp get: 0.185s 345.1 MiB/s
+END size=67108864 run=10 status=0 2026-06-15T00:35:06Z
+BEGIN size=1073741824 run=1 port=48114 2026-06-15T00:35:06Z
+size=1073741824 chunk=262080 requests=64 port=48114 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.736s 590.0 MiB/s
+openssh sftp get: 1.845s 555.1 MiB/s
+END size=1073741824 run=1 status=0 2026-06-15T00:35:11Z
+BEGIN size=1073741824 run=2 port=48946 2026-06-15T00:35:11Z
+size=1073741824 chunk=262080 requests=64 port=48946 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.84s 556.4 MiB/s
+openssh sftp get: 1.846s 554.9 MiB/s
+END size=1073741824 run=2 status=0 2026-06-15T00:35:16Z
+BEGIN size=1073741824 run=3 port=48444 2026-06-15T00:35:16Z
+size=1073741824 chunk=262080 requests=64 port=48444 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.769s 578.9 MiB/s
+openssh sftp get: 1.813s 564.8 MiB/s
+END size=1073741824 run=3 status=0 2026-06-15T00:35:21Z
+BEGIN size=1073741824 run=4 port=48546 2026-06-15T00:35:21Z
+size=1073741824 chunk=262080 requests=64 port=48546 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.697s 603.3 MiB/s
+openssh sftp get: 1.848s 554.1 MiB/s
+END size=1073741824 run=4 status=0 2026-06-15T00:35:26Z
+BEGIN size=1073741824 run=5 port=48513 2026-06-15T00:35:26Z
+size=1073741824 chunk=262080 requests=64 port=48513 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.736s 589.8 MiB/s
+openssh sftp get: 1.845s 555.1 MiB/s
+END size=1073741824 run=5 status=0 2026-06-15T00:35:31Z
+BEGIN size=1073741824 run=6 port=48776 2026-06-15T00:35:31Z
+size=1073741824 chunk=262080 requests=64 port=48776 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.739s 588.9 MiB/s
+openssh sftp get: 1.846s 554.8 MiB/s
+END size=1073741824 run=6 status=0 2026-06-15T00:35:36Z
+BEGIN size=1073741824 run=7 port=48741 2026-06-15T00:35:36Z
+size=1073741824 chunk=262080 requests=64 port=48741 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.757s 582.9 MiB/s
+openssh sftp get: 1.847s 554.4 MiB/s
+END size=1073741824 run=7 status=0 2026-06-15T00:35:42Z
+BEGIN size=1073741824 run=8 port=48088 2026-06-15T00:35:42Z
+size=1073741824 chunk=262080 requests=64 port=48088 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.727s 593.0 MiB/s
+openssh sftp get: 1.837s 557.5 MiB/s
+END size=1073741824 run=8 status=0 2026-06-15T00:35:47Z
+BEGIN size=1073741824 run=9 port=48936 2026-06-15T00:35:47Z
+size=1073741824 chunk=262080 requests=64 port=48936 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.739s 588.8 MiB/s
+openssh sftp get: 1.858s 551.1 MiB/s
+END size=1073741824 run=9 status=0 2026-06-15T00:35:52Z
+BEGIN size=1073741824 run=10 port=48281 2026-06-15T00:35:52Z
+size=1073741824 chunk=262080 requests=64 port=48281 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.743s 587.5 MiB/s
+openssh sftp get: 1.843s 555.7 MiB/s
+END size=1073741824 run=10 status=0 2026-06-15T00:35:57Z
+BEGIN size=10737418240 run=1 port=48264 2026-06-15T00:35:57Z
+size=10737418240 chunk=262080 requests=64 port=48264 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.894s 606.1 MiB/s
+openssh sftp get: 17.6s 581.8 MiB/s
+END size=10737418240 run=1 status=0 2026-06-15T00:36:33Z
+BEGIN size=10737418240 run=2 port=48600 2026-06-15T00:36:33Z
+size=10737418240 chunk=262080 requests=64 port=48600 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.988s 602.8 MiB/s
+openssh sftp get: 17.593s 582.1 MiB/s
+END size=10737418240 run=2 status=0 2026-06-15T00:37:09Z
+BEGIN size=10737418240 run=3 port=48584 2026-06-15T00:37:09Z
+size=10737418240 chunk=262080 requests=64 port=48584 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.849s 607.7 MiB/s
+openssh sftp get: 17.575s 582.7 MiB/s
+END size=10737418240 run=3 status=0 2026-06-15T00:37:46Z
+BEGIN size=10737418240 run=4 port=48566 2026-06-15T00:37:46Z
+size=10737418240 chunk=262080 requests=64 port=48566 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.296s 592.0 MiB/s
+openssh sftp get: 17.62s 581.2 MiB/s
+END size=10737418240 run=4 status=0 2026-06-15T00:38:22Z
+BEGIN size=10737418240 run=5 port=48708 2026-06-15T00:38:22Z
+size=10737418240 chunk=262080 requests=64 port=48708 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.868s 607.1 MiB/s
+openssh sftp get: 17.625s 581.0 MiB/s
+END size=10737418240 run=5 status=0 2026-06-15T00:38:59Z
+BEGIN size=10737418240 run=6 port=48101 2026-06-15T00:38:59Z
+size=10737418240 chunk=262080 requests=64 port=48101 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.833s 608.3 MiB/s
+openssh sftp get: 17.787s 575.7 MiB/s
+END size=10737418240 run=6 status=0 2026-06-15T00:39:36Z
+BEGIN size=10737418240 run=7 port=48809 2026-06-15T00:39:36Z
+size=10737418240 chunk=262080 requests=64 port=48809 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.634s 615.6 MiB/s
+openssh sftp get: 17.344s 590.4 MiB/s
+END size=10737418240 run=7 status=0 2026-06-15T00:40:12Z
+BEGIN size=10737418240 run=8 port=48096 2026-06-15T00:40:12Z
+size=10737418240 chunk=262080 requests=64 port=48096 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.799s 609.6 MiB/s
+openssh sftp get: 17.738s 577.3 MiB/s
+END size=10737418240 run=8 status=0 2026-06-15T00:40:48Z
+BEGIN size=10737418240 run=9 port=48075 2026-06-15T00:40:48Z
+size=10737418240 chunk=262080 requests=64 port=48075 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.916s 605.3 MiB/s
+openssh sftp get: 17.616s 581.3 MiB/s
+END size=10737418240 run=9 status=0 2026-06-15T00:41:25Z
+BEGIN size=10737418240 run=10 port=48618 2026-06-15T00:41:25Z
+size=10737418240 chunk=262080 requests=64 port=48618 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.753s 611.2 MiB/s
+openssh sftp get: 17.427s 587.6 MiB/s
+END size=10737418240 run=10 status=0 2026-06-15T00:42:01Z

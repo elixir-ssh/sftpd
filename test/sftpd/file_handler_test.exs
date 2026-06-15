@@ -1,92 +1,99 @@
 defmodule Sftpd.FileHandlerTest do
   use ExUnit.Case, async: false
-  use ExUnitProperties
 
-  import ExUnit.CaptureLog
-
-  alias Sftpd.FileHandler
+  alias Sftpd.{IODevice, FileHandler}
+  alias Sftpd.Backends.Memory
   alias Sftpd.Test.TelemetryHelper
 
   @state %{backend: nil, backend_state: nil}
 
   defmodule MockBackend do
-    def read_file(_path, _state), do: {:ok, "content"}
-    def list_dir(_path, _state), do: {:ok, [~c".", ~c"..", ~c"entry"]}
-    def make_dir(_path, _state), do: :ok
-    def del_dir(_path, _state), do: :ok
-    def delete(_path, _state), do: :ok
-    def rename(_src, _dst, _state), do: :ok
+    def open_read("/file.txt", _session, _state), do: {:ok, %{content: "content"}}
+    def open_read("/file", _session, _state), do: {:ok, %{content: "abc"}}
+    def open_read(_path, _session, _state), do: {:error, :enoent}
 
-    def file_info(~c"/dir", _state),
-      do: {:ok, {:file_info, 4096, :directory, :read, {}, {}, {}, 0, 0, 0, 0, 0, 0, 0}}
+    def read_at(%{content: content}, offset, len, _state) do
+      if offset >= byte_size(content) do
+        :eof
+      else
+        {:ok, binary_part(content, offset, min(len, byte_size(content) - offset))}
+      end
+    end
 
-    def file_info(~c"/file", _state),
-      do: {:ok, {:file_info, 3, :regular, :read_write, {}, {}, {}, 0, 0, 0, 0, 0, 0, 0}}
+    def open_write(path, _attrs, _session, _state), do: {:ok, %{path: path, chunks: []}}
 
-    def file_info(_path, _state), do: {:error, :enoent}
+    def write_at(handle, offset, data, _state),
+      do: {:ok, %{handle | chunks: [{offset, data} | handle.chunks]}}
+
+    def finish_write(_handle, _state), do: :ok
+    def abort_write(_handle, _state), do: :ok
+
+    def open_dir("/items", _session, _state) do
+      {:ok,
+       %{
+         pages: [
+           [
+             %{name: ".", attrs: %{type: :directory, size: 0}},
+             %{name: "..", attrs: %{type: :directory, size: 0}},
+             %{name: "entry", attrs: %{type: :regular, size: 0}}
+           ]
+         ]
+       }}
+    end
+
+    def open_dir("/paged", _session, _state) do
+      {:ok,
+       %{
+         pages: [
+           [
+             %{name: ".", attrs: %{type: :directory, size: 0}},
+             %{name: "..", attrs: %{type: :directory, size: 0}}
+           ],
+           [
+             %{name: "one", attrs: %{type: :regular, size: 0}},
+             %{name: "two", attrs: %{type: :regular, size: 0}}
+           ]
+         ]
+       }}
+    end
+
+    def open_dir("/read-dir-error", _session, _state), do: {:ok, %{pages: :error}}
+
+    def open_dir("/legacy-items", _session, _state) do
+      {:ok,
+       %{
+         entries: [
+           %{name: ".", attrs: %{type: :directory, size: 0}},
+           %{name: "..", attrs: %{type: :directory, size: 0}},
+           %{name: "entry", attrs: %{type: :regular, size: 0}}
+         ]
+       }}
+    end
+
+    def read_dir(%{pages: []}, _state), do: :eof
+    def read_dir(%{pages: :error}, _state), do: {:error, :eio}
+
+    def read_dir(%{pages: [entries | pages]} = handle, _state),
+      do: {:ok, entries, %{handle | pages: pages}}
+
+    def read_dir(%{entries: entries} = handle, _state),
+      do: {:ok, entries, Map.delete(handle, :entries)}
+
+    def close_dir(_handle, _state), do: :ok
+
+    def make_dir(_path, _attrs, _session, _state), do: :ok
+    def del_dir(_path, _session, _state), do: :ok
+    def delete(_path, _session, _state), do: :ok
+    def rename(_src, _dst, _session, _state), do: :ok
+
+    def file_attrs("/dir", _session, _state), do: {:ok, %{type: :directory, size: 4096}}
+    def file_attrs("/file", _session, _state), do: {:ok, %{type: :regular, size: 3}}
+    def file_attrs("/file.txt", _session, _state), do: {:ok, %{type: :regular, size: 7}}
+    def file_attrs(_path, _session, _state), do: {:error, :enoent}
   end
 
   defmodule ReadErrorBackend do
-    def read_file(_path, _state), do: {:error, :enoent}
-  end
-
-  defmodule HangingOpenBackend do
-    def read_file(_path, %{test_pid: test_pid}) do
-      send(test_pid, {:open_started, self()})
-      Process.sleep(:infinity)
-    end
-  end
-
-  defmodule SlowCloseDevice do
-    use GenServer
-
-    def start, do: GenServer.start(__MODULE__, [])
-
-    @impl true
-    def init(_args), do: {:ok, %{}}
-
-    @impl true
-    def handle_call(:close, _from, state) do
-      Process.sleep(50)
-      {:stop, :normal, :ok, state}
-    end
-  end
-
-  defmodule HangingCloseDevice do
-    use GenServer
-
-    def start, do: GenServer.start(__MODULE__, [])
-
-    @impl true
-    def init(_args), do: {:ok, %{}}
-
-    @impl true
-    def handle_call(:close, _from, state) do
-      Process.sleep(:infinity)
-      {:reply, :ok, state}
-    end
-  end
-
-  defmodule ControlledCloseDevice do
-    use GenServer
-
-    def start(test_pid, release_delay \\ nil),
-      do: GenServer.start(__MODULE__, {test_pid, release_delay})
-
-    @impl true
-    def init({test_pid, release_delay}),
-      do: {:ok, %{test_pid: test_pid, release_delay: release_delay}}
-
-    @impl true
-    def handle_call(:close, _from, state) do
-      if state.release_delay do
-        Process.send_after(self(), :release_close, state.release_delay)
-      end
-
-      receive do
-        :release_close -> {:stop, :normal, :ok, state}
-      end
-    end
+    def file_attrs(_path, _session, _state), do: {:error, :enoent}
   end
 
   describe "make_symlink/3" do
@@ -138,9 +145,9 @@ defmodule Sftpd.FileHandlerTest do
   describe "open/3" do
     test "falls back to read mode when no modes specified" do
       state = %{backend: MockBackend, backend_state: %{}}
-      {{:ok, pid}, _state} = FileHandler.open(~c"/file.txt", [], state)
-      assert Process.alive?(pid)
-      GenServer.stop(pid)
+      {{:ok, handle}, _state} = FileHandler.open(~c"/file.txt", [], state)
+      assert IODevice.handle?(handle)
+      assert {:ok, _state} = FileHandler.close(handle, state)
     end
 
     test "returns read setup errors before issuing a handle" do
@@ -149,22 +156,73 @@ defmodule Sftpd.FileHandlerTest do
       assert {{:error, :enoent}, ^state} = FileHandler.open(~c"/missing.txt", [:read], state)
     end
 
-    test "returns timeout when read setup hangs before issuing a handle" do
-      state = %{
-        backend: HangingOpenBackend,
-        backend_state: %{test_pid: self()},
-        open_timeout: 10
-      }
+    test "supports mixed read/write opens without returning a write-only handle" do
+      state = %{backend: MockBackend, backend_state: %{}}
 
-      log =
-        capture_log(fn ->
-          assert {{:error, :timeout}, ^state} = FileHandler.open(~c"/stuck.txt", [:read], state)
-        end)
+      assert {{:ok, handle}, ^state} = FileHandler.open(~c"/file.txt", [:read, :write], state)
+      assert IODevice.handle?(handle)
+      assert {{:ok, "content"}, ^state} = FileHandler.read(handle, 16, state)
 
-      assert_receive {:open_started, pid}, 1000
-      ref = Process.monitor(pid)
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
-      assert log =~ "Timed out waiting 10ms"
+      assert {{:ok, 0}, ^state} = FileHandler.position(handle, {:bof, 0}, state)
+      assert {:ok, ^state} = FileHandler.write(handle, "updated", state)
+      assert {:ok, ^state} = FileHandler.close(handle, state)
+    end
+
+    test "preserves truncate semantics for mixed read/write opens" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/file.txt", "content", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:ok, handle}, ^state} =
+               FileHandler.open(~c"/file.txt", [:read, :write, :truncate], state)
+
+      assert {:ok, ^state} = FileHandler.close(handle, state)
+      assert {:ok, ""} = Memory.read_file(~c"/file.txt", backend_state)
+    end
+
+    test "uses direct handles for memory backend reads and writes" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/file.txt", "content", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:ok, read_handle}, ^state} = FileHandler.open(~c"/file.txt", [:read], state)
+      assert IODevice.handle?(read_handle)
+      assert {{:ok, "content"}, ^state} = FileHandler.read(read_handle, 16, state)
+      assert {:ok, ^state} = FileHandler.close(read_handle, state)
+
+      assert {{:ok, write_handle}, ^state} = FileHandler.open(~c"/out.txt", [:write], state)
+      assert IODevice.handle?(write_handle)
+      assert {:ok, ^state} = FileHandler.write(write_handle, ["fast", "-", "path"], state)
+      assert {:ok, ^state} = FileHandler.close(write_handle, state)
+      assert {:ok, "fast-path"} = Memory.read_file(~c"/out.txt", backend_state)
+    end
+
+    test "preserves append mode for write handles" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/append.txt", "base", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:ok, handle}, ^state} = FileHandler.open(~c"/append.txt", [:write, :append], state)
+      assert {{:ok, 0}, ^state} = FileHandler.position(handle, {:bof, 0}, state)
+      assert {:ok, ^state} = FileHandler.write(handle, "tail", state)
+      assert {:ok, ^state} = FileHandler.close(handle, state)
+
+      assert {:ok, "basetail"} = Memory.read_file(~c"/append.txt", backend_state)
+    end
+
+    test "preserves append mode for mixed read/write handles" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/append-rw.txt", "base", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:ok, handle}, ^state} =
+               FileHandler.open(~c"/append-rw.txt", [:read, :write, :append], state)
+
+      assert {{:ok, 0}, ^state} = FileHandler.position(handle, {:bof, 0}, state)
+      assert {:ok, ^state} = FileHandler.write(handle, "tail", state)
+      assert {:ok, ^state} = FileHandler.close(handle, state)
+
+      assert {:ok, "basetail"} = Memory.read_file(~c"/append-rw.txt", backend_state)
     end
 
     test "emits telemetry for open" do
@@ -172,7 +230,7 @@ defmodule Sftpd.FileHandlerTest do
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
       state = %{backend: MockBackend, backend_state: %{}}
-      {{:ok, pid}, _state} = FileHandler.open(~c"/file.txt", [], state)
+      {{:ok, handle}, _state} = FileHandler.open(~c"/file.txt", [], state)
 
       assert_receive {:telemetry_event, [:sftpd, :sftp, :open], measurements, metadata}
       assert is_integer(measurements.duration)
@@ -180,13 +238,42 @@ defmodule Sftpd.FileHandlerTest do
       assert metadata.mode == :read
       assert metadata.path == "/file.txt"
       assert metadata.backend == MockBackend
-      assert metadata.open_timeout == 30_000
 
-      GenServer.stop(pid)
+      assert {:ok, _state} = FileHandler.close(handle, state)
+    end
+  end
+
+  describe "list_dir/2" do
+    test "drains paged backend directory handles" do
+      state = %{backend: MockBackend, backend_state: %{}}
+
+      assert {{:ok, [~c".", ~c"..", ~c"one", ~c"two"]}, ^state} =
+               FileHandler.list_dir(~c"/paged", state)
+    end
+
+    test "closes backend directory handles after read errors" do
+      state = %{backend: MockBackend, backend_state: %{}}
+      assert {{:error, :eio}, ^state} = FileHandler.list_dir(~c"/read-dir-error", state)
     end
   end
 
   describe "path operation telemetry" do
+    test "rejects traversal-normalized root mutation targets" do
+      {:ok, backend_state} = Memory.init([])
+      :ok = Memory.write_file(~c"/file.txt", "safe", backend_state)
+      state = %{backend: Memory, backend_state: backend_state}
+
+      assert {{:error, :eacces}, ^state} = FileHandler.make_dir(~c"/dir/..", state)
+      assert {{:error, :eacces}, ^state} = FileHandler.del_dir(~c"/dir/..", state)
+      assert {{:error, :eacces}, ^state} = FileHandler.delete(~c"/dir/..", state)
+      assert {{:error, :eacces}, ^state} = FileHandler.rename(~c"/file.txt", ~c"/dir/..", state)
+
+      assert {{:error, :eacces}, ^state} =
+               FileHandler.rename(~c"/dir/..", ~c"/renamed.txt", state)
+
+      assert {:ok, "safe"} = Memory.read_file(~c"/file.txt", backend_state)
+    end
+
     test "emits telemetry for backend path operations" do
       handler_id =
         TelemetryHelper.attach(self(), [
@@ -246,8 +333,8 @@ defmodule Sftpd.FileHandlerTest do
 
       state = %{backend: MockBackend, backend_state: %{}}
 
-      assert {{:ok, {:file_info, 3, :regular, :read_write, {}, {}, {}, 0, 0, 0, 0, 0, 0, 0}},
-              ^state} = FileHandler.read_file_info(~c"/file", state)
+      assert {{:ok, {:file_info, 3, :regular, :read_write, _, _, _, _, _, _, _, _, _, _}}, ^state} =
+               FileHandler.read_file_info(~c"/file", state)
 
       assert_receive {:telemetry_event, [:sftpd, :sftp, :read_file_info], measurements, metadata}
       assert is_integer(measurements.duration)
@@ -276,105 +363,17 @@ defmodule Sftpd.FileHandlerTest do
   end
 
   describe "close/2" do
-    property "timed-out close can still finish cleanly within the cleanup grace" do
-      check all(release_delay <- integer(25..50), max_runs: 10) do
-        {:ok, pid} = ControlledCloseDevice.start(self(), release_delay)
-        ref = Process.monitor(pid)
-
-        capture_log(fn ->
-          assert {{:error, :timeout}, _state} =
-                   FileHandler.close(pid, %{
-                     backend: nil,
-                     backend_state: nil,
-                     close_timeout: 1,
-                     close_shutdown_grace: release_delay + 100
-                   })
-        end)
-
-        assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1000
-      end
-    end
-
-    test "returns timeout but allows a slow close to clean up during the grace window" do
-      {:ok, pid} = ControlledCloseDevice.start(self(), 50)
-      ref = Process.monitor(pid)
-
-      log =
-        capture_log(fn ->
-          assert {{:error, :timeout}, _state} =
-                   FileHandler.close(pid, %{
-                     backend: nil,
-                     backend_state: nil,
-                     close_timeout: 10,
-                     close_shutdown_grace: 200
-                   })
-        end)
-
-      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1000
-      assert log =~ "Timed out waiting 10ms"
-    end
-
-    test "does not leave late close replies in the caller mailbox after timeout" do
-      {:ok, pid} = SlowCloseDevice.start()
-      ref = Process.monitor(pid)
-
-      capture_log(fn ->
-        assert {{:error, :timeout}, _state} =
-                 FileHandler.close(pid, %{
-                   backend: nil,
-                   backend_state: nil,
-                   close_timeout: 10,
-                   close_shutdown_grace: 200
-                 })
-      end)
-
-      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1000
-      Process.sleep(100)
-      refute_received {_tag, :ok}
-      refute_received {:ok, _}
-    end
-
-    test "kills the device when cleanup grace also expires" do
-      {:ok, pid} = HangingCloseDevice.start()
-      ref = Process.monitor(pid)
-
-      log =
-        capture_log(fn ->
-          assert {{:error, :timeout}, _state} =
-                   FileHandler.close(pid, %{
-                     backend: nil,
-                     backend_state: nil,
-                     close_timeout: 10,
-                     close_shutdown_grace: 10
-                   })
-        end)
-
-      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1000
-      assert log =~ "did not close within 10ms cleanup grace"
-    end
-
-    test "emits telemetry for close timeouts" do
+    test "emits telemetry for invalid non-direct handles" do
       handler_id = TelemetryHelper.attach(self(), [[:sftpd, :sftp, :close]])
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
-      {:ok, pid} = HangingCloseDevice.start()
-
-      capture_log(fn ->
-        assert {{:error, :timeout}, _state} =
-                 FileHandler.close(pid, %{
-                   backend: nil,
-                   backend_state: nil,
-                   close_timeout: 10,
-                   close_shutdown_grace: 10
-                 })
-      end)
+      assert {{:error, :einval}, _state} =
+               FileHandler.close(self(), %{backend: nil, backend_state: nil})
 
       assert_receive {:telemetry_event, [:sftpd, :sftp, :close], measurements, metadata}
       assert is_integer(measurements.duration)
       assert metadata.result == :error
-      assert metadata.reason == :timeout
-      assert metadata.close_timeout == 10
-      assert metadata.close_shutdown_grace == 10
+      assert metadata.reason == :einval
     end
   end
 end

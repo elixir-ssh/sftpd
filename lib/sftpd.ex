@@ -2,16 +2,18 @@ defmodule Sftpd do
   @moduledoc """
   A pluggable SFTP server with support for multiple storage backends.
 
-  Sftpd wraps Erlang's `:ssh_sftpd` module and provides a clean API for
-  starting SFTP servers with configurable authentication and storage backends.
+  Sftpd provides a clean API for starting SFTP-only SSH daemons with
+  configurable authentication and storage backends. The default transport wraps
+  Erlang's `:ssh_sftpd` module; `transport: :elixir` opts into the
+  experimental pure-Elixir SSH/SFTP transport.
 
   OTP 29 no longer enables the SFTP subsystem implicitly when starting an SSH
-  daemon. `Sftpd.start_server/1` passes an explicit
-  `:ssh_sftpd.subsystem_spec/1` to `:ssh.daemon/2`, so callers do not need to
-  configure the OTP daemon subsystem list themselves.
+  daemon. `Sftpd.start_server/1` passes an explicit SFTP subsystem wrapper to
+  `:ssh.daemon/2`, so callers do not need to configure the OTP daemon
+  subsystem list themselves.
 
-  OTP 29 also disables shell and exec services by default. `Sftpd` is an
-  SFTP-only wrapper and does not enable remote shell or exec channels.
+  OTP 29 also disables shell and exec services by default. `Sftpd` is
+  SFTP-only and does not enable remote shell or exec channels.
 
   ## Quick Start
 
@@ -50,25 +52,16 @@ defmodule Sftpd do
   ## Options
 
   - `:port` - Port to listen on (default: 22)
-  - `:backend` - Backend module, `{:genserver, pid_or_name}`, or
-    `{:genserver, pid_or_name, session: true}` (required)
+  - `:backend` - Backend module implementing `Sftpd.Backend` (required)
   - `:backend_opts` - Options passed to `backend.init/1` for module backends (default: [])
     The built-in S3 backend accepts `:bucket`, `:prefix`, and `:aws_client`.
   - `:auth` - Authentication config, either `{:passwords, list}` or `{Module, opts}` (required)
   - `:system_dir` - Directory containing SSH host keys (required)
   - `:max_sessions` - Maximum concurrent sessions (default: 10)
-  - `:open_timeout` - Timeout in milliseconds for opening files (default: 30000)
-  - `:close_timeout` - Timeout in milliseconds for finalizing file closes (default: 30000)
-
-  ## Process-Based Backends
-
-  Instead of a module, you can use a running GenServer:
-
-      {:ok, backend_pid} = MyBackendServer.start_link()
-      Sftpd.start_server(backend: {:genserver, backend_pid}, ...)
-
-  See `Sftpd.Backend` for the messages your GenServer must handle.
-
+  - `:max_channels` - Maximum SSH channels per pure-Elixir connection (default: 4)
+  - `:max_handles` - Maximum SFTP handles per pure-Elixir channel (default: 256)
+  - `:transport` - `:otp` for Erlang SSH/SFTP, or `:elixir` for the
+    experimental pure-Elixir SSH/SFTP transport (default: `:otp`)
   ## Telemetry
 
   See `Sftpd.Telemetry` and the `Telemetry` extra in HexDocs for the event
@@ -88,7 +81,7 @@ defmodule Sftpd do
   @default_max_sessions 10
   @server_event_prefix [:sftpd, :server]
 
-  @type server_ref :: :ssh.daemon_ref()
+  @type server_ref :: :ssh.daemon_ref() | {:elixir, pid()}
 
   @doc """
   Start an SFTP server.
@@ -114,6 +107,12 @@ defmodule Sftpd do
       Keyword.has_key?(opts, :users) ->
         {:error, {:deprecated_option, :users}}
 
+      Keyword.has_key?(opts, :open_timeout) ->
+        {:error, {:deprecated_option, :open_timeout}}
+
+      Keyword.has_key?(opts, :close_timeout) ->
+        {:error, {:deprecated_option, :close_timeout}}
+
       not Keyword.has_key?(opts, :auth) ->
         {:error, {:missing_option, :auth}}
 
@@ -128,9 +127,10 @@ defmodule Sftpd do
     backend_opts = Keyword.get(opts, :backend_opts, [])
     auth = Keyword.fetch!(opts, :auth)
     system_dir = Keyword.fetch!(opts, :system_dir)
+    transport = Keyword.get(opts, :transport, :otp)
     max_sessions = Keyword.get(opts, :max_sessions, @default_max_sessions)
-    open_timeout = Keyword.get(opts, :open_timeout, 30_000)
-    close_timeout = Keyword.get(opts, :close_timeout, 30_000)
+    max_channels = Keyword.get(opts, :max_channels)
+    max_handles = Keyword.get(opts, :max_handles)
 
     metadata = %{
       port: port,
@@ -146,33 +146,57 @@ defmodule Sftpd do
         with :ok <- Sftpd.Auth.Registry.ensure_started(),
              :ok <- validate_auth(auth),
              {:ok, {backend, backend_state}} <- init_backend(backend, backend_opts) do
-          :ssh.daemon(port, [
-            {:max_sessions, max_sessions},
-            {:pwdfun, Sftpd.Auth.Adapter.password_fun(auth)},
-            {:key_cb, {Sftpd.Auth.KeyCallback, [auth: auth]}},
-            {:system_dir, to_charlist(system_dir)},
-            {:subsystems,
-             [
-               Sftpd.Subsystem.subsystem_spec(
-                 cwd: ~c"/",
-                 root: ~c"/",
-                 file_handler: {
-                   Sftpd.FileHandler,
-                   %{
-                     backend: backend,
-                     backend_state: backend_state,
-                     open_timeout: open_timeout,
-                     close_timeout: close_timeout
-                   }
-                 }
-               )
-             ]}
-          ])
+          start_transport(transport,
+            port: port,
+            max_sessions: max_sessions,
+            max_channels: max_channels,
+            max_handles: max_handles,
+            auth: auth,
+            system_dir: system_dir,
+            backend: backend,
+            backend_state: backend_state
+          )
         end
       end,
       &server_finalize/2
     )
   end
+
+  defp start_transport(:otp, opts) do
+    :ssh.daemon(Keyword.fetch!(opts, :port), [
+      {:max_sessions, Keyword.fetch!(opts, :max_sessions)},
+      {:pwdfun, Sftpd.Auth.Adapter.password_fun(Keyword.fetch!(opts, :auth))},
+      {:key_cb, {Sftpd.Auth.KeyCallback, [auth: Keyword.fetch!(opts, :auth)]}},
+      {:system_dir, opts |> Keyword.fetch!(:system_dir) |> to_charlist()},
+      {:subsystems,
+       [
+         Sftpd.Subsystem.subsystem_spec(
+           cwd: ~c"/",
+           root: ~c"/",
+           file_handler: {
+             Sftpd.FileHandler,
+             %{
+               backend: Keyword.fetch!(opts, :backend),
+               backend_state: Keyword.fetch!(opts, :backend_state)
+             }
+           }
+         )
+       ]}
+    ])
+  end
+
+  defp start_transport(:elixir, opts) do
+    case Sftpd.SSH.Server.start_link(opts) do
+      {:ok, pid} ->
+        Process.unlink(pid)
+        {:ok, {:elixir, pid}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp start_transport(transport, _opts), do: {:error, {:invalid_option, {:transport, transport}}}
 
   @doc """
   Return a child spec for supervising an SFTP server.
@@ -199,23 +223,14 @@ defmodule Sftpd do
     }
   end
 
-  defp init_backend({:genserver, server}, _opts) do
-    # Process-based backend - no init needed, process manages own state
-    {:ok, {{:genserver, server}, nil}}
-  end
-
-  defp init_backend({:genserver, server, opts}, _opts) when is_list(opts) do
-    # Process-based backend - no init needed, process manages own state
-    {:ok, {{:genserver, server, opts}, nil}}
-  end
-
   defp init_backend(module, opts) when is_atom(module) do
-    # Module-based backend - call init/1
     case module.init(opts) do
       {:ok, state} -> {:ok, {module, state}}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp init_backend(backend, _opts), do: {:error, {:invalid_option, {:backend, backend}}}
 
   defp validate_auth(auth) do
     if Sftpd.Auth.Adapter.valid_config?(auth) do
@@ -239,11 +254,21 @@ defmodule Sftpd do
       @server_event_prefix ++ [:stop],
       %{server_ref: ref},
       fn ->
-        :ssh.stop_daemon(ref)
+        stop_ref(ref)
       end,
       &stop_finalize/2
     )
   end
+
+  defp stop_ref({:elixir, pid}) when is_pid(pid) do
+    GenServer.stop(pid)
+  catch
+    :exit, {:noproc, _} -> :ok
+    :exit, :shutdown -> :ok
+    :exit, {:shutdown, _reason} -> :ok
+  end
+
+  defp stop_ref(ref), do: :ssh.stop_daemon(ref)
 
   defp server_finalize({:ok, ref}, duration),
     do: {%{duration: duration}, %{result: :ok, server_ref: ref}}
@@ -256,11 +281,9 @@ defmodule Sftpd do
   defp stop_finalize({:error, reason}, duration),
     do: {%{duration: duration}, %{result: :error, reason: reason}}
 
-  defp backend_kind({:genserver, _server}), do: :genserver
-  defp backend_kind({:genserver, _server, _opts}), do: :genserver
   defp backend_kind(module) when is_atom(module), do: :module
+  defp backend_kind(_backend), do: :unknown
 
-  defp backend_name({:genserver, server}), do: inspect(server)
-  defp backend_name({:genserver, server, _opts}), do: inspect(server)
   defp backend_name(module) when is_atom(module), do: module
+  defp backend_name(backend), do: inspect(backend)
 end

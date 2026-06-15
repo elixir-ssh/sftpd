@@ -105,6 +105,8 @@ defmodule SftpdIntegrationTest do
     test "happy path for make and delete directory", %{system_dir: system_dir} do
       assert {:ok, _ref} = start_ssh_server(system_dir)
       %{channel_ref: channel_ref} = start_ssh_client()
+      dir_name = "mkdir-#{System.unique_integer([:positive])}"
+      dir_path = to_charlist("/foldertest/#{dir_name}")
 
       assert {:ok, listing} = :ssh_sftp.list_dir(channel_ref, ~c"/")
 
@@ -114,15 +116,15 @@ defmodule SftpdIntegrationTest do
 
       assert {:ok, "0"} = :ssh_sftp.opendir(channel_ref, ~c"/foldertest")
 
-      assert :ok = :ssh_sftp.make_dir(channel_ref, ~c"/foldertest/15")
+      assert :ok = :ssh_sftp.make_dir(channel_ref, dir_path)
 
       {:ok, foldertest_listing} = :ssh_sftp.list_dir(channel_ref, ~c"/foldertest")
       assert ~c"." in foldertest_listing
       assert ~c".." in foldertest_listing
-      assert ~c"15" in foldertest_listing
+      assert to_charlist(dir_name) in foldertest_listing
       assert ~c"9" in foldertest_listing
 
-      assert :ok = :ssh_sftp.del_dir(channel_ref, ~c"/foldertest/15")
+      assert :ok = :ssh_sftp.del_dir(channel_ref, dir_path)
     end
 
     test "create nested directories", %{system_dir: system_dir} do
@@ -147,6 +149,8 @@ defmodule SftpdIntegrationTest do
     test "happy path for upload without cd", %{system_dir: system_dir} do
       assert {:ok, _ref} = start_ssh_server(system_dir)
       %{channel_ref: channel_ref} = start_ssh_client()
+      dir_path = "/foldertest/upload-#{System.unique_integer([:positive])}"
+      file_path = "#{dir_path}/assets.csv"
 
       assert {:ok, listing} = :ssh_sftp.list_dir(channel_ref, ~c"/")
 
@@ -155,10 +159,10 @@ defmodule SftpdIntegrationTest do
       assert ~c"foldertest" in listing
 
       # Create the directory first
-      assert :ok = :ssh_sftp.make_dir(channel_ref, ~c"/foldertest/15")
+      assert :ok = :ssh_sftp.make_dir(channel_ref, to_charlist(dir_path))
 
       # Now open a file for writing
-      assert {:ok, handle} = :ssh_sftp.open(channel_ref, ~c"/foldertest/15/assets.csv", [:write])
+      assert {:ok, handle} = :ssh_sftp.open(channel_ref, to_charlist(file_path), [:write])
 
       # Write some data
       assert :ok = :ssh_sftp.write(channel_ref, handle, "hello world")
@@ -167,9 +171,12 @@ defmodule SftpdIntegrationTest do
       assert :ok = :ssh_sftp.close(channel_ref, handle)
 
       # Verify the file was created and can be read back
-      assert {:ok, handle2} = :ssh_sftp.open(channel_ref, ~c"/foldertest/15/assets.csv", [:read])
+      assert {:ok, handle2} = :ssh_sftp.open(channel_ref, to_charlist(file_path), [:read])
       assert {:ok, ~c"hello world"} = :ssh_sftp.read(channel_ref, handle2, 11)
       assert :ok = :ssh_sftp.close(channel_ref, handle2)
+
+      assert :ok = :ssh_sftp.delete(channel_ref, to_charlist(file_path))
+      assert :ok = :ssh_sftp.del_dir(channel_ref, to_charlist(dir_path))
     end
 
     test "upload and download preserves content", %{system_dir: system_dir} do

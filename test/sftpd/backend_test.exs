@@ -4,164 +4,10 @@ defmodule Sftpd.BackendTest do
 
   alias Sftpd.Backend
 
-  describe "file_info/2" do
-    test "defaults access to :read_write" do
-      mtime = {{2024, 1, 1}, {0, 0, 0}}
-      result = Backend.file_info(100, mtime)
-
-      assert {:file_info, 100, :regular, :read_write, ^mtime, ^mtime, ^mtime, 33188, 1, 0, 0, _,
-              1, 1} = result
-    end
-  end
-
-  describe "call/3 with module" do
-    test "applies function on module backend" do
-      {:ok, mem_state} = Sftpd.Backends.Memory.init([])
-      result = Backend.call(Sftpd.Backends.Memory, :list_dir, [~c"/", mem_state])
-      assert {:ok, [~c".", ~c".."]} = result
-    end
-  end
-
-  describe "call/4 with module" do
-    defmodule SessionModuleBackend do
-      def list_dir(_path, %{tenant: tenant}, _state), do: {:ok, [to_charlist(tenant)]}
-      def file_info(_path, _state), do: {:error, :legacy_called}
-    end
-
-    defmodule SessionRecordingBackend do
-      def list_dir(path, session, state), do: {:list_dir, path, session, state}
-      def file_info(path, session, state), do: {:file_info, path, session, state}
-      def make_dir(path, session, state), do: {:make_dir, path, session, state}
-      def del_dir(path, session, state), do: {:del_dir, path, session, state}
-      def delete(path, session, state), do: {:delete, path, session, state}
-      def rename(src, dst, session, state), do: {:rename, src, dst, session, state}
-      def read_file(path, session, state), do: {:read_file, path, session, state}
-
-      def write_file(path, content, session, state),
-        do: {:write_file, path, content, session, state}
-
-      def read_file_range(path, offset, len, session, state),
-        do: {:read_file_range, path, offset, len, session, state}
-
-      def begin_write(path, session, state), do: {:begin_write, path, session, state}
-
-      def write_chunk(handle, offset, chunk, session, state),
-        do: {:write_chunk, handle, offset, chunk, session, state}
-
-      def finish_write(handle, session, state), do: {:finish_write, handle, session, state}
-      def abort_write(handle, session, state), do: {:abort_write, handle, session, state}
-    end
-
-    test "prefers session-aware callbacks when implemented" do
-      result = Backend.call(SessionModuleBackend, :list_dir, [~c"/", nil], %{tenant: "acme"})
-      assert {:ok, [~c"acme"]} = result
-    end
-
-    test "supports_callback? detects session-aware arity" do
-      assert Backend.supports_callback?(SessionModuleBackend, :list_dir, 2)
-    end
-
-    test "falls back to legacy callbacks when session-aware callbacks are absent" do
-      result = Backend.call(SessionModuleBackend, :file_info, [~c"/", nil], %{tenant: "acme"})
-      assert {:error, :legacy_called} = result
-    end
-
-    property "inserts session before backend state for every session-aware callback shape" do
-      session = %{user_id: 123, tenant_id: "acme"}
-      state = %{backend: :state}
-
-      check all({operation, args, expected} <- session_callback_call()) do
-        expected_result = apply_expected(expected, session, state)
-
-        assert ^expected_result =
-                 Backend.call(SessionRecordingBackend, operation, args ++ [state], session)
-      end
-    end
-  end
-
-  describe "call/3 with genserver" do
-    defmodule EchoServer do
-      use GenServer
-
-      def start_link(reply), do: GenServer.start_link(__MODULE__, reply)
-      def init(reply), do: {:ok, reply}
-      def handle_call({:list_dir, _path}, _from, reply), do: {:reply, reply, reply}
-    end
-
-    test "dispatches to genserver process" do
-      expected = {:ok, [~c".", ~c"..", ~c"test.txt"]}
-      {:ok, pid} = EchoServer.start_link(expected)
-
-      result = Backend.call({:genserver, pid}, :list_dir, [~c"/", nil])
-      assert result == expected
-    end
-
-    test "dispatches three-tuple genserver process calls without session by default" do
-      expected = {:ok, [~c".", ~c"..", ~c"test.txt"]}
-      {:ok, pid} = EchoServer.start_link(expected)
-
-      result = Backend.call({:genserver, pid, session: true}, :list_dir, [~c"/", nil])
-      assert result == expected
-    end
-  end
-
-  describe "call/4 with genserver" do
-    defmodule LegacyEchoServer do
-      use GenServer
-
-      def start_link(reply), do: GenServer.start_link(__MODULE__, reply)
-      def init(reply), do: {:ok, reply}
-
-      def handle_call({:read_file, path}, _from, reply),
-        do: {:reply, {reply, path}, reply}
-    end
-
-    defmodule SessionEchoServer do
-      use GenServer
-
-      def start_link(reply), do: GenServer.start_link(__MODULE__, reply)
-      def init(reply), do: {:ok, reply}
-
-      def handle_call({:read_file, path, session}, _from, reply),
-        do: {:reply, {reply, path, session}, reply}
-    end
-
-    test "preserves legacy message shapes for genserver processes by default" do
-      {:ok, pid} = LegacyEchoServer.start_link(:ok)
-
-      assert {:ok, ~c"/file.txt"} =
-               Backend.call({:genserver, pid}, :read_file, [~c"/file.txt", nil], %{user_id: 123})
-    end
-
-    test "preserves legacy message shapes for three-tuple genserver processes unless opted in" do
-      {:ok, pid} = LegacyEchoServer.start_link(:ok)
-
-      assert {:ok, ~c"/file.txt"} =
-               Backend.call(
-                 {:genserver, pid, session: false},
-                 :read_file,
-                 [~c"/file.txt", nil],
-                 %{user_id: 123}
-               )
-    end
-
-    test "dispatches session-aware messages to genserver processes" do
-      {:ok, pid} = SessionEchoServer.start_link(:ok)
-
-      assert {:ok, ~c"/file.txt", %{user_id: 123}} =
-               Backend.call(
-                 {:genserver, pid, session: true},
-                 :read_file,
-                 [~c"/file.txt", nil],
-                 %{user_id: 123}
-               )
-    end
-  end
-
   describe "path helpers" do
-    property "normalize_path removes leading slash runs and preserves the rest" do
+    property "normalize_path removes slash runs and confines dot segments to root" do
       check all(path <- path_string()) do
-        expected = String.trim_leading(path, "/")
+        expected = canonical_path(path)
 
         assert Backend.normalize_path(path) == expected
         assert Backend.normalize_path(String.to_charlist(path)) == expected
@@ -169,46 +15,128 @@ defmodule Sftpd.BackendTest do
       end
     end
 
-    property "root_path? recognizes only documented root forms among generated paths" do
-      root_forms = ["/", "/.", "/..", "..", ".", ""]
-
+    property "root_path? recognizes canonical root forms among generated paths" do
       check all(path <- path_string()) do
-        assert Backend.root_path?(path) == path in root_forms
-        assert Backend.root_path?(String.to_charlist(path)) == path in root_forms
+        expected = canonical_path(path) == ""
+
+        assert Backend.root_path?(path) == expected
+        assert Backend.root_path?(String.to_charlist(path)) == expected
       end
+    end
+
+    test "normalize_path collapses traversal and repeated separators" do
+      assert Backend.normalize_path("/tenant/./a//../file.txt") == "tenant/file.txt"
+      assert Backend.normalize_path("/../../file.txt") == "file.txt"
+      assert Backend.normalize_path("/a/b/../../..") == ""
+    end
+  end
+
+  describe "file attrs helpers" do
+    property "round trips regular file_info into fast attrs" do
+      check all(size <- integer(0..1_000_000)) do
+        info = Backend.file_info(size, {{2024, 1, 1}, {0, 0, 0}}, :read_write)
+
+        assert %{
+                 size: ^size,
+                 type: :regular,
+                 permissions: 33188,
+                 uid: 1,
+                 gid: 1,
+                 atime: 1_704_067_200,
+                 mtime: 1_704_067_200
+               } = Backend.attrs_from_file_info(info)
+      end
+    end
+
+    property "converts fast attrs to OTP file_info" do
+      check all(
+              size <- integer(0..1_000_000),
+              permissions <- integer(0..0o7777),
+              uid <- integer(0..65_535),
+              gid <- integer(0..65_535)
+            ) do
+        assert {:file_info, ^size, :regular, :read_write, _, _, _, ^permissions, 1, 0, 0, _, ^uid,
+                ^gid} =
+                 Backend.file_info_from_attrs(%{
+                   size: size,
+                   type: :regular,
+                   permissions: permissions,
+                   uid: uid,
+                   gid: gid,
+                   mtime: 1_704_067_200
+                 })
+      end
+    end
+
+    test "builds directory info and directory attrs with defaults" do
+      assert {:file_info, 4096, :directory, :read, _, _, _, 16877, 2, 0, 0, 0, 1, 1} =
+               Backend.directory_info()
+
+      assert {:file_info, 0, :directory, :read_write, _, _, _, 16877, 1, 0, 0, _, 1, 1} =
+               Backend.file_info_from_attrs(%{type: :directory})
+    end
+
+    test "accepts multiple timestamp forms for attrs" do
+      naive = ~N[2024-01-02 03:04:05]
+      erl = {{2024, 1, 2}, {3, 4, 5}}
+
+      assert Backend.unix_time(naive) == 1_704_164_645
+      assert Backend.unix_time(erl) == 1_704_164_645
+
+      assert {:file_info, 0, :regular, :read_write, ^erl, ^erl, ^erl, 33188, 1, 0, 0, _, 1, 1} =
+               Backend.file_info_from_attrs(%{mtime: erl})
+
+      assert {:file_info, 0, :regular, :read_write, ^erl, ^erl, ^erl, 33188, 1, 0, 0, _, 1, 1} =
+               Backend.file_info_from_attrs(%{mtime: naive})
+    end
+
+    test "normalizes unknown file types from OTP file info to regular attrs" do
+      info =
+        {:file_info, 3, :device, :read, :bad_time, :bad_time, :bad_time, 0o100600, 1, 2, 3, 4, 5,
+         6}
+
+      assert %{size: 3, type: :regular, permissions: 0o100600, uid: 5, gid: 6} =
+               Backend.attrs_from_file_info(info)
+    end
+
+    test "maps file_info access and modification times from their own tuple slots" do
+      atime = {{2024, 1, 2}, {3, 4, 5}}
+      mtime = {{2024, 1, 3}, {3, 4, 5}}
+      info = {:file_info, 1, :regular, :read, atime, mtime, mtime, 0o100600, 1, 2, 3, 4, 5, 6}
+
+      assert %{
+               atime: 1_704_164_645,
+               mtime: 1_704_251_045,
+               uid: 5,
+               gid: 6
+             } = Backend.attrs_from_file_info(info)
     end
   end
 
   defp path_string do
     gen all(
           slash_count <- integer(0..4),
-          segments <- list_of(string(:alphanumeric, min_length: 1), max_length: 4)
+          segments <-
+            list_of(
+              one_of([constant("."), constant(".."), string(:alphanumeric, min_length: 1)]),
+              max_length: 4
+            )
         ) do
       String.duplicate("/", slash_count) <> Enum.join(segments, "/")
     end
   end
 
-  defp session_callback_call do
-    member_of([
-      {:list_dir, [~c"/dir"], {:list_dir, ~c"/dir"}},
-      {:file_info, [~c"/file"], {:file_info, ~c"/file"}},
-      {:make_dir, [~c"/dir"], {:make_dir, ~c"/dir"}},
-      {:del_dir, [~c"/dir"], {:del_dir, ~c"/dir"}},
-      {:delete, [~c"/file"], {:delete, ~c"/file"}},
-      {:rename, [~c"/old", ~c"/new"], {:rename, ~c"/old", ~c"/new"}},
-      {:read_file, [~c"/file"], {:read_file, ~c"/file"}},
-      {:write_file, [~c"/file", "content"], {:write_file, ~c"/file", "content"}},
-      {:read_file_range, [~c"/file", 5, 8], {:read_file_range, ~c"/file", 5, 8}},
-      {:begin_write, [~c"/file"], {:begin_write, ~c"/file"}},
-      {:write_chunk, [:handle, 5, "content"], {:write_chunk, :handle, 5, "content"}},
-      {:finish_write, [:handle], {:finish_write, :handle}},
-      {:abort_write, [:handle], {:abort_write, :handle}}
-    ])
-  end
-
-  defp apply_expected(expected, session, state) do
-    expected
-    |> Tuple.to_list()
-    |> then(fn [operation | args] -> List.to_tuple([operation | args ++ [session, state]]) end)
+  defp canonical_path(path) do
+    path
+    |> String.split("/")
+    |> Enum.reduce([], fn
+      "", acc -> acc
+      ".", acc -> acc
+      "..", [] -> []
+      "..", [_segment | rest] -> rest
+      segment, acc -> [segment | acc]
+    end)
+    |> Enum.reverse()
+    |> Enum.join("/")
   end
 end

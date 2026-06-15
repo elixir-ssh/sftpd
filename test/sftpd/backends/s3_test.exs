@@ -8,6 +8,7 @@ defmodule Sftpd.Backends.S3Test do
   alias Sftpd.Test.MockExAws
 
   @multipart_part_size 5 * 1024 * 1024
+  @max_sparse_write_gap 4 * @multipart_part_size
 
   setup :verify_on_exit!
 
@@ -313,8 +314,52 @@ defmodule Sftpd.Backends.S3Test do
     end
 
     test "del_dir returns ok on success", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{contents: [%{key: "dir/.keep"}], common_prefixes: []}}}
+      end)
+
       expect(MockExAws, :request, fn _op -> {:ok, %{}} end)
       assert :ok = S3.del_dir(~c"/dir", state)
+    end
+
+    test "del_dir treats nil list fields as empty", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{contents: [%{key: "dir/.keep"}], common_prefixes: nil}}}
+      end)
+
+      expect(MockExAws, :request, fn _op -> {:ok, %{}} end)
+      assert :ok = S3.del_dir(~c"/dir", state)
+    end
+
+    test "del_dir accepts string-keyed list responses", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{"contents" => [%{"key" => "dir/.keep"}], "common_prefixes" => []}}}
+      end)
+
+      expect(MockExAws, :request, fn _op -> {:ok, %{}} end)
+      assert :ok = S3.del_dir(~c"/dir", state)
+    end
+
+    test "del_dir tolerates missing marker deletes after marker listing", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{contents: [%{key: "dir/.keep"}], common_prefixes: []}}}
+      end)
+
+      expect(MockExAws, :request, fn _op -> {:error, {:http_error, 404, %{}}} end)
+      assert :ok = S3.del_dir(~c"/dir", state)
+    end
+
+    test "del_dir refuses non-empty directories", %{state: state} do
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        {:ok, %{body: %{contents: [%{key: "dir/.keep"}, %{key: "dir/file.txt"}]}}}
+      end)
+
+      assert {:error, :enotempty} = S3.del_dir(~c"/dir", state)
     end
   end
 
@@ -403,48 +448,115 @@ defmodule Sftpd.Backends.S3Test do
       end
     end
 
-    test "read_file_range sets the range header and returns data", %{state: state} do
-      expect(MockExAws, :request, fn op ->
-        assert op.headers["range"] == "bytes=5-8"
-        {:ok, %{status_code: 206, body: "6789"}}
-      end)
-
-      assert {:ok, "6789"} = S3.read_file_range(~c"/file.txt", 5, 4, state)
-    end
-
     test "read_file_range returns eof on 416", %{state: state} do
       expect(MockExAws, :request, fn _op -> {:error, {:http_error, 416, %{}}} end)
       assert :eof = S3.read_file_range(~c"/file.txt", 100, 4, state)
     end
 
-    test "read_file_range returns eof for empty successful bodies", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 206, body: ""}} end)
-      assert :eof = S3.read_file_range(~c"/file.txt", 0, 4, state)
-    end
-
-    test "read_file_range accepts a 200 response only for offset zero within len", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 200, body: "abc"}} end)
-      assert {:ok, "abc"} = S3.read_file_range(~c"/file.txt", 0, 4, state)
-    end
-
-    test "read_file_range rejects oversized 200 responses", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 200, body: "abcde"}} end)
-      assert {:error, :eio} = S3.read_file_range(~c"/file.txt", 0, 4, state)
-    end
-
-    test "read_file_range rejects 200 responses for non-zero offsets", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 200, body: "full-object"}} end)
-      assert {:error, :eio} = S3.read_file_range(~c"/file.txt", 5, 4, state)
-    end
-
-    test "read_file_range returns eio for unexpected success statuses", %{state: state} do
-      expect(MockExAws, :request, fn _op -> {:ok, %{status_code: 301, body: "redirect"}} end)
-      assert {:error, :eio} = S3.read_file_range(~c"/file.txt", 0, 4, state)
-    end
-
     test "read_file_range normalizes generic request errors", %{state: state} do
       expect(MockExAws, :request, fn _op -> {:error, :closed} end)
       assert {:error, :eio} = S3.read_file_range(~c"/file.txt", 0, 4, state)
+    end
+  end
+
+  describe "handle-first backend callbacks with mock" do
+    setup do
+      {:ok, state} = S3.init(bucket: "test-bucket", aws_client: MockExAws)
+      %{state: state}
+    end
+
+    test "open_read and read_at use object metadata and ranged reads", %{state: state} do
+      expect(MockExAws, :request, fn _op ->
+        {:ok,
+         %{
+           headers: [
+             {"Content-Length", "10"},
+             {"Last-Modified", "Mon, 15 Jan 2024 12:30:45 GMT"}
+           ]
+         }}
+      end)
+
+      assert {:ok, handle} = S3.open_read("/file.txt", %{}, state)
+      assert handle.size == 10
+
+      expect(MockExAws, :request, fn op ->
+        assert op.headers["range"] == "bytes=5-8"
+        {:ok, %{body: "6789", status_code: 206}}
+      end)
+
+      assert {:ok, "6789"} = S3.read_at(handle, 5, 4, state)
+    end
+
+    test "open_read rejects virtual directories", %{state: state} do
+      expect(MockExAws, :request, fn _op -> {:error, :not_found} end)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.params["prefix"] == "dir/"
+        assert op.params["delimiter"] == "/"
+        assert op.params["max-keys"] == 1
+        {:ok, %{body: %{contents: [], common_prefixes: [%{prefix: "dir/child/"}]}}}
+      end)
+
+      assert {:error, :eisdir} = S3.open_read("/dir", %{}, state)
+    end
+
+    test "open_read propagates metadata lookup errors", %{state: state} do
+      expect(MockExAws, :request, fn _op -> {:error, :timeout} end)
+
+      assert {:error, :eio} = S3.open_read("/file.txt", %{}, state)
+    end
+
+    test "read_at normalizes transient range read errors", %{state: state} do
+      handle = %{path: "/file.txt", session: %{}, size: 10}
+
+      expect(MockExAws, :request, fn _op -> {:error, {:http_error, 408, %{}}} end)
+
+      assert {:error, :eio} = S3.read_at(handle, 0, 4, state)
+    end
+
+    test "open_write, write_at, and finish_write materialize small objects", %{state: state} do
+      assert {:ok, writer} = S3.open_write("/small.txt", %{}, %{}, state)
+      assert {:ok, writer} = S3.write_at(writer, 0, ["abc", "def"], state)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.path == "small.txt"
+        assert op.body == "abcdef"
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.finish_write(writer, state)
+    end
+
+    test "open_dir returns one-shot entries with attrs", %{state: state} do
+      expect(MockExAws, :request, 4, fn
+        %{params: %{"prefix" => "", "delimiter" => "/"}} ->
+          {:ok,
+           %{
+             body: %{
+               contents: [%{key: "file.txt"}],
+               common_prefixes: [%{prefix: "dir/"}],
+               is_truncated: "false"
+             }
+           }}
+
+        %{path: "dir"} ->
+          {:error, {:http_error, 404, %{}}}
+
+        %{params: %{"prefix" => "dir/", "delimiter" => "/", "max-keys" => 1}} ->
+          {:ok, %{body: %{contents: [], common_prefixes: [%{prefix: "dir/nested/"}]}}}
+
+        %{path: "file.txt"} ->
+          {:ok, %{headers: [{"Content-Length", "123"}]}}
+      end)
+
+      assert {:ok, handle} = S3.open_dir("/", %{}, state)
+      assert {:ok, entries, handle} = S3.read_dir(handle, state)
+      assert Enum.map(entries, & &1.name) == [".", "..", "dir", "file.txt"]
+      assert %{type: :directory, size: 0} = Enum.find(entries, &(&1.name == ".")).attrs
+      assert %{type: :directory, size: 4096} = Enum.find(entries, &(&1.name == "dir")).attrs
+      assert %{type: :regular, size: 123} = Enum.find(entries, &(&1.name == "file.txt")).attrs
+      assert :eof = S3.read_dir(handle, state)
+      assert :ok = S3.close_dir(handle, state)
     end
   end
 
@@ -472,6 +584,7 @@ defmodule Sftpd.Backends.S3Test do
                 ),
               max_runs: 15
             ) do
+        drain_uploaded_parts()
         test_pid = self()
 
         stub(MockExAws, :request, fn op ->
@@ -541,7 +654,11 @@ defmodule Sftpd.Backends.S3Test do
       assert writer.upload_id == "upload-1"
       assert writer.next_part_number == 2
       assert writer.pending_size == 3
-      assert :queue.to_list(writer.pending_chunks) == [:binary.copy(<<1>>, 3)]
+
+      assert :queue.to_list(writer.pending_chunks) == [
+               {@multipart_part_size, :binary.copy(<<1>>, 3)}
+             ]
+
       assert writer.uploaded_parts == [{1, "\"etag-1\""}]
     end
 
@@ -552,7 +669,90 @@ defmodule Sftpd.Backends.S3Test do
 
       assert writer.upload_id == nil
       assert writer.pending_size == 6
-      assert :queue.to_list(writer.pending_chunks) == ["abc", "def"]
+      assert :queue.to_list(writer.pending_chunks) == [{0, "abc"}, {3, "def"}]
+    end
+
+    test "write_chunk accepts out-of-order offsets before multipart upload", %{state: state} do
+      assert {:ok, writer} = S3.begin_write(~c"/small.bin", state)
+      assert {:ok, writer} = S3.write_chunk(writer, 3, "def", state)
+      assert {:ok, writer} = S3.write_chunk(writer, 0, "abc", state)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :put
+        assert op.body == "abcdef"
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.finish_write(writer, state)
+    end
+
+    test "finish_write keeps later bytes for partially overlapping small writes", %{state: state} do
+      assert {:ok, writer} = S3.begin_write(~c"/small.bin", state)
+      assert {:ok, writer} = S3.write_chunk(writer, 0, "abcdef", state)
+      assert {:ok, writer} = S3.write_chunk(writer, 2, "XYZ", state)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :put
+        assert op.body == "abXYZf"
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.finish_write(writer, state)
+    end
+
+    test "finish_write zero-fills sparse gaps for small out-of-order writes", %{state: state} do
+      assert {:ok, writer} = S3.begin_write(~c"/small.bin", state)
+      assert {:ok, writer} = S3.write_chunk(writer, 4, "ef", state)
+      assert {:ok, writer} = S3.write_chunk(writer, 0, "ab", state)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :put
+        assert op.body == <<"ab", 0, 0, "ef">>
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.finish_write(writer, state)
+    end
+
+    test "multipart writes keep sparse tail bytes after flushing the first part", %{state: state} do
+      assert {:ok, writer} = S3.begin_write(~c"/large.bin", state)
+      assert {:ok, writer} = S3.write_chunk(writer, @multipart_part_size + 2, "tail", state)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :post
+        {:ok, %{body: %{upload_id: "upload-1"}}}
+      end)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :put
+        assert op.params["partNumber"] == 1
+        assert op.body == :binary.copy(<<1>>, @multipart_part_size)
+        {:ok, %{headers: [{"etag", "\"etag-1\""}]}}
+      end)
+
+      first_part = :binary.copy(<<1>>, @multipart_part_size)
+      assert {:ok, writer} = S3.write_chunk(writer, 0, first_part, state)
+
+      assert writer.uploaded_size == @multipart_part_size
+      assert writer.pending_size == 4
+      assert :queue.to_list(writer.pending_chunks) == [{@multipart_part_size + 2, "tail"}]
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :put
+        assert op.params["partNumber"] == 2
+        assert op.body == <<0, 0, "tail">>
+        {:ok, %{headers: [{"etag", "\"etag-2\""}]}}
+      end)
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :post
+        assert op.params["uploadId"] == "upload-1"
+        assert op.body =~ "<PartNumber>1</PartNumber>"
+        assert op.body =~ "<PartNumber>2</PartNumber>"
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.finish_write(writer, state)
     end
 
     test "write_chunk normalizes multipart initiation errors", %{state: state} do
@@ -588,19 +788,48 @@ defmodule Sftpd.Backends.S3Test do
       assert {:error, :eio} = S3.write_chunk(writer, 0, chunk, state)
     end
 
-    test "write_chunk rejects non-sequential offsets", %{state: state} do
+    test "write_chunk rejects offsets before uploaded multipart bytes", %{state: state} do
       writer = %{
         bucket: "test-bucket",
         key: "large.bin",
         upload_id: "upload-1",
-        next_offset: 5,
-        next_part_number: 1,
+        next_offset: @multipart_part_size,
+        next_part_number: 2,
         pending_chunks: :queue.new(),
         pending_size: 0,
+        uploaded_size: @multipart_part_size,
         uploaded_parts: []
       }
 
       assert {:error, :einval} = S3.write_chunk(writer, 0, "abc", state)
+    end
+
+    test "write_chunk rejects huge sparse gaps before materializing zeroes", %{state: state} do
+      assert {:ok, writer} = S3.begin_write(~c"/sparse.bin", state)
+
+      assert {:error, :einval} =
+               S3.write_chunk(writer, 100 * @multipart_part_size, "tail", state)
+    end
+
+    property "finish_write rejects cumulative sparse gaps before materialization", %{
+      state: state
+    } do
+      check all(
+              first_chunk <- binary(min_length: 1, max_length: 1024),
+              final_chunk <- binary(min_length: 1, max_length: 1024),
+              uploaded_size <- member_of([0, @multipart_part_size])
+            ) do
+        first_offset = uploaded_size + @max_sparse_write_gap
+        final_offset = uploaded_size + 2 * @max_sparse_write_gap + byte_size(first_chunk)
+
+        writer =
+          sparse_writer(
+            uploaded_size,
+            [{first_offset, first_chunk}, {final_offset, final_chunk}]
+          )
+
+        assert {:error, :einval} = S3.finish_write(writer, state)
+      end
     end
 
     test "finish_write uses put_object directly for small files", %{state: state} do
@@ -610,7 +839,7 @@ defmodule Sftpd.Backends.S3Test do
         upload_id: nil,
         next_offset: 3,
         next_part_number: 1,
-        pending_chunks: :queue.from_list(["abc"]),
+        pending_chunks: :queue.from_list([{0, "abc"}]),
         pending_size: 3,
         uploaded_parts: []
       }
@@ -624,6 +853,27 @@ defmodule Sftpd.Backends.S3Test do
       assert :ok = S3.finish_write(writer, state)
     end
 
+    test "finish_write preserves last write for overlapping small chunks", %{state: state} do
+      writer = %{
+        bucket: "test-bucket",
+        key: "small.txt",
+        upload_id: nil,
+        next_offset: 3,
+        next_part_number: 1,
+        pending_chunks: :queue.from_list([{0, "abc"}, {1, "XY"}]),
+        pending_size: 5,
+        uploaded_parts: []
+      }
+
+      expect(MockExAws, :request, fn op ->
+        assert op.http_method == :put
+        assert op.body == "aXY"
+        {:ok, %{}}
+      end)
+
+      assert :ok = S3.finish_write(writer, state)
+    end
+
     test "finish_write uploads the final part and completes multipart upload", %{state: state} do
       writer = %{
         bucket: "test-bucket",
@@ -631,8 +881,9 @@ defmodule Sftpd.Backends.S3Test do
         upload_id: "upload-1",
         next_offset: @multipart_part_size + 4,
         next_part_number: 2,
-        pending_chunks: :queue.from_list(["tail"]),
+        pending_chunks: :queue.from_list([{@multipart_part_size, "tail"}]),
         pending_size: 4,
+        uploaded_size: @multipart_part_size,
         uploaded_parts: [{1, "\"etag-1\""}]
       }
 
@@ -663,6 +914,7 @@ defmodule Sftpd.Backends.S3Test do
         next_part_number: 2,
         pending_chunks: :queue.new(),
         pending_size: 0,
+        uploaded_size: @multipart_part_size,
         uploaded_parts: [{1, "\"etag-1\""}]
       }
 
@@ -683,8 +935,9 @@ defmodule Sftpd.Backends.S3Test do
         upload_id: "upload-1",
         next_offset: @multipart_part_size + 4,
         next_part_number: 2,
-        pending_chunks: :queue.from_list(["tail"]),
+        pending_chunks: :queue.from_list([{@multipart_part_size, "tail"}]),
         pending_size: 4,
+        uploaded_size: @multipart_part_size,
         uploaded_parts: [{1, "\"etag-1\""}]
       }
 
@@ -801,7 +1054,54 @@ defmodule Sftpd.Backends.S3Test do
   defp pending_size(writer) do
     writer.pending_chunks
     |> :queue.to_list()
-    |> IO.iodata_to_binary()
-    |> byte_size()
+    |> Enum.reduce(0, fn
+      {_offset, chunk}, size -> size + byte_size(chunk)
+      chunk, size -> size + byte_size(chunk)
+    end)
+  end
+
+  defp sparse_writer(0, chunks) do
+    %{
+      bucket: "test-bucket",
+      key: "sparse.bin",
+      upload_id: nil,
+      next_offset: sparse_next_offset(chunks),
+      next_part_number: 1,
+      pending_chunks: :queue.from_list(chunks),
+      pending_size: pending_chunk_size(chunks),
+      uploaded_parts: []
+    }
+  end
+
+  defp sparse_writer(uploaded_size, chunks) do
+    %{
+      bucket: "test-bucket",
+      key: "large.bin",
+      upload_id: "upload-1",
+      next_offset: sparse_next_offset(chunks),
+      next_part_number: 2,
+      pending_chunks: :queue.from_list(chunks),
+      pending_size: pending_chunk_size(chunks),
+      uploaded_size: uploaded_size,
+      uploaded_parts: [{1, "etag-1"}]
+    }
+  end
+
+  defp sparse_next_offset(chunks) do
+    chunks
+    |> Enum.map(fn {offset, chunk} -> offset + byte_size(chunk) end)
+    |> Enum.max()
+  end
+
+  defp pending_chunk_size(chunks) do
+    Enum.reduce(chunks, 0, fn {_offset, chunk}, size -> size + byte_size(chunk) end)
+  end
+
+  defp drain_uploaded_parts do
+    receive do
+      {:uploaded_part, _, _} -> drain_uploaded_parts()
+    after
+      0 -> :ok
+    end
   end
 end

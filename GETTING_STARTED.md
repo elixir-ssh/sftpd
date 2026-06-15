@@ -5,18 +5,13 @@ then shows how to switch to S3.
 
 ## 1. Add the dependency
 
-This guide uses the current pinned development environment:
-
-- Erlang/OTP 29.0
-- Elixir 1.20.0-rc.5 on OTP 29
-
-The package itself still declares an older minimum Elixir version in `mix.exs`.
-The current verified minimum is Elixir 1.14.5 on OTP 26.
+The package requirement is Elixir `~> 1.14`. The pinned development runtime is
+recorded in `.tool-versions`.
 
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.1"}
+    {:sftpd, "~> 0.2.0"}
   ]
 end
 ```
@@ -66,15 +61,19 @@ Important options:
   local development, or `{MyApp.SftpAuth, opts}` for application callbacks
 - `:system_dir` points at the SSH host key directory
 - `:max_sessions` limits concurrent client sessions
-- `:open_timeout` bounds file open setup time
-- `:close_timeout` bounds close-time finalization time
+- `:transport` selects the SSH/SFTP transport. The default is `:otp`; use
+  `:elixir` to opt into the experimental pure-Elixir transport.
 
 OTP 29 no longer enables the SFTP subsystem implicitly for SSH daemons.
 `Sftpd.start_server/1` supplies the required `:subsystems` option internally,
 so the setup above works on both OTP 29 and older supported OTP releases.
 
-OTP 29 also disables remote shell and exec services by default. `Sftpd` is an
-SFTP-only wrapper and does not enable those services.
+OTP 29 also disables remote shell and exec services by default. `Sftpd` is
+SFTP-only and does not enable those services.
+
+The OTP and pure-Elixir transports use the same `Sftpd.Backend` contract. A
+backend that implements the handle-first callbacks can be used with either
+transport.
 
 ## 4. Connect with an SFTP client
 
@@ -106,13 +105,13 @@ Because the memory backend is ephemeral, data disappears when the server stops.
 To persist files in S3-compatible storage, use `Sftpd.Backends.S3`:
 
 The S3 backend is optional. The memory backend and custom backends work with
-only `{:sftpd, "~> 0.1.1"}`. Add the S3 dependencies before using
+only `{:sftpd, "~> 0.2.0"}`. Add the S3 dependencies before using
 `Sftpd.Backends.S3`:
 
 ```elixir
 def deps do
   [
-    {:sftpd, "~> 0.1.1"},
+    {:sftpd, "~> 0.2.0"},
     {:ex_aws, "~> 2.0"},
     {:ex_aws_s3, "~> 2.0"},
     {:hackney, "~> 1.9"},
@@ -176,8 +175,8 @@ If neither built-in backend fits your storage model:
 
 ## Notes and Caveats
 
-- `Sftpd` wraps Erlang's `:ssh_sftpd` implementation and explicitly enables
-  the SFTP subsystem required by OTP 29
+- The default `:otp` transport wraps Erlang's `:ssh_sftpd` implementation and
+  explicitly enables the SFTP subsystem required by OTP 29
 - OTP 29 disables SSH shell and exec services by default; `Sftpd` does not
   expose or enable those services
 - OTP's stock SFTP server always reports close success to the client, even if

@@ -1,0 +1,88 @@
+commit=aa37c64-dirty
+message=Defer channel cache updates during SFTP drains
+started_utc=20260614T211008Z
+change=skip near-window recheck after buffered WINDOW_ADJUST
+bench_shape=10 runs elixir transport, 10GiB OpenSSH sftp put/get, aes256-gcm, restarted server per run
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=1 port=31060 utc=2026-06-14T21:10:08Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31060 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.648s 580.2 MiB/s
+openssh sftp get: 17.753s 576.8 MiB/s
+END transport=elixir size_label=10GiB iter=1 utc=2026-06-14T21:10:45Z
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=2 port=31061 utc=2026-06-14T21:10:47Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31061 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.128s 597.9 MiB/s
+openssh sftp get: 17.601s 581.8 MiB/s
+END transport=elixir size_label=10GiB iter=2 utc=2026-06-14T21:11:23Z
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=3 port=31062 utc=2026-06-14T21:11:25Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31062 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.257s 593.4 MiB/s
+openssh sftp get: 17.395s 588.7 MiB/s
+END transport=elixir size_label=10GiB iter=3 utc=2026-06-14T21:12:02Z
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=4 port=31063 utc=2026-06-14T21:12:04Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31063 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.135s 597.6 MiB/s
+openssh sftp get: 17.62s 581.2 MiB/s
+END transport=elixir size_label=10GiB iter=4 utc=2026-06-14T21:12:41Z
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=5 port=31064 utc=2026-06-14T21:12:43Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31064 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.124s 598.0 MiB/s
+openssh sftp get: 17.657s 579.9 MiB/s
+END transport=elixir size_label=10GiB iter=5 utc=2026-06-14T21:13:20Z
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=6 port=31065 utc=2026-06-14T21:13:22Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31065 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.816s 608.9 MiB/s
+openssh sftp get: 17.583s 582.4 MiB/s
+END transport=elixir size_label=10GiB iter=6 utc=2026-06-14T21:13:58Z
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=7 port=31066 utc=2026-06-14T21:14:00Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31066 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.851s 607.7 MiB/s
+openssh sftp get: 17.683s 579.1 MiB/s
+END transport=elixir size_label=10GiB iter=7 utc=2026-06-14T21:14:37Z
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=8 port=31067 utc=2026-06-14T21:14:39Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31067 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.197s 595.4 MiB/s
+openssh sftp get: 17.382s 589.1 MiB/s
+END transport=elixir size_label=10GiB iter=8 utc=2026-06-14T21:15:15Z
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=9 port=31068 utc=2026-06-14T21:15:17Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31068 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.064s 600.1 MiB/s
+openssh sftp get: 17.684s 579.1 MiB/s
+END transport=elixir size_label=10GiB iter=9 utc=2026-06-14T21:15:54Z
+
+BEGIN transport=elixir size_label=10GiB size=10737418240 iter=10 port=31069 utc=2026-06-14T21:15:56Z
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=31069 delay_ms=0 transport=elixir cipher=aes256-gcm@openssh.com
+openssh sftp put: 17.065s 600.0 MiB/s
+openssh sftp get: 17.513s 584.7 MiB/s
+END transport=elixir size_label=10GiB iter=10 utc=2026-06-14T21:16:33Z
+
+finished_utc=20260614T211635Z
+RAW_BENCH=notes/sftp-openssh-bench-skip-adjust-near-check-20260614T211008Z.txt

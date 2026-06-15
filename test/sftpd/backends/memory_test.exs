@@ -70,6 +70,150 @@ defmodule Sftpd.Backends.MemoryTest do
     end
   end
 
+  describe "fast write handles" do
+    test "keeps binary write chunks without flattening", %{state: state} do
+      {:ok, handle} = Memory.open_write("/binary-chunk.bin", %{}, %{}, state)
+      chunk = :binary.copy("x", 1024)
+
+      assert {:ok, %{chunks: [{0, stored}], ordered?: true, last_end: 1024}} =
+               Memory.write_at(handle, 0, chunk, state)
+
+      assert stored == chunk
+      assert :erts_debug.same(stored, chunk)
+    end
+
+    test "flattens nested iodata write chunks", %{state: state} do
+      {:ok, handle} = Memory.open_write("/iodata-chunk.bin", %{}, %{}, state)
+
+      assert {:ok, %{chunks: [{0, stored}]}} =
+               Memory.write_at(handle, 0, ["io", ["data"]], state)
+
+      assert stored == "iodata"
+      assert is_binary(stored)
+    end
+
+    test "returns exact indexed read chunks without copying", %{state: state} do
+      {:ok, handle} = Memory.open_write("/exact-read.bin", %{}, %{}, state)
+      chunk = :binary.copy("x", 262_080)
+
+      assert {:ok, handle} = Memory.write_at(handle, 0, chunk, state)
+      assert :ok = Memory.finish_write(handle, state)
+
+      assert {:ok, read_handle} = Memory.open_read("/exact-read.bin", %{}, state)
+      stored_chunk = Map.fetch!(read_handle.file.chunks, 0)
+
+      assert {:ok, read_chunk} = Memory.read_at(read_handle, 0, byte_size(chunk), state)
+      assert stored_chunk == chunk
+      assert read_chunk == stored_chunk
+      assert :erts_debug.same(read_chunk, stored_chunk)
+    end
+
+    test "returns exact content reads without copying", %{state: state} do
+      content = :binary.copy("x", 262_080)
+      assert :ok = Memory.write_file("/exact-content.bin", content, state)
+
+      assert {:ok, read_handle} = Memory.open_read("/exact-content.bin", %{}, state)
+      stored_content = read_handle.file.content
+
+      assert {:ok, read_content} = Memory.read_at(read_handle, 0, byte_size(content), state)
+      assert stored_content == content
+      assert read_content == stored_content
+      assert :erts_debug.same(read_content, stored_content)
+    end
+
+    test "materializes sequential chunks without changing content", %{state: state} do
+      {:ok, handle} = Memory.open_write("/sequential.bin", %{}, %{}, state)
+
+      handle =
+        Enum.reduce(0..63, handle, fn index, handle ->
+          chunk = :binary.copy(<<index>>, 1024)
+          {:ok, handle} = Memory.write_at(handle, index * 1024, chunk, state)
+          handle
+        end)
+
+      assert handle.ordered?
+      assert handle.last_end == 64 * 1024
+
+      assert :ok = Memory.finish_write(handle, state)
+      assert {:ok, content} = Memory.read_file("/sequential.bin", state)
+      assert byte_size(content) == 64 * 1024
+      assert binary_part(content, 0, 1024) == :binary.copy(<<0>>, 1024)
+      assert binary_part(content, 63 * 1024, 1024) == :binary.copy(<<63>>, 1024)
+
+      {:ok, read_handle} = Memory.open_read("/sequential.bin", %{}, state)
+      assert {:ok, chunk} = Memory.read_at(read_handle, 31 * 1024, 1024, state)
+      assert chunk == :binary.copy(<<31>>, 1024)
+
+      assert {:ok, cross_chunk} = Memory.read_at(read_handle, 31 * 1024 + 512, 1024, state)
+
+      assert cross_chunk ==
+               [:binary.copy(<<31>>, 512), :binary.copy(<<32>>, 512)]
+               |> IO.iodata_to_binary()
+    end
+
+    property "fills gaps in sparse non-overlapping chunks", %{state: state} do
+      check all(
+              head <- binary(min_length: 1, max_length: 32),
+              tail <- binary(min_length: 1, max_length: 32),
+              gap <- integer(0..32)
+            ) do
+        tail_offset = byte_size(head) + gap
+
+        {:ok, handle} = Memory.open_write("/sparse-fast.bin", %{}, %{}, state)
+        {:ok, handle} = Memory.write_at(handle, 0, head, state)
+        {:ok, handle} = Memory.write_at(handle, tail_offset, tail, state)
+
+        assert handle.ordered?
+
+        assert :ok = Memory.finish_write(handle, state)
+        expected = [head, :binary.copy(<<0>>, gap), tail] |> IO.iodata_to_binary()
+        assert {:ok, ^expected} = Memory.read_file("/sparse-fast.bin", state)
+
+        {:ok, read_handle} = Memory.open_read("/sparse-fast.bin", %{}, state)
+        assert {:ok, ^tail} = Memory.read_at(read_handle, tail_offset, byte_size(tail), state)
+      end
+    end
+
+    property "preserves overwrite semantics for overlapping chunks", %{state: state} do
+      check all(
+              prefix <- binary(min_length: 1, max_length: 32),
+              replacement <- binary(min_length: 1, max_length: 32),
+              suffix <- binary(min_length: 1, max_length: 32)
+            ) do
+        original = [prefix, :binary.copy("x", byte_size(replacement)), suffix]
+        offset = byte_size(prefix)
+
+        {:ok, handle} = Memory.open_write("/overlap-fast.bin", %{}, %{}, state)
+        {:ok, handle} = Memory.write_at(handle, 0, original, state)
+        {:ok, handle} = Memory.write_at(handle, offset, replacement, state)
+
+        assert :ok = Memory.finish_write(handle, state)
+        expected = [prefix, replacement, suffix] |> IO.iodata_to_binary()
+        assert {:ok, ^expected} = Memory.read_file("/overlap-fast.bin", state)
+      end
+    end
+
+    property "preserves write order for out-of-order overlapping chunks", %{state: state} do
+      check all(
+              head <- binary(min_length: 1, max_length: 32),
+              tail <- binary(min_length: 2, max_length: 32)
+            ) do
+        later = [head, tail]
+        offset = byte_size(head)
+
+        {:ok, handle} = Memory.open_write("/overlap-reordered.bin", %{}, %{}, state)
+        {:ok, handle} = Memory.write_at(handle, offset, "XY", state)
+        {:ok, handle} = Memory.write_at(handle, 0, later, state)
+
+        refute handle.ordered?
+
+        assert :ok = Memory.finish_write(handle, state)
+        expected = IO.iodata_to_binary(later)
+        assert {:ok, ^expected} = Memory.read_file("/overlap-reordered.bin", state)
+      end
+    end
+  end
+
   describe "directory operations" do
     property "directory listings expose only immediate children plus dot entries" do
       check all(

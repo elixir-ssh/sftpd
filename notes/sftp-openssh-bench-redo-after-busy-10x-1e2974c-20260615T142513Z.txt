@@ -1,0 +1,151 @@
+sample=1 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+Compiling 1 file (.ex)
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.208s 308.0 MiB/s
+openssh sftp get: 0.223s 287.6 MiB/s
+sample=2 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.215s 297.2 MiB/s
+openssh sftp get: 0.222s 287.9 MiB/s
+sample=3 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.215s 297.6 MiB/s
+openssh sftp get: 0.214s 299.0 MiB/s
+sample=4 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.215s 297.5 MiB/s
+openssh sftp get: 0.221s 289.5 MiB/s
+sample=5 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.216s 295.7 MiB/s
+openssh sftp get: 0.223s 287.6 MiB/s
+sample=6 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.177s 361.1 MiB/s
+openssh sftp get: 0.217s 294.5 MiB/s
+sample=7 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.181s 354.1 MiB/s
+openssh sftp get: 0.219s 292.0 MiB/s
+sample=8 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.215s 298.0 MiB/s
+openssh sftp get: 0.224s 285.8 MiB/s
+sample=9 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.216s 296.2 MiB/s
+openssh sftp get: 0.222s 288.0 MiB/s
+sample=10 size=67108864 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.218s 294.2 MiB/s
+openssh sftp get: 0.224s 286.2 MiB/s
+sample=1 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.75s 585.0 MiB/s
+openssh sftp get: 1.678s 610.2 MiB/s
+sample=2 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.757s 582.7 MiB/s
+openssh sftp get: 1.681s 609.2 MiB/s
+sample=3 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.774s 577.2 MiB/s
+openssh sftp get: 1.709s 599.3 MiB/s
+sample=4 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.759s 582.2 MiB/s
+openssh sftp get: 1.677s 610.6 MiB/s
+sample=5 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.769s 578.7 MiB/s
+openssh sftp get: 1.68s 609.4 MiB/s
+sample=6 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.738s 589.3 MiB/s
+openssh sftp get: 1.677s 610.7 MiB/s
+sample=7 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.752s 584.5 MiB/s
+openssh sftp get: 1.681s 609.1 MiB/s
+sample=8 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.76s 581.7 MiB/s
+openssh sftp get: 1.689s 606.2 MiB/s
+sample=9 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.727s 592.9 MiB/s
+openssh sftp get: 1.619s 632.7 MiB/s
+sample=10 size=1073741824 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.698s 602.9 MiB/s
+openssh sftp get: 1.609s 636.3 MiB/s
+sample=1 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.393s 624.7 MiB/s
+openssh sftp get: 15.0s 682.7 MiB/s
+sample=2 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.347s 626.4 MiB/s
+openssh sftp get: 15.611s 655.9 MiB/s
+sample=3 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.686s 613.7 MiB/s
+openssh sftp get: 15.773s 649.2 MiB/s
+sample=4 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.487s 621.1 MiB/s
+openssh sftp get: 15.604s 656.2 MiB/s
+sample=5 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.73s 612.1 MiB/s
+openssh sftp get: 15.373s 666.1 MiB/s
+sample=6 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.364s 625.8 MiB/s
+openssh sftp get: 15.636s 654.9 MiB/s
+sample=7 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.385s 625.0 MiB/s
+openssh sftp get: 15.529s 659.4 MiB/s
+sample=8 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.498s 620.7 MiB/s
+openssh sftp get: 15.666s 653.6 MiB/s
+sample=9 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.556s 618.5 MiB/s
+openssh sftp get: 15.182s 674.5 MiB/s
+sample=10 size=10737418240 sha=1e2974c backend=benchmark candidate=redo_after_busy_10x
+✓ Switched active account for github.com to mjc
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 15.962s 641.5 MiB/s
+openssh sftp get: 15.066s 679.7 MiB/s
