@@ -30,6 +30,25 @@ defmodule Sftpd.SSH.PacketTest do
     end
   end
 
+  property "batched aead packet framing preserves per-packet lengths" do
+    check all(payloads <- list_of(binary(max_length: 256), max_length: 16)) do
+      expected_lengths =
+        Enum.map(payloads, fn payload ->
+          Packet.encode_aead_packet(payload).packet_length
+        end)
+
+      packets = Packet.encode_aead_packets(payloads)
+
+      assert Enum.map(packets, & &1.packet_length) == expected_lengths
+
+      Enum.zip(payloads, packets)
+      |> Enum.each(fn {payload, packet} ->
+        assert {:ok, ^payload} =
+                 Packet.decode_decrypted(packet.packet_length, IO.iodata_to_binary(packet.plaintext))
+      end)
+    end
+  end
+
   test "clear packet decoder preserves incomplete packets" do
     encoded = IO.iodata_to_binary(Packet.encode_clear("payload"))
     short = binary_part(encoded, 0, byte_size(encoded) - 1)

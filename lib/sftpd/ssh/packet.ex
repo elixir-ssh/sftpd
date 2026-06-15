@@ -39,6 +39,25 @@ defmodule Sftpd.SSH.Packet do
     %AEADPacket{packet_length: packet_len, plaintext: [<<padding_len>>, payload, padding]}
   end
 
+  @spec encode_aead_packets([iodata()], pos_integer()) :: [aead_packet()]
+  def encode_aead_packets(payloads, block_size \\ 16) when is_list(payloads) do
+    packet_specs =
+      Enum.map(payloads, fn payload ->
+        payload_len = IO.iodata_length(payload)
+        padding_len = aead_padding_len(payload_len, block_size)
+        {payload, payload_len + padding_len + 1, padding_len}
+      end)
+
+    total_padding =
+      Enum.reduce(packet_specs, 0, fn {_payload, _packet_len, padding_len}, total ->
+        total + padding_len
+      end)
+
+    packet_specs
+    |> encode_aead_packets_from_padding(:crypto.strong_rand_bytes(total_padding), [])
+    |> Enum.reverse()
+  end
+
   @spec decode_clear(binary()) :: {:ok, binary(), binary()} | :more | {:error, :bad_packet}
   def decode_clear(<<packet_len::32, rest::binary>>) do
     cond do
@@ -117,6 +136,23 @@ defmodule Sftpd.SSH.Packet do
     else
       padding
     end
+  end
+
+  defp encode_aead_packets_from_padding([], "", packets), do: packets
+
+  defp encode_aead_packets_from_padding(
+         [{payload, packet_len, padding_len} | rest],
+         padding,
+         packets
+       ) do
+    <<packet_padding::binary-size(^padding_len), padding::binary>> = padding
+
+    packet = %AEADPacket{
+      packet_length: packet_len,
+      plaintext: [<<padding_len>>, payload, packet_padding]
+    }
+
+    encode_aead_packets_from_padding(rest, padding, [packet | packets])
   end
 
   defp invalid_padding?(padding_len, payload_len), do: padding_len < 4 or payload_len < 0

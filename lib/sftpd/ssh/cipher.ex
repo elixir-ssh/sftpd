@@ -63,16 +63,18 @@ defmodule Sftpd.SSH.Cipher do
 
   @spec encrypt_payloads(state(), [iodata()], pos_integer()) :: {iodata(), state()}
   def encrypt_payloads(state, payloads, block_size) do
-    encrypt_payloads(payloads, state, block_size, [])
+    payloads
+    |> Packet.encode_aead_packets(block_size)
+    |> encrypt_packets(state, [])
   end
 
-  defp encrypt_payloads([], state, _block_size, encrypted) do
+  defp encrypt_packets([], state, encrypted) do
     {Enum.reverse(encrypted), state}
   end
 
-  defp encrypt_payloads([payload | rest], state, block_size, encrypted) do
-    {packet, state} = encrypt_packet(state, Packet.encode_aead_packet(payload, block_size))
-    encrypt_payloads(rest, state, block_size, [packet | encrypted])
+  defp encrypt_packets([packet | rest], state, encrypted) do
+    {packet, state} = encrypt_packet(state, packet)
+    encrypt_packets(rest, state, [packet | encrypted])
   end
 
   @spec decrypt_packet(state(), binary()) ::
