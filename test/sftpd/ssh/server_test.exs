@@ -298,6 +298,39 @@ defmodule Sftpd.SSH.ServerTest do
     end
   end
 
+  test "encrypted receive keeps extra packets buffered after one socket read" do
+    {client, server} = connected_sockets()
+
+    try do
+      cipher = cipher_state()
+      state = %{buffer: "", c2s_cipher: cipher}
+      first_payload = <<94, 3::32, 1::32, 0>>
+      second_payload = <<93, 3::32, 8::32>>
+
+      {first_encrypted, cipher} =
+        Cipher.encrypt_packet(cipher, Packet.encode_aead_packet(first_payload))
+
+      {second_encrypted, _cipher} =
+        Cipher.encrypt_packet(cipher, Packet.encode_aead_packet(second_payload))
+
+      :ok = :gen_tcp.send(client, [first_encrypted, second_encrypted])
+
+      assert {:ok, ^first_payload, state} =
+               Server.__test_recv_encrypted_payload__(server, state)
+
+      assert state.c2s_cipher.sequence == 1
+      assert IO.iodata_to_binary(second_encrypted) == state.buffer
+
+      assert {:ok, ^second_payload, %{buffer: "", c2s_cipher: next_cipher}} =
+               Server.__test_recv_encrypted_payload__(server, state)
+
+      assert next_cipher.sequence == 2
+    after
+      :gen_tcp.close(client)
+      :gen_tcp.close(server)
+    end
+  end
+
   test "buffered drain accumulates available window adjustments before flushing" do
     {client, server} = connected_sockets()
 
