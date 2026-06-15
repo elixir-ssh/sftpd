@@ -72,23 +72,17 @@ defmodule SftpdProfile do
     size = Keyword.fetch!(opts, :size)
     port = Keyword.fetch!(opts, :port)
 
+    {backend_name, backend, backend_opts} =
+      backend_config(Keyword.fetch!(opts, :backend), direction, size)
+
     local_file = Path.join(tmp, "payload.bin")
     if direction == :upload, do: write_sparse_payload(local_file, size)
-
-    backend_opts =
-      case direction do
-        :download ->
-          [files: %{"openssh-get.bin" => %{size: size, mtime: NaiveDateTime.utc_now()}}]
-
-        :upload ->
-          [files: %{}]
-      end
 
     {:ok, ref} =
       Sftpd.start_server(
         transport: :elixir,
         port: port,
-        backend: Sftpd.Backends.Benchmark,
+        backend: backend,
         backend_opts: backend_opts,
         auth: {SftpdProfile.Auth, fingerprint: fingerprint},
         system_dir: system_dir,
@@ -106,7 +100,7 @@ defmodule SftpdProfile do
           end
         end)
 
-      print_report(opts, micros, profile)
+      print_report(opts, backend_name, micros, profile)
     after
       Sftpd.stop_server(ref)
     end
@@ -220,7 +214,7 @@ defmodule SftpdProfile do
     |> Enum.sort_by(fn {_counter, count} -> count end, :desc)
   end
 
-  defp print_report(opts, micros, profile) do
+  defp print_report(opts, backend_name, micros, profile) do
     size = Keyword.fetch!(opts, :size)
     direction = Keyword.fetch!(opts, :direction)
     seconds = micros / 1_000_000
@@ -233,6 +227,7 @@ defmodule SftpdProfile do
     IO.puts("throughput_mib_s=#{Float.round(throughput, 1)}")
     IO.puts("chunk=#{Keyword.fetch!(opts, :chunk)}")
     IO.puts("requests=#{Keyword.fetch!(opts, :requests)}")
+    IO.puts("backend=#{backend_name}")
     IO.puts("cipher=aes256-gcm@openssh.com")
     IO.puts("")
 
@@ -269,7 +264,8 @@ defmodule SftpdProfile do
           requests: :integer,
           port: :integer,
           limit: :integer,
-          profiler: :string
+          profiler: :string,
+          backend: :string
         ]
       )
 
@@ -294,7 +290,8 @@ defmodule SftpdProfile do
       requests: Keyword.get(opts, :requests, 64),
       port: Keyword.get(opts, :port, 29_222),
       limit: Keyword.get(opts, :limit, 40),
-      profiler: parse_profiler(Keyword.get(opts, :profiler, "cprof"))
+      profiler: parse_profiler(Keyword.get(opts, :profiler, "cprof")),
+      backend: parse_backend(Keyword.get(opts, :backend, "benchmark"))
     ]
     |> validate_positive_args!([:size, :chunk, :requests, :limit])
   end
@@ -305,6 +302,36 @@ defmodule SftpdProfile do
   defp parse_profiler(other) do
     raise ArgumentError, "profiler must be cprof or eprof, got #{inspect(other)}"
   end
+
+  defp parse_backend("benchmark"), do: :benchmark
+  defp parse_backend("memory"), do: :memory
+
+  defp parse_backend(other) do
+    raise ArgumentError, "backend must be benchmark or memory, got #{inspect(other)}"
+  end
+
+  defp backend_config(:benchmark, :download, size) do
+    {:benchmark, Sftpd.Backends.Benchmark,
+     [files: %{"openssh-get.bin" => %{size: size, mtime: NaiveDateTime.utc_now()}}]}
+  end
+
+  defp backend_config(:benchmark, :upload, _size) do
+    {:benchmark, Sftpd.Backends.Benchmark, [files: %{}]}
+  end
+
+  defp backend_config(:memory, :download, size) do
+    {:memory, Sftpd.Backends.Memory,
+     [
+       files: %{
+         "openssh-get.bin" => %{
+           content: :binary.copy(<<0>>, size),
+           mtime: NaiveDateTime.utc_now()
+         }
+       }
+     ]}
+  end
+
+  defp backend_config(:memory, :upload, _size), do: {:memory, Sftpd.Backends.Memory, []}
 
   defp validate_positive_args!(opts, keys) do
     Enum.each(keys, fn key ->

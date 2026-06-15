@@ -39,6 +39,7 @@ defmodule SftpdPerfBench do
     delay_ms = Keyword.fetch!(opts, :delay_ms)
     full? = Keyword.fetch!(opts, :full?)
     transport = Keyword.fetch!(opts, :transport)
+    {backend_name, backend, backend_opts} = backend_config(Keyword.fetch!(opts, :backend))
 
     tmp = Path.join(System.tmp_dir!(), "sftpd_perf_#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp)
@@ -55,8 +56,8 @@ defmodule SftpdPerfBench do
       Sftpd.start_server(
         [
           port: port,
-          backend: Sftpd.Backends.Benchmark,
-          backend_opts: [],
+          backend: backend,
+          backend_opts: backend_opts,
           auth: {SftpdPerfBench.Auth, fingerprint: fingerprint},
           system_dir: system_dir,
           max_sessions: 8
@@ -67,7 +68,7 @@ defmodule SftpdPerfBench do
 
     try do
       IO.puts(
-        "size=#{size} chunk=#{chunk} requests=#{requests} port=#{port} delay_ms=#{delay_ms} transport=#{transport} cipher=aes256-gcm@openssh.com"
+        "size=#{size} chunk=#{chunk} requests=#{requests} port=#{port} delay_ms=#{delay_ms} transport=#{transport} backend=#{backend_name} cipher=aes256-gcm@openssh.com"
       )
 
       if full? do
@@ -122,7 +123,8 @@ defmodule SftpdPerfBench do
           port: :integer,
           delay_ms: :integer,
           full: :boolean,
-          transport: :string
+          transport: :string,
+          backend: :string
         ]
       )
 
@@ -133,7 +135,8 @@ defmodule SftpdPerfBench do
       port: Keyword.get(opts, :port, 29_222),
       delay_ms: Keyword.get(opts, :delay_ms, 0),
       full?: Keyword.get(opts, :full, false),
-      transport: parse_transport(Keyword.get(opts, :transport, "otp"))
+      transport: parse_transport(Keyword.get(opts, :transport, "otp")),
+      backend: parse_backend(Keyword.get(opts, :backend, "benchmark"))
     ]
     |> validate_positive_args!([:size, :chunk, :requests])
   end
@@ -147,6 +150,16 @@ defmodule SftpdPerfBench do
 
   defp transport_option(:otp), do: []
   defp transport_option(:elixir), do: [transport: :elixir]
+
+  defp parse_backend("benchmark"), do: :benchmark
+  defp parse_backend("memory"), do: :memory
+
+  defp parse_backend(other) do
+    raise ArgumentError, "backend must be benchmark or memory, got #{inspect(other)}"
+  end
+
+  defp backend_config(:benchmark), do: {:benchmark, Sftpd.Backends.Benchmark, []}
+  defp backend_config(:memory), do: {:memory, Sftpd.Backends.Memory, []}
 
   defp validate_positive_args!(opts, keys) do
     Enum.each(keys, fn key ->
