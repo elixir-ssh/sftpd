@@ -424,7 +424,10 @@ defmodule Sftpd.Backends.Memory do
 
   defp read_indexed_range(%{chunks: chunks} = file_data, offset, len) do
     case Map.get(chunks, offset) do
-      chunk when is_binary(chunk) and byte_size(chunk) >= len ->
+      chunk when is_binary(chunk) and byte_size(chunk) == len ->
+        chunk
+
+      chunk when is_binary(chunk) and byte_size(chunk) > len ->
         binary_part(chunk, 0, len)
 
       _ ->

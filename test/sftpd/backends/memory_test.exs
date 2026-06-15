@@ -90,6 +90,22 @@ defmodule Sftpd.Backends.MemoryTest do
       assert is_binary(stored)
     end
 
+    test "returns exact indexed read chunks without copying", %{state: state} do
+      {:ok, handle} = Memory.open_write("/exact-read.bin", %{}, %{}, state)
+      chunk = :binary.copy("x", 262_080)
+
+      assert {:ok, handle} = Memory.write_at(handle, 0, chunk, state)
+      assert :ok = Memory.finish_write(handle, state)
+
+      assert {:ok, read_handle} = Memory.open_read("/exact-read.bin", %{}, state)
+      stored_chunk = Map.fetch!(read_handle.file.chunks, 0)
+
+      assert {:ok, read_chunk} = Memory.read_at(read_handle, 0, byte_size(chunk), state)
+      assert stored_chunk == chunk
+      assert read_chunk == stored_chunk
+      assert :erts_debug.same(read_chunk, stored_chunk)
+    end
+
     test "materializes sequential chunks without changing content", %{state: state} do
       {:ok, handle} = Memory.open_write("/sequential.bin", %{}, %{}, state)
 
