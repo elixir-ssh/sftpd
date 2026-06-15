@@ -90,6 +90,30 @@ defmodule Sftpd.SSH.CipherTest do
     end
   end
 
+  property "decrypts packet payload from buffered packet prefix and preserves rest" do
+    check all(
+            first_payload <- binary(max_length: 128),
+            second_payload <- binary(max_length: 128)
+          ) do
+      state = state(:server_to_client)
+      {first, state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet(first_payload))
+      {second, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet(second_payload))
+
+      encrypted = IO.iodata_to_binary([first, second])
+
+      assert {:ok, ^first_payload, rest, next_state} =
+               Cipher.decrypt_packet_payload(state(:server_to_client), encrypted)
+
+      assert byte_size(rest) > 0
+      assert next_state.sequence == 1
+
+      assert {:ok, ^second_payload, "", final_state} =
+               Cipher.decrypt_packet_payload(next_state, rest)
+
+      assert final_state.sequence == 2
+    end
+  end
+
   test "rejects tampered ciphertext" do
     state = state(:server_to_client)
     {encrypted, _state} = Cipher.encrypt_packet(state, Packet.encode_aead_packet("payload"))
