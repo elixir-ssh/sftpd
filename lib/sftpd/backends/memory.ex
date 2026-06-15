@@ -260,7 +260,7 @@ defmodule Sftpd.Backends.Memory do
   @spec write_at(write_handle(), non_neg_integer(), iodata(), state()) :: {:ok, write_handle()}
   @impl true
   def write_at(%{chunks: chunks} = handle, offset, data, _state) do
-    {:ok, %{handle | chunks: [{offset, IO.iodata_to_binary(data)} | chunks]}}
+    {:ok, %{handle | chunks: [{offset, chunk_binary(data)} | chunks]}}
   end
 
   @spec begin_write(Backend.path(), state()) :: {:ok, write_handle()}
@@ -602,6 +602,9 @@ defmodule Sftpd.Backends.Memory do
       prefix <> data <> suffix
     end)
   end
+
+  defp chunk_binary(data) when is_binary(data), do: data
+  defp chunk_binary(data), do: IO.iodata_to_binary(data)
 
   defp copied_normalized_path(path), do: path |> Backend.normalize_path() |> :binary.copy()
 

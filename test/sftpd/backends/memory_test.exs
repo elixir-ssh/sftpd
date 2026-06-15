@@ -71,6 +71,25 @@ defmodule Sftpd.Backends.MemoryTest do
   end
 
   describe "fast write handles" do
+    test "keeps binary write chunks without flattening", %{state: state} do
+      {:ok, handle} = Memory.open_write("/binary-chunk.bin", %{}, %{}, state)
+      chunk = :binary.copy("x", 1024)
+
+      assert {:ok, %{chunks: [{0, stored}]}} = Memory.write_at(handle, 0, chunk, state)
+      assert stored == chunk
+      assert :erts_debug.same(stored, chunk)
+    end
+
+    test "flattens nested iodata write chunks", %{state: state} do
+      {:ok, handle} = Memory.open_write("/iodata-chunk.bin", %{}, %{}, state)
+
+      assert {:ok, %{chunks: [{0, stored}]}} =
+               Memory.write_at(handle, 0, ["io", ["data"]], state)
+
+      assert stored == "iodata"
+      assert is_binary(stored)
+    end
+
     test "materializes sequential chunks without changing content", %{state: state} do
       {:ok, handle} = Memory.open_write("/sequential.bin", %{}, %{}, state)
 
