@@ -33,13 +33,7 @@ defmodule SftpdPerfBench do
 
     opts = parse_args(argv)
     size = Keyword.fetch!(opts, :size)
-    chunk = Keyword.fetch!(opts, :chunk)
-    requests = Keyword.fetch!(opts, :requests)
-    port = Keyword.fetch!(opts, :port)
-    delay_ms = Keyword.fetch!(opts, :delay_ms)
-    full? = Keyword.fetch!(opts, :full?)
-    transport = Keyword.fetch!(opts, :transport)
-    {backend_name, backend, backend_opts} = backend_config(Keyword.fetch!(opts, :backend))
+    runs = Keyword.fetch!(opts, :runs)
 
     tmp = Path.join(System.tmp_dir!(), "sftpd_perf_#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp)
@@ -51,6 +45,34 @@ defmodule SftpdPerfBench do
     fingerprint = public_key_fingerprint!(openssh_key <> ".pub")
 
     system_dir = Sftpd.Test.SSHKeys.generate_system_dir()
+
+    try do
+      Enum.each(1..runs, fn run ->
+        if runs > 1, do: IO.puts("sample=#{run}")
+
+        run_once(
+          opts,
+          tmp,
+          local_file,
+          openssh_key,
+          fingerprint,
+          system_dir
+        )
+      end)
+    after
+      File.rm_rf(tmp)
+    end
+  end
+
+  defp run_once(opts, tmp, local_file, openssh_key, fingerprint, system_dir) do
+    size = Keyword.fetch!(opts, :size)
+    chunk = Keyword.fetch!(opts, :chunk)
+    requests = Keyword.fetch!(opts, :requests)
+    port = Keyword.fetch!(opts, :port)
+    delay_ms = Keyword.fetch!(opts, :delay_ms)
+    full? = Keyword.fetch!(opts, :full?)
+    transport = Keyword.fetch!(opts, :transport)
+    {backend_name, backend, backend_opts} = backend_config(Keyword.fetch!(opts, :backend))
 
     {:ok, ref} =
       Sftpd.start_server(
@@ -109,7 +131,6 @@ defmodule SftpdPerfBench do
       end)
     after
       Sftpd.stop_server(ref)
-      File.rm_rf(tmp)
     end
   end
 
@@ -124,7 +145,8 @@ defmodule SftpdPerfBench do
           delay_ms: :integer,
           full: :boolean,
           transport: :string,
-          backend: :string
+          backend: :string,
+          runs: :integer
         ]
       )
 
@@ -136,9 +158,10 @@ defmodule SftpdPerfBench do
       delay_ms: Keyword.get(opts, :delay_ms, 0),
       full?: Keyword.get(opts, :full, false),
       transport: parse_transport(Keyword.get(opts, :transport, "otp")),
-      backend: parse_backend(Keyword.get(opts, :backend, "benchmark"))
+      backend: parse_backend(Keyword.get(opts, :backend, "benchmark")),
+      runs: Keyword.get(opts, :runs, 1)
     ]
-    |> validate_positive_args!([:size, :chunk, :requests])
+    |> validate_positive_args!([:size, :chunk, :requests, :runs])
   end
 
   defp parse_transport("otp"), do: :otp
