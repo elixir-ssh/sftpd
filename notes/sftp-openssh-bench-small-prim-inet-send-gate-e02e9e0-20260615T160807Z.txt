@@ -1,0 +1,48 @@
+BEGIN size=67108864 sha=e02e9e0 candidate=small-prim-inet-send runs=3
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+sample=1
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.206s 310.9 MiB/s
+openssh sftp get: 0.223s 287.6 MiB/s
+sample=2
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.209s 305.9 MiB/s
+openssh sftp get: 0.224s 285.7 MiB/s
+sample=3
+size=67108864 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 0.209s 306.8 MiB/s
+openssh sftp get: 0.216s 296.1 MiB/s
+END size=67108864 sha=e02e9e0 candidate=small-prim-inet-send runs=3
+BEGIN size=1073741824 sha=e02e9e0 candidate=small-prim-inet-send runs=3
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+sample=1
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.749s 585.6 MiB/s
+openssh sftp get: 1.686s 607.2 MiB/s
+sample=2
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.685s 607.7 MiB/s
+openssh sftp get: 1.676s 610.9 MiB/s
+sample=3
+size=1073741824 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 1.699s 602.6 MiB/s
+openssh sftp get: 1.684s 608.0 MiB/s
+END size=1073741824 sha=e02e9e0 candidate=small-prim-inet-send runs=3
+BEGIN size=10737418240 sha=e02e9e0 candidate=small-prim-inet-send runs=3
+warning: Git tree '/Users/mjc/projects/sftpd' is dirty
+✓ Switched active account for github.com to mjc
+sample=1
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.553s 618.6 MiB/s
+openssh sftp get: 16.665s 614.5 MiB/s
+sample=2
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.668s 614.4 MiB/s
+openssh sftp get: 15.562s 658.0 MiB/s
+sample=3
+size=10737418240 chunk=262080 requests=64 port=29222 delay_ms=0 transport=elixir backend=benchmark cipher=aes256-gcm@openssh.com
+openssh sftp put: 16.564s 618.2 MiB/s
+openssh sftp get: 15.581s 657.2 MiB/s
+END size=10737418240 sha=e02e9e0 candidate=small-prim-inet-send runs=3
