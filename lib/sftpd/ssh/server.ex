@@ -21,6 +21,8 @@ defmodule Sftpd.SSH.Server do
   @max_sftp_packet_length @channel_window_size
   @window_adjust_batch_size 8 * @channel_max_packet_size
   @sftp_drain_probe_timeout 1
+  @connection_fullsweep_after 65_535
+  @connection_min_heap_size 196_650
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -166,6 +168,8 @@ defmodule Sftpd.SSH.Server do
 
     pid =
       spawn(fn ->
+        configure_connection_process()
+
         receive do
           {:serve, socket, connection_state} -> serve_connection(socket, connection_state)
         end
@@ -182,6 +186,12 @@ defmodule Sftpd.SSH.Server do
       nil -> :ok
       owner -> send(owner, {:sftpd_connection, pid})
     end
+  end
+
+  defp configure_connection_process do
+    Process.flag(:fullsweep_after, @connection_fullsweep_after)
+    Process.flag(:min_heap_size, @connection_min_heap_size)
+    :ok
   end
 
   defp serve_connection(socket, state) do
@@ -1339,6 +1349,11 @@ defmodule Sftpd.SSH.Server do
     @doc false
     def __test_cleanup_open_handles__(state) do
       cleanup_open_handles(state)
+    end
+
+    @doc false
+    def __test_configure_connection_process__ do
+      configure_connection_process()
     end
 
     @doc false

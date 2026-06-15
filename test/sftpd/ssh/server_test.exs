@@ -65,6 +65,20 @@ defmodule Sftpd.SSH.ServerTest do
     assert %{auth_session: nil} = Server.__test_cleanup_open_handles__(%{auth_session: nil})
   end
 
+  test "connection workers use larger heap and delayed full sweeps" do
+    {:fullsweep_after, original_fullsweep_after} = Process.info(self(), :fullsweep_after)
+    {:min_heap_size, original_min_heap_size} = Process.info(self(), :min_heap_size)
+
+    try do
+      assert :ok = Server.__test_configure_connection_process__()
+      assert {:fullsweep_after, 65_535} = Process.info(self(), :fullsweep_after)
+      assert {:min_heap_size, 196_650} = Process.info(self(), :min_heap_size)
+    after
+      Process.flag(:fullsweep_after, original_fullsweep_after)
+      Process.flag(:min_heap_size, original_min_heap_size)
+    end
+  end
+
   test "splits oversized iodata responses without flattening chunks" do
     channel = %{client_channel: 7, client_max_packet: 4}
     data = ["ab", ["cd"], "ef"]
