@@ -330,10 +330,7 @@ defmodule Sftpd.SSH.SFTPBridge do
   defp channel_data_payloads(_client_channel, "", _max_packet, acc), do: Enum.reverse(acc)
 
   defp channel_data_payloads(client_channel, data, max_packet, acc) do
-    bytes = min(byte_size(data), max_packet)
-    {chunk, rest} = :erlang.split_binary(data, bytes)
-    payload = channel_data_payload(client_channel, chunk, bytes)
-    channel_data_payloads(client_channel, rest, max_packet, [payload | acc])
+    channel_data_payloads(client_channel, data, max_packet, 0, byte_size(data), acc)
   end
 
   defp channel_data_payloads(_client_channel, _data, _max_packet, 0, acc),
@@ -368,16 +365,25 @@ defmodule Sftpd.SSH.SFTPBridge do
   defp channel_data_pair_payloads(client_channel, header, data, max_packet)
        when is_binary(data) do
     first_data_size = min(byte_size(data), max_packet - byte_size(header))
-    {first_data, rest} = :erlang.split_binary(data, first_data_size)
 
     first_payload =
       channel_data_payload(
         client_channel,
-        [header, first_data],
+        [header, :binary.part(data, 0, first_data_size)],
         byte_size(header) + first_data_size
       )
 
-    [first_payload | channel_data_payloads(client_channel, rest, max_packet, [])]
+    [
+      first_payload
+      | channel_data_payloads(
+          client_channel,
+          data,
+          max_packet,
+          first_data_size,
+          byte_size(data),
+          []
+        )
+    ]
   end
 
   defp channel_data_pair_payloads(client_channel, header, data, max_packet) do
@@ -401,5 +407,19 @@ defmodule Sftpd.SSH.SFTPBridge do
           []
         )
     ]
+  end
+
+  defp channel_data_payloads(_client_channel, _data, _max_packet, offset, data_size, acc)
+       when offset >= data_size do
+    Enum.reverse(acc)
+  end
+
+  defp channel_data_payloads(client_channel, data, max_packet, offset, data_size, acc) do
+    bytes = min(data_size - offset, max_packet)
+    payload = channel_data_payload(client_channel, :binary.part(data, offset, bytes), bytes)
+
+    channel_data_payloads(client_channel, data, max_packet, offset + bytes, data_size, [
+      payload | acc
+    ])
   end
 end

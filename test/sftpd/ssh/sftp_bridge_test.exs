@@ -56,6 +56,20 @@ defmodule Sftpd.SSH.SFTPBridgeTest do
            ] = payloads
   end
 
+  test "response payloads split binary data packets from the original binary" do
+    channel = %{client_channel: 7, client_max_packet: 12}
+    header = "header..."
+    data = "abcdef"
+    response = SerializedPacket.data(header, data)
+
+    payloads = SFTPBridge.response_payloads(channel, [response])
+
+    assert [
+             [<<94, 7::32, 12::32>>, [^header, "abc"]],
+             [<<94, 7::32, 3::32>>, "def"]
+           ] = payloads
+  end
+
   test "near-window detection triggers before the window is exhausted" do
     channel = %{client_window: 10, client_max_packet: 4}
 
