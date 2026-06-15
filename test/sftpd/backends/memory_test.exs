@@ -75,7 +75,9 @@ defmodule Sftpd.Backends.MemoryTest do
       {:ok, handle} = Memory.open_write("/binary-chunk.bin", %{}, %{}, state)
       chunk = :binary.copy("x", 1024)
 
-      assert {:ok, %{chunks: [{0, stored}]}} = Memory.write_at(handle, 0, chunk, state)
+      assert {:ok, %{chunks: [{0, stored}], ordered?: true, last_end: 1024}} =
+               Memory.write_at(handle, 0, chunk, state)
+
       assert stored == chunk
       assert :erts_debug.same(stored, chunk)
     end
@@ -116,6 +118,9 @@ defmodule Sftpd.Backends.MemoryTest do
           handle
         end)
 
+      assert handle.ordered?
+      assert handle.last_end == 64 * 1024
+
       assert :ok = Memory.finish_write(handle, state)
       assert {:ok, content} = Memory.read_file("/sequential.bin", state)
       assert byte_size(content) == 64 * 1024
@@ -144,6 +149,8 @@ defmodule Sftpd.Backends.MemoryTest do
         {:ok, handle} = Memory.open_write("/sparse-fast.bin", %{}, %{}, state)
         {:ok, handle} = Memory.write_at(handle, 0, head, state)
         {:ok, handle} = Memory.write_at(handle, tail_offset, tail, state)
+
+        assert handle.ordered?
 
         assert :ok = Memory.finish_write(handle, state)
         expected = [head, :binary.copy(<<0>>, gap), tail] |> IO.iodata_to_binary()
@@ -184,6 +191,8 @@ defmodule Sftpd.Backends.MemoryTest do
         {:ok, handle} = Memory.open_write("/overlap-reordered.bin", %{}, %{}, state)
         {:ok, handle} = Memory.write_at(handle, offset, "XY", state)
         {:ok, handle} = Memory.write_at(handle, 0, later, state)
+
+        refute handle.ordered?
 
         assert :ok = Memory.finish_write(handle, state)
         expected = IO.iodata_to_binary(later)

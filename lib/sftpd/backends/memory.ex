@@ -66,7 +66,12 @@ defmodule Sftpd.Backends.Memory do
               mtime: NaiveDateTime.t()
             }
   @type read_handle :: %{path: Backend.path(), file: file_data()} | %{content: binary()}
-  @type write_handle :: %{path: Backend.path(), chunks: [{non_neg_integer(), binary()}]}
+  @type write_handle :: %{
+          path: Backend.path(),
+          chunks: [{non_neg_integer(), binary()}],
+          ordered?: boolean(),
+          last_end: non_neg_integer() | nil
+        }
   @type dir_handle :: %{entries: [Backend.entry()], read?: boolean()}
 
   @spec init(keyword()) :: {:ok, state()}
@@ -254,13 +259,22 @@ defmodule Sftpd.Backends.Memory do
           {:ok, write_handle()}
   @impl true
   def open_write(path, _attrs, _session, _state) do
-    {:ok, %{path: copied_normalized_path(path), chunks: []}}
+    {:ok, %{path: copied_normalized_path(path), chunks: [], ordered?: true, last_end: nil}}
   end
 
   @spec write_at(write_handle(), non_neg_integer(), iodata(), state()) :: {:ok, write_handle()}
   @impl true
   def write_at(%{chunks: chunks} = handle, offset, data, _state) do
-    {:ok, %{handle | chunks: [{offset, chunk_binary(data)} | chunks]}}
+    data = chunk_binary(data)
+    last_end = offset + byte_size(data)
+
+    {:ok,
+     %{
+       handle
+       | chunks: [{offset, data} | chunks],
+         ordered?: ordered_write?(handle, offset),
+         last_end: last_end
+     }}
   end
 
   @spec begin_write(Backend.path(), state()) :: {:ok, write_handle()}
@@ -272,8 +286,8 @@ defmodule Sftpd.Backends.Memory do
 
   @spec finish_write(write_handle(), state()) :: :ok
   @impl true
-  def finish_write(%{path: path, chunks: chunks}, %{agent: agent}) do
-    file_data = chunks_to_file_data(chunks)
+  def finish_write(%{path: path, chunks: chunks, ordered?: ordered?}, %{agent: agent}) do
+    file_data = chunks_to_file_data(chunks, ordered?)
 
     Agent.update(agent, fn files ->
       Map.put(files, path, file_data)
@@ -365,27 +379,41 @@ defmodule Sftpd.Backends.Memory do
     end
   end
 
-  defp chunks_to_file_data(chunks) do
-    sorted_chunks = Enum.sort_by(chunks, fn {offset, _data} -> offset end)
+  defp ordered_write?(%{ordered?: false}, _offset), do: false
+  defp ordered_write?(%{last_end: nil}, _offset), do: true
+  defp ordered_write?(%{last_end: last_end}, offset), do: offset >= last_end
 
+  defp chunks_to_file_data(chunks, true), do: indexed_chunks_to_file_data(Enum.reverse(chunks))
+
+  defp chunks_to_file_data(chunks, false) do
+    chunks
+    |> Enum.sort_by(fn {offset, _data} -> offset end)
+    |> sorted_chunks_to_file_data(chunks)
+  end
+
+  defp sorted_chunks_to_file_data(sorted_chunks, original_chunks) do
     if overlapping_chunks?(sorted_chunks) do
       %{
-        content: materialize_overlapping_chunks(Enum.reverse(chunks)),
+        content: materialize_overlapping_chunks(Enum.reverse(original_chunks)),
         mtime: NaiveDateTime.utc_now()
       }
     else
-      offsets = Enum.map(sorted_chunks, fn {offset, _data} -> offset end)
-      chunks = Map.new(sorted_chunks)
-      size = indexed_size(sorted_chunks)
-
-      %{
-        chunks: chunks,
-        offsets: offsets,
-        offset_index: List.to_tuple(offsets),
-        size: size,
-        mtime: NaiveDateTime.utc_now()
-      }
+      indexed_chunks_to_file_data(sorted_chunks)
     end
+  end
+
+  defp indexed_chunks_to_file_data(sorted_chunks) do
+    offsets = Enum.map(sorted_chunks, fn {offset, _data} -> offset end)
+    chunks = Map.new(sorted_chunks)
+    size = indexed_size(sorted_chunks)
+
+    %{
+      chunks: chunks,
+      offsets: offsets,
+      offset_index: List.to_tuple(offsets),
+      size: size,
+      mtime: NaiveDateTime.utc_now()
+    }
   end
 
   defp indexed_size([]), do: 0
