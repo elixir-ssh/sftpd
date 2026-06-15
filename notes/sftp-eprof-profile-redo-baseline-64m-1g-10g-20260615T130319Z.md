@@ -74,6 +74,11 @@ Two candidates were tried from this profile and reverted:
 - Increasing the SFTP drain probe timeout from 1ms to 2ms improved 10GiB
   download by `+18.85 MiB/s` in a 3x gate, but regressed 64MiB and 1GiB. Gate
   raw output: `notes/sftp-openssh-bench-drain-probe-2ms-gate-20260615T130916Z.txt`.
+- Switching to 2ms after 1024 client window-adjust packets won the 3x gate but
+  failed the full 10x matrix. Full-run medians were `64MiB put +7.50/get -5.65`,
+  `1GiB put -7.05/get -5.25`, and `10GiB put +1.50/get -1.50` MiB/s versus
+  the redo baseline. Full raw output:
+  `notes/sftp-openssh-bench-window-adjust-adaptive-drain-full-20260615T132140Z.txt`.
 
 The 2ms drain result suggests adaptive response coalescing may be worth a
 targeted experiment, but a global timeout change is not acceptable across the
