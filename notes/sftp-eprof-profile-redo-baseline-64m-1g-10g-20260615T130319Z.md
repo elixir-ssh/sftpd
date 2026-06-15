@@ -79,6 +79,11 @@ Two candidates were tried from this profile and reverted:
   `1GiB put -7.05/get -5.25`, and `10GiB put +1.50/get -1.50` MiB/s versus
   the redo baseline. Full raw output:
   `notes/sftp-openssh-bench-window-adjust-adaptive-drain-full-20260615T132140Z.txt`.
+- Special-casing response accumulator reversal for empty and single-response
+  lists failed its 3x gate. Medians were `64MiB put -1.55/get -1.90`,
+  `1GiB put -11.00/get -2.50`, and `10GiB put +2.35/get +0.15` MiB/s versus
+  the redo baseline. Gate raw output:
+  `notes/sftp-openssh-bench-response-reverse-fastpath-gate-20260615T133036Z.txt`.
 
 The 2ms drain result suggests adaptive response coalescing may be worth a
 targeted experiment, but a global timeout change is not acceptable across the
