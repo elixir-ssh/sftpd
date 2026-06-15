@@ -135,18 +135,18 @@ defmodule Sftpd.SSH.ServerTest do
   end
 
   test "batches window adjust payloads until the batch threshold is reached" do
-    assert [] = Server.__test_window_adjust_payloads__(7, 1_048_575)
+    assert [] = Server.__test_window_adjust_payloads__(7, 8_388_607)
 
-    assert [<<93, 7::32, 1_048_576::32>>] =
-             Server.__test_window_adjust_payloads__(7, 1_048_576)
+    assert [<<93, 7::32, 8_388_608::32>>] =
+             Server.__test_window_adjust_payloads__(7, 8_388_608)
   end
 
   test "flush payloads keep window adjust before channel data" do
-    channel = %{client_channel: 7, client_max_packet: 12, recv_window_adjust: 1_048_576}
+    channel = %{client_channel: 7, client_max_packet: 12, recv_window_adjust: 8_388_608}
     response = SerializedPacket.iodata("abc")
 
     assert [
-             <<93, 7::32, 1_048_576::32>>,
+             <<93, 7::32, 8_388_608::32>>,
              [<<94, 7::32, 3::32>>, "abc"]
            ] = Server.__test_sftp_flush_payloads__(channel, [response], true)
   end

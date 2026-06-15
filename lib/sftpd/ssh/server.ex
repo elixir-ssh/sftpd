@@ -19,7 +19,7 @@ defmodule Sftpd.SSH.Server do
   @aead_tag_size 16
   @max_encrypted_packet_length 2 * 1024 * 1024
   @max_sftp_packet_length @channel_window_size
-  @window_adjust_batch_size @channel_max_packet_size
+  @window_adjust_batch_size 8 * @channel_max_packet_size
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
