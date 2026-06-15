@@ -20,6 +20,7 @@ defmodule Sftpd.SSH.Server do
   @max_encrypted_packet_length 2 * 1024 * 1024
   @max_sftp_packet_length @channel_window_size
   @window_adjust_batch_size 8 * @channel_max_packet_size
+  @sftp_drain_probe_timeout 1
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -817,7 +818,7 @@ defmodule Sftpd.SSH.Server do
          responses_bytes,
          bytes_read
        ) do
-    case recv_buffered_or_available_encrypted_payload(socket, state) do
+    case recv_buffered_or_available_encrypted_payload(socket, state, @sftp_drain_probe_timeout) do
       {:ok, <<94, ^recipient::32, rest::binary>>, state} ->
         with <<data_len::32, data::binary-size(data_len)>> <- rest do
           {new_responses, channel} = handle_sftp_data(data, channel)
@@ -1117,16 +1118,16 @@ defmodule Sftpd.SSH.Server do
 
   defp recv_buffered_encrypted_payload(_state), do: :none
 
-  defp recv_buffered_or_available_encrypted_payload(socket, state) do
+  defp recv_buffered_or_available_encrypted_payload(socket, state, timeout) do
     case recv_buffered_encrypted_payload(state) do
-      :none -> recv_available_encrypted_payload(socket, state)
+      :none -> recv_available_encrypted_payload(socket, state, timeout)
       result -> result
     end
   end
 
-  defp recv_available_encrypted_payload(socket, %{buffer: buffer} = state)
+  defp recv_available_encrypted_payload(socket, %{buffer: buffer} = state, timeout)
        when buffer in [nil, ""] do
-    case :gen_tcp.recv(socket, 0, 0) do
+    case :gen_tcp.recv(socket, 0, timeout) do
       {:ok, data} ->
         state = %{state | buffer: data}
 
@@ -1143,7 +1144,7 @@ defmodule Sftpd.SSH.Server do
     end
   end
 
-  defp recv_available_encrypted_payload(_socket, state), do: {:none, state}
+  defp recv_available_encrypted_payload(_socket, state, _timeout), do: {:none, state}
 
   defp recv_encrypted_packet(socket, "", timeout) do
     case :gen_tcp.recv(socket, 4, timeout) do
@@ -1379,7 +1380,7 @@ defmodule Sftpd.SSH.Server do
 
     @doc false
     def __test_recv_buffered_or_available_encrypted_payload__(socket, state) do
-      recv_buffered_or_available_encrypted_payload(socket, state)
+      recv_buffered_or_available_encrypted_payload(socket, state, 0)
     end
 
     @doc false

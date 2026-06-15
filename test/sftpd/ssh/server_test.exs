@@ -341,6 +341,49 @@ defmodule Sftpd.SSH.ServerTest do
     end
   end
 
+  test "buffered drain coalesces available pipelined packets before flushing" do
+    {client, server} = connected_sockets()
+
+    try do
+      cipher = cipher_state()
+
+      state = %{
+        buffer: "",
+        c2s_cipher: cipher,
+        channels: %{},
+        active_channel_id: nil,
+        active_channel: nil
+      }
+
+      pending = [SerializedPacket.iodata("abcdef")]
+
+      channel = %{
+        server_channel: 3,
+        client_channel: 7,
+        client_window: 100,
+        client_max_packet: 12,
+        pending_responses: pending
+      }
+
+      {packet, _cipher} =
+        Cipher.encrypt_packet(cipher, Packet.encode_aead_packet(<<93, 3::32, 12::32>>))
+
+      :ok = :gen_tcp.send(client, packet)
+      Process.sleep(10)
+
+      responses = [SerializedPacket.iodata("response-data")]
+
+      assert {:open, ^responses, state, channel, 0} =
+               Server.__test_drain_buffered_sftp_data__(server, 3, state, channel, responses, 0)
+
+      assert %{client_window: 112, pending_responses: ^pending} = channel
+      assert %{active_channel_id: nil, active_channel: nil} = state
+    after
+      :gen_tcp.close(client)
+      :gen_tcp.close(server)
+    end
+  end
+
   defp joined_channel_data(payloads) do
     payloads
     |> Enum.map(fn payload ->
